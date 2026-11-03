@@ -122,6 +122,34 @@ assert(
   dependencies.length === 1 && dependencies[0] === 'minimatch',
   'ships only minimatch as a runtime dependency',
 );
+
+const packagedMinimatchNames = names.filter((name) =>
+  /^extension\/node_modules\/(?:.+\/)?minimatch\/package\.json$/.test(name),
+);
+let packagedMinimatchOk = packagedMinimatchNames.length === 1;
+for (const name of packagedMinimatchNames) {
+  try {
+    const version = JSON.parse(textOf(archive, name)).version;
+    const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version));
+    const patched =
+      parts !== null &&
+      (Number(parts[1]) > 11 ||
+        (Number(parts[1]) === 11 && Number(parts[2]) > 0) ||
+        (Number(parts[1]) === 11 && Number(parts[2]) === 0 && Number(parts[3]) >= 1));
+    if (patched) {
+      ok(`packaged minimatch ${version} is at or above 11.0.1`);
+    } else {
+      fail(`packaged minimatch ${version} is below the patched 11.0.1 release`);
+      packagedMinimatchOk = false;
+    }
+  } catch (error) {
+    fail(`cannot read ${name}: ${error instanceof Error ? error.message : error}`);
+    packagedMinimatchOk = false;
+  }
+}
+if (!packagedMinimatchOk) {
+  fail('expected exactly one patched minimatch runtime package');
+}
 assert(
   !Object.keys(manifest.contributes?.configuration?.properties ?? {}).some((key) =>
     /api.?key|password|client.?secret/i.test(key),

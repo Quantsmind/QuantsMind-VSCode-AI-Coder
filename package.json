@@ -306,8 +306,9 @@
     "test": "npm run test:unit && npm run test:integration",
     "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.1.0.vsix",
     "verify:vsix": "node scripts/verify-vsix.mjs",
+    "verify:deps": "node scripts/verify-dependencies.mjs",
     "verify:install": "node scripts/verify-install.mjs",
-    "verify": "npm run lint && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
+    "verify": "npm run lint && npm run verify:deps && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
   },
   "dependencies": {
     "minimatch": "11.0.4"
