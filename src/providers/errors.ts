@@ -36,7 +36,9 @@ export class ProviderError extends Error {
   readonly retryable: boolean;
 
   constructor(code: ProviderErrorCode, message: string, options: ProviderErrorOptions = {}) {
-    super(sanitizeMessage(message), { cause: options.cause });
+    // Defense in depth: every provider error is scrubbed again here so a
+    // caller cannot accidentally surface a credential echoed by a provider.
+    super(sanitizeMessage(redactSecrets(message).text), { cause: options.cause });
     this.name = 'ProviderError';
     this.code = code;
     this.status = options.status;

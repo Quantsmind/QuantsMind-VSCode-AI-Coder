@@ -1,7 +1,14 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { SettingsService } from '../../src/config/settings';
-import { resolveContextSettings, resolveProviderSettings, type ResolvedProviderSettings } from '../../src/config/resolve';
+import {
+  resolveAgentSettings,
+  resolveCommandSettings,
+  resolveContextSettings,
+  resolveProviderSettings,
+  resolveWorkspaceSettings,
+  type ResolvedProviderSettings,
+} from '../../src/config/resolve';
 import type { DisposableLike, CancellationTokenLike } from '../../src/providers/types';
 import type { LogSink } from '../../src/security/logger';
 import type { SecretStorageLike } from '../../src/security/secretStore';
@@ -183,6 +190,9 @@ export function createSettings(
   return {
     getProviderSettings: () => provider,
     getContextSettings: () => resolveContextSettings({}),
+    getWorkspaceSettings: () => resolveWorkspaceSettings({}),
+    getAgentSettings: () => resolveAgentSettings({}),
+    getCommandSettings: () => resolveCommandSettings({}),
     updateModel: async () => undefined,
     onDidChange: () => ({ dispose: () => undefined }),
   };

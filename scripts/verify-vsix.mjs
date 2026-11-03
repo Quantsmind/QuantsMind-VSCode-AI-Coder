@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { unzipSync } from 'fflate';
 
-const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.1.0.vsix';
+const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.2.0.vsix';
 const failures = [];
 
 function ok(message) {
@@ -97,7 +97,7 @@ try {
 
 assert(manifest.name === 'quantsmind-vscode-ai-coder', 'name is quantsmind-vscode-ai-coder');
 assert(manifest.publisher === 'quantsmind', 'publisher is quantsmind');
-assert(manifest.version === '0.1.0', 'version is 0.1.0');
+assert(manifest.version === '0.2.0', 'version is 0.2.0');
 assert(typeof manifest.engines?.vscode === 'string', 'declares an engines.vscode range');
 assert(manifest.main === './out/src/extension.js', 'main points at the compiled entry point');
 assert(manifest.preview === true, 'is marked as preview, not GA');
@@ -106,7 +106,7 @@ assert(manifest.license === 'MIT', 'license is MIT');
 assert(names.includes(`extension/${manifest.main.replace(/^\.\//, '')}`), 'main file exists in archive');
 
 const commands = manifest.contributes?.commands;
-assert(Array.isArray(commands) && commands.length === 12, 'contributes 12 commands');
+assert(Array.isArray(commands) && commands.length === 16, 'contributes 16 commands');
 assert(
   manifest.contributes?.views?.quantsmind?.[0]?.id === 'quantsmind.chatView',
   'contributes the chat webview',
@@ -122,6 +122,34 @@ assert(
   dependencies.length === 1 && dependencies[0] === 'minimatch',
   'ships only minimatch as a runtime dependency',
 );
+
+const packagedMinimatchNames = names.filter((name) =>
+  /^extension\/node_modules\/(?:.+\/)?minimatch\/package\.json$/.test(name),
+);
+let packagedMinimatchOk = packagedMinimatchNames.length === 1;
+for (const name of packagedMinimatchNames) {
+  try {
+    const version = JSON.parse(textOf(archive, name)).version;
+    const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version));
+    const patched =
+      parts !== null &&
+      (Number(parts[1]) > 11 ||
+        (Number(parts[1]) === 11 && Number(parts[2]) > 0) ||
+        (Number(parts[1]) === 11 && Number(parts[2]) === 0 && Number(parts[3]) >= 1));
+    if (patched) {
+      ok(`packaged minimatch ${version} is at or above 11.0.1`);
+    } else {
+      fail(`packaged minimatch ${version} is below the patched 11.0.1 release`);
+      packagedMinimatchOk = false;
+    }
+  } catch (error) {
+    fail(`cannot read ${name}: ${error instanceof Error ? error.message : error}`);
+    packagedMinimatchOk = false;
+  }
+}
+if (!packagedMinimatchOk) {
+  fail('expected exactly one patched minimatch runtime package');
+}
 assert(
   !Object.keys(manifest.contributes?.configuration?.properties ?? {}).some((key) =>
     /api.?key|password|client.?secret/i.test(key),
@@ -159,7 +187,7 @@ if (identity === undefined) {
 } else {
   ok('extension.vsixmanifest is present');
   assert(/<Identity[^>]*Publisher="quantsmind"/.test(identity), 'vsix identity publisher is quantsmind');
-  assert(/<Identity[^>]*Version="0\.1\.0"/.test(identity), 'vsix identity version is 0.1.0');
+  assert(/<Identity[^>]*Version="0\.2\.0"/.test(identity), 'vsix identity version is 0.2.0');
 }
 
 if (failures.length > 0) {

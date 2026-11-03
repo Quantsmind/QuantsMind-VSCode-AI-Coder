@@ -11,6 +11,42 @@ interface ReplacementRule {
 }
 
 const RULES: readonly ReplacementRule[] = [
+  // Providers often echo a partially masked key (for example `sk-abc***wxyz`
+  // or `sk-...1234`). These shapes are shorter than a full key and contain
+  // mask characters, so they must be handled before the full-key rules below.
+  {
+    pattern:
+      /\bBearer\s+[A-Za-z0-9._~+/=-]{0,60}(?:\*{2,}|…+|\.{3,}|•{1,})[A-Za-z0-9._~+/=-]{0,60}(?![A-Za-z0-9._~+/=-])/gi,
+    replace: `Bearer ${REDACTED}`,
+  },
+  {
+    pattern:
+      /\bsk-[A-Za-z0-9_-]{0,60}(?:\*{2,}|…+|\.{3,}|•{1,})[A-Za-z0-9_-]{0,60}(?![A-Za-z0-9_-])/gi,
+    replace: REDACTED,
+  },
+  {
+    pattern:
+      /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|x-api-key)(\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]{0,60}(?:\*{2,}|…+|\.{3,}|•{1,})[A-Za-z0-9._~+/=-]{0,60}/gi,
+    replace: (_match, name, separator) => `${name}${separator}${REDACTED}`,
+  },
+  {
+    pattern:
+      /("(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret)"\s*:\s*")([^"\n]*?(?:\*{2,}|…+|\.{3,})[^"\n]*?)(")/gi,
+    replace: (_match, prefix, _value, quote) => `${prefix}${REDACTED}${quote}`,
+  },
+  {
+    pattern: /\b[A-Za-z0-9_-]{4,}(?:\*{2,}|•{2,})[A-Za-z0-9_-]{4,}\b/g,
+    replace: REDACTED,
+  },
+  { pattern: /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, replace: REDACTED },
+  {
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s@]+)@/gi,
+    replace: (_match, scheme) => `${scheme}${REDACTED}@`,
+  },
+  {
+    pattern: /\b(x-api-key\s*[:=]\s*)([^\s,;]{4,})/gi,
+    replace: (_match, prefix) => `${prefix}${REDACTED}`,
+  },
   { pattern: /\bsk-[A-Za-z0-9_-]{16,}\b/g, replace: REDACTED },
   { pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replace: REDACTED },
   { pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, replace: REDACTED },
