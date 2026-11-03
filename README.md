@@ -137,6 +137,7 @@ See [SECURITY.md](SECURITY.md) for reporting and the full threat model.
 npm ci
 npm run compile
 npm run lint
+npm run verify:deps
 npm run test:unit
 npm run test:integration
 npm run package
@@ -146,6 +147,7 @@ npm run verify:vsix
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Testing guide](docs/TESTING.md)
+- [Live provider validation](docs/LIVE_PROVIDER_VALIDATION.md)
 - [Contributing](CONTRIBUTING.md)
 
 The integration suite launches an isolated VS Code instance and uses a local
@@ -158,7 +160,9 @@ repository never contains one.
 `npm run package` produces `quantsmind-vscode-ai-coder-0.1.0.vsix` locally.
 `npm run verify:vsix` validates the archive contents. `npm run test:packaged`
 installs the VSIX into an isolated VS Code instance and verifies activation and
-basic interaction.
+basic interaction. `npm run verify` runs the full release-candidate pipeline,
+including the dependency guard, lint, tests, archive inspection, packaged-host
+tests, and clean-install verification.
 
 This baseline is **not published** to the Visual Studio Marketplace, Open VSX,
 or any other registry. Do not treat it as a GA release.

@@ -8,11 +8,13 @@
 | Extension host | `@vscode/test-cli` | `test/integration` | Activation, commands, credentials, VS Code context access, full chat flow |
 | Packaged | `@vscode/test-cli` with a VSIX | `test/packaged` | The installed archive activates and exposes commands |
 | Install | VS Code CLI | `scripts/verify-install.mjs` | A clean extensions directory accepts the VSIX |
+| Dependencies | Node script over the lockfile | `scripts/verify-dependencies.mjs` | Shipped minimatch is patched; older copies stay development-only |
 
 Run everything:
 
 ```bash
 npm run lint
+npm run verify:deps
 npm run test:unit
 npm run test:integration
 npm run package
@@ -21,9 +23,9 @@ npm run test:packaged
 npm run verify:install
 ```
 
-`npm run verify` runs every layer above: lint, unit and extension-host tests,
-VSIX packaging, archive inspection, packaged-host tests, and clean-install
-verification.
+`npm run verify` runs every layer above plus the dependency guard: lint, unit
+and extension-host tests, VSIX packaging, archive inspection, packaged-host
+tests, and clean-install verification.
 
 ## Requirement coverage
 
@@ -142,13 +144,15 @@ loopback.
   prove exclusion.
 - `README.md` documents the fixture.
 
-The dummy values are not credentials. No test connects to a real provider.
+The dummy values are not credentials. No automated test connects to a real
+provider.
 
 ## What is not covered automatically
 
 - A live request to a third-party AI provider. That requires a real credential
-  and is intentionally excluded from CI. It must be performed manually with a
-  disposable key when validating a release candidate.
+  and is intentionally excluded from CI. Follow
+  [LIVE_PROVIDER_VALIDATION.md](LIVE_PROVIDER_VALIDATION.md) with a disposable
+  key when validating a release candidate.
 - Marketplace publication, signing, or Open VSX installation.
 - Operating-system-specific rendering inside the webview. The tests validate
   HTML, CSP, protocol, and message flow, not pixel appearance.
@@ -162,5 +166,6 @@ The dummy values are not credentials. No test connects to a real provider.
 - The chat tests use deterministic loopback servers and explicit wait helpers
   rather than fixed sleeps.
 - Test timeouts are 20 seconds for unit and 60 seconds for extension tests.
-- CI runs lint and unit tests on Node 20, 22, and 24, then extension-host and
-  packaged tests on Linux under `xvfb-run`.
+- CI runs lint, the dependency guard, and unit tests on Node 20, 22, and 24,
+  then extension-host tests on Ubuntu, Windows, and macOS. A final Ubuntu job
+  runs the complete `npm run verify` pipeline and uploads the VSIX.

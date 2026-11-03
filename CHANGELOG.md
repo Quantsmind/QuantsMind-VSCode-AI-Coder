@@ -5,6 +5,26 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Release-hardening work for the next preview. No user-facing behavior changed.
+
+### Added
+
+- Offline dependency guard (`npm run verify:deps`) that fails if the shipped
+  minimatch runtime dependency drops below the patched 11.0.1 release or if an
+  older minimatch copy becomes non-development.
+- Windows and macOS extension-host jobs in CI, alongside the existing Ubuntu
+  full-verification job.
+- Manual live-provider validation procedure in
+  [docs/LIVE_PROVIDER_VALIDATION.md](docs/LIVE_PROVIDER_VALIDATION.md).
+
+### Security
+
+- Reconciled GHSA-g3hv-75wg-m249. Runtime minimatch 11.0.4 is patched. The
+  nested 9.0.9 and 10.2.6 copies are development-only build and test tooling and
+  are not shipped in the VSIX.
+
 ## [0.1.0] - 2026-11-03
 
 First preview baseline. This is an alpha build and is **not** a general
