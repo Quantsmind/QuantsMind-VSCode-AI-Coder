@@ -20,6 +20,7 @@
     attachmentBar: document.getElementById('attachment-bar'),
     clearAttachments: document.getElementById('clear-attachments'),
     contextBudget: document.getElementById('context-budget'),
+    sessionSelect: document.getElementById('session-select'),
     toast: document.getElementById('toast'),
   };
 
@@ -34,8 +35,11 @@
     activeConversationId: '',
     validationCommands: [],
     workspaceName: '',
-    tasks: {},
-    taskSelections: {},
+    sessions: [],
+    activeSessionId: '',
+    session: null,
+    changeSelections: {},
+    repairSelections: {},
   };
 
   let toastTimer = 0;
@@ -174,6 +178,7 @@
     els.send.disabled = busy;
     els.stop.hidden = !busy;
     els.mode.disabled = busy;
+    els.sessionSelect.disabled = busy;
     const buttons = document.querySelectorAll(
       '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="clear-attachments"]',
     );
@@ -260,10 +265,10 @@
   function updateModeUi() {
     const agent = els.mode.value === 'agent';
     els.prompt.placeholder = agent
-      ? 'Describe the multi-file change you want. The agent proposes a plan for review.'
+      ? 'Describe the requirement. The agent inspects, plans, and waits for your approval.'
       : 'Ask about your code. Nothing is sent until you press Send.';
     els.privacyNote.textContent = agent
-      ? 'Agent mode sends only retrieved, redacted workspace files. No file is written until you approve each change. Apply creates backups that Undo can restore.'
+      ? 'Agent sessions send only retrieved, redacted files. Plan, change-set and repair approvals are separate; validation runs only allowlisted commands without a shell.'
       : 'Only attached content is sent. Ask/Explain/Generate never modify files.';
   }
 
@@ -567,38 +572,94 @@
     scrollToBottom(true);
   }
 
-  var TASK_STATUS_LABELS = {
-    running: 'Working',
-    'awaiting-approval': 'Awaiting your approval',
-    applied: 'Applied — validation pending',
-    'validation-failed': 'Validation failed',
+  var SESSION_STATE_LABELS = {
+    idle: 'Queued',
+    analyzing: 'Analyzing requirement',
+    inspecting: 'Inspecting project',
+    planning: 'Planning',
+    'awaiting-plan-approval': 'Plan awaiting approval',
+    ready: 'Ready',
+    executing: 'Executing task',
+    'awaiting-change-approval': 'Changes awaiting approval',
+    applying: 'Applying approved changes',
+    validating: 'Validation pending',
+    diagnosing: 'Diagnosing failure',
+    'awaiting-repair-approval': 'Repair awaiting approval',
+    repairing: 'Applying repair',
+    paused: 'Paused',
+    cancelling: 'Cancelling',
+    completed: 'Completed',
     rejected: 'Rejected',
-    cancelled: 'Cancelled',
     failed: 'Failed',
-    undone: 'Undone',
+    cancelled: 'Cancelled',
   };
 
-  var STAGE_LABELS = {
-    retrieve: 'Retrieve workspace context',
-    plan: 'Plan changes',
-    review: 'Build diffs',
-    approval: 'Wait for approval',
-    apply: 'Apply approved files',
+  var SESSION_STAGE_LABELS = {
+    requirement: 'Requirement',
+    inspect: 'Inspect project',
+    plan: 'Plan',
+    'plan-approval': 'Plan approval',
+    tasks: 'Tasks',
+    review: 'Change review',
+    apply: 'Apply',
     validate: 'Validate',
     repair: 'Repair',
+    report: 'Evidence report',
   };
 
-  function selectedIdsFor(task) {
-    if (!state.taskSelections[task.id]) {
-      state.taskSelections[task.id] = {};
-      (task.review || []).forEach(function (change) {
-        state.taskSelections[task.id][change.id] = true;
-      });
-    }
-    return state.taskSelections[task.id];
+  var TASK_STATUS_LABELS = {
+    pending: 'Pending',
+    blocked: 'Blocked',
+    running: 'Running',
+    'awaiting-approval': 'Awaiting approval',
+    applied: 'Applied',
+    'validation-failed': 'Validation failed',
+    repairing: 'Repairing',
+    completed: 'Completed',
+    failed: 'Failed',
+    skipped: 'Skipped',
+    cancelled: 'Cancelled',
+  };
+
+  var PAUSEABLE_STATES = {
+    ready: true,
+    'awaiting-plan-approval': true,
+    'awaiting-change-approval': true,
+    'awaiting-repair-approval': true,
+    diagnosing: true,
+  };
+
+  function isTerminalState(session) {
+    return (
+      session.state === 'completed' ||
+      session.state === 'failed' ||
+      session.state === 'rejected' ||
+      session.state === 'cancelled'
+    );
   }
 
-  function renderReviewCard(change, editable, selection) {
+  function selectedChangeIds(sessionId, changes) {
+    if (!state.changeSelections[sessionId]) {
+      state.changeSelections[sessionId] = {};
+      (changes || []).forEach(function (change) {
+        state.changeSelections[sessionId][change.id] = true;
+      });
+    }
+    return state.changeSelections[sessionId];
+  }
+
+  function selectedRepairIds(sessionId, changes) {
+    if (!state.repairSelections[sessionId]) {
+      state.repairSelections[sessionId] = {};
+      (changes || []).forEach(function (change) {
+        state.repairSelections[sessionId][change.id] = true;
+      });
+    }
+    return state.repairSelections[sessionId];
+  }
+
+  function renderReviewCard(change, editable, selection, checkAttribute) {
+    var attribute = checkAttribute || 'data-change-check';
     var renameLabel =
       change.kind === 'rename' && change.fromPath
         ? change.fromPath + ' → ' + change.path
@@ -607,88 +668,297 @@
     return (
       '<div class="review-card" data-change-id="' + escapeHtml(change.id) + '">' +
       '<label class="review-head">' +
-      '<input type="checkbox" data-review-check="' + escapeHtml(change.id) + '"' + checked + (editable ? '' : ' disabled') + ' />' +
+      '<input type="checkbox" ' + attribute + '="' + escapeHtml(change.id) + '"' + checked + (editable ? '' : ' disabled') + ' />' +
       '<span class="change-kind kind-' + escapeHtml(change.kind) + '">' + escapeHtml(change.kind) + '</span>' +
       '<span class="change-path" title="' + escapeHtml(renameLabel) + '">' + escapeHtml(renameLabel) + '</span>' +
       '<span class="change-stat">+' + Number(change.additions || 0) + ' −' + Number(change.deletions || 0) + '</span>' +
       '</label>' +
       (change.summary ? '<p class="change-summary">' + escapeHtml(change.summary) + '</p>' : '') +
       (change.warning ? '<p class="change-warning">' + escapeHtml(change.warning) + '</p>' : '') +
-      '<pre class="diff">' + diffHtml(change.diff) + '</pre>' +
+      '<pre class="diff">' + diffHtml(change.diff || '') + '</pre>' +
       (change.diffTruncated ? '<p class="change-warning">The diff was truncated; the full file content is still part of the plan.</p>' : '') +
       '</div>'
     );
   }
 
-  function renderValidation(task) {
-    var validation = task.validation;
-    if (!validation) {
-      return '';
-    }
-    var stateLabel = validation.cancelled
-      ? 'cancelled'
-      : validation.timedOut
-        ? 'timed out'
-        : 'exit ' + (validation.exitCode === null ? 'unknown' : validation.exitCode);
-    return (
-      '<div class="validation ' + (validation.passed ? 'ok' : 'bad') + '">' +
-      '<div class="validation-head"><span class="validation-command">' + escapeHtml(validation.command) + '</span>' +
-      '<span class="validation-state">' + escapeHtml(stateLabel) + '</span></div>' +
-      '<pre class="command-output">' + escapeHtml(validation.output || '(no output)') + '</pre>' +
-      '</div>'
+  function reviewFromChangeSet(changeSet) {
+    var diffs = changeSet.diffs || [];
+    return (changeSet.plan && changeSet.plan.changes ? changeSet.plan.changes : []).map(
+      function (change) {
+        var diff = diffs.find(function (candidate) {
+          return candidate.path === change.path;
+        }) || {};
+        return {
+          id: change.id,
+          kind: change.kind,
+          path: change.path,
+          fromPath: change.fromPath,
+          summary: change.summary,
+          diff: diff.text || '',
+          additions: diff.additions || 0,
+          deletions: diff.deletions || 0,
+          diffTruncated: Boolean(diff.truncated),
+        };
+      },
     );
   }
 
-  function buildTaskArticle(task) {
-    var selection = selectedIdsFor(task);
-    var editable = task.status === 'awaiting-approval';
-    var stages = (task.stages || [])
+  function reviewFromRepair(proposal) {
+    var diffs = proposal.diffs || [];
+    return (proposal.plan && proposal.plan.changes ? proposal.plan.changes : []).map(
+      function (change) {
+        var diff = diffs.find(function (candidate) {
+          return candidate.path === change.path;
+        }) || {};
+        return {
+          id: change.id,
+          kind: change.kind,
+          path: change.path,
+          fromPath: change.fromPath,
+          summary: change.summary,
+          diff: diff.text || '',
+          additions: diff.additions || 0,
+          deletions: diff.deletions || 0,
+          diffTruncated: Boolean(diff.truncated),
+        };
+      },
+    );
+  }
+
+  function renderStages(stages) {
+    return (stages || [])
       .map(function (stage) {
         return (
           '<li class="stage ' + escapeHtml(stage.status) + '">' +
           '<span class="stage-dot" aria-hidden="true"></span>' +
-          '<span class="stage-name">' + escapeHtml(STAGE_LABELS[stage.name] || stage.name) + '</span>' +
+          '<span class="stage-name">' + escapeHtml(SESSION_STAGE_LABELS[stage.name] || stage.name) + '</span>' +
           (stage.detail ? '<span class="stage-detail">' + escapeHtml(stage.detail) + '</span>' : '') +
           '</li>'
         );
       })
       .join('');
+  }
 
-    var warnings = (task.warnings || [])
+  function renderPlan(session) {
+    var plan = session.plan;
+    if (!plan) {
+      return '';
+    }
+    var tasks = (plan.tasks || [])
+      .map(function (task) {
+        var criteria = (task.acceptanceCriteria || [])
+          .map(function (criterion) {
+            return '<li>' + escapeHtml(criterion.text) + ' <span class="criterion-kind">(' + escapeHtml(criterion.verification) + ')</span></li>';
+          })
+          .join('');
+        return (
+          '<li class="plan-task status-' + escapeHtml(task.status) + '">' +
+          '<div class="plan-task-head">' +
+          '<span class="plan-task-title">' + escapeHtml(task.title) + '</span>' +
+          '<span class="plan-task-status">' + escapeHtml(TASK_STATUS_LABELS[task.status] || task.status) + '</span>' +
+          '</div>' +
+          (task.description ? '<p class="plan-task-description">' + escapeHtml(task.description) + '</p>' : '') +
+          (task.dependsOn && task.dependsOn.length > 0
+            ? '<p class="plan-task-meta">Depends on: ' + escapeHtml(task.dependsOn.join(', ')) + '</p>'
+            : '') +
+          (task.validationCommand
+            ? '<p class="plan-task-meta">Validation: <code>' + escapeHtml(task.validationCommand) + '</code></p>'
+            : '') +
+          (criteria ? '<ul class="plan-criteria">' + criteria + '</ul>' : '') +
+          (task.error ? '<p class="task-error">' + escapeHtml(task.error) + '</p>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    var risks = (plan.risks || [])
+      .map(function (risk) {
+        return '<li>' + escapeHtml(risk) + '</li>';
+      })
+      .join('');
+    var warnings = (plan.warnings || [])
       .map(function (warning) {
         return '<p class="change-warning">' + escapeHtml(warning) + '</p>';
       })
       .join('');
+    return (
+      '<div class="plan-card">' +
+      '<p class="plan-summary">' + escapeHtml(plan.summary) + '</p>' +
+      (plan.approach ? '<p class="plan-approach">' + escapeHtml(plan.approach) + '</p>' : '') +
+      (risks ? '<div class="plan-risks"><span class="plan-risks-label">Risks</span><ul>' + risks + '</ul></div>' : '') +
+      warnings +
+      (tasks ? '<ul class="plan-tasks">' + tasks + '</ul>' : '<p class="task-notes">The plan contains no tasks.</p>') +
+      '</div>'
+    );
+  }
 
-    var reviews = (task.review || [])
-      .map(function (change) {
-        return renderReviewCard(change, editable, selection);
+  function renderValidations(session) {
+    return (session.validationRuns || [])
+      .map(function (run) {
+        var evidence = run.evidence || {};
+        var stateLabel = evidence.cancelled
+          ? 'cancelled'
+          : evidence.timedOut
+            ? 'timed out'
+            : 'exit ' + (evidence.exitCode === null ? 'unknown' : evidence.exitCode);
+        return (
+          '<div class="validation ' + (evidence.passed ? 'ok' : 'bad') + '">' +
+          '<div class="validation-head"><span class="validation-command">' + escapeHtml(evidence.command || run.command) + '</span>' +
+          '<span class="validation-state">' + escapeHtml(stateLabel) + ' · ' + formatNumber(evidence.durationMs) + ' ms</span></div>' +
+          '<pre class="command-output">' + escapeHtml(evidence.output || '(no output)') + '</pre>' +
+          '</div>'
+        );
       })
       .join('');
+  }
 
-    var actions = '';
-    if (task.status === 'running') {
-      actions +=
-        '<button type="button" class="action-button" data-task-action="cancel-task" data-task-id="' +
-        escapeHtml(task.id) +
-        '">Cancel task</button>';
+  function renderDiagnostics(session) {
+    var diagnostics = session.diagnostics || [];
+    if (diagnostics.length === 0) {
+      return '';
     }
-    if (task.status === 'awaiting-approval') {
-      if ((task.review || []).length > 0) {
-        actions +=
-          '<button type="button" class="action-button primary" data-task-action="approve-selected" data-task-id="' +
-          escapeHtml(task.id) +
-          '">Apply selected files</button>';
+    var items = diagnostics
+      .map(function (diagnostic) {
+        var location = diagnostic.file
+          ? diagnostic.file + (diagnostic.line ? ':' + diagnostic.line : '')
+          : '';
+        return (
+          '<li class="diagnostic severity-' + escapeHtml(diagnostic.severity) + '">' +
+          '<span class="diagnostic-source">' + escapeHtml(diagnostic.source) + '</span>' +
+          '<span class="diagnostic-message">' + escapeHtml(diagnostic.message) + '</span>' +
+          (location ? '<span class="diagnostic-location">' + escapeHtml(location) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    return '<div class="diagnostic-list"><span class="section-label">Diagnostics</span><ul>' + items + '</ul></div>';
+  }
+
+  function renderReport(session) {
+    var report = session.report;
+    if (!report) {
+      return '';
+    }
+    var evidence = (report.evidence || [])
+      .map(function (line) {
+        return '<li>' + escapeHtml(line) + '</li>';
+      })
+      .join('');
+    var unresolved = (report.unresolved || [])
+      .map(function (line) {
+        return '<li>' + escapeHtml(line) + '</li>';
+      })
+      .join('');
+    return (
+      '<div class="report-card outcome-' + escapeHtml(report.outcome) + '">' +
+      '<div class="report-head"><span class="report-outcome">' + escapeHtml(report.outcome) + '</span>' +
+      '<span class="report-meta">' + Number(report.repairs || 0) + ' repair proposal(s)</span></div>' +
+      (evidence ? '<div class="report-section"><span class="section-label">Evidence</span><ul>' + evidence + '</ul></div>' : '<p class="task-notes">No command evidence was collected.</p>') +
+      (unresolved ? '<div class="report-section"><span class="section-label">Unresolved</span><ul>' + unresolved + '</ul></div>' : '') +
+      '</div>'
+    );
+  }
+
+  function renderSessionApproval(session) {
+    var approval = session.pendingApproval;
+    if (!approval) {
+      return '';
+    }
+    var sessionId = escapeHtml(session.id);
+    if (approval.kind === 'plan') {
+      return (
+        '<div class="approval-card">' +
+        '<div class="approval-head"><span class="approval-kind">Plan approval</span>' +
+        '<span class="approval-title">' + escapeHtml(approval.title) + '</span></div>' +
+        (approval.detail ? '<p class="approval-detail">' + escapeHtml(approval.detail) + '</p>' : '') +
+        '<p class="task-notes">No files will be written until you approve the plan and then approve individual changes.</p>' +
+        '<div class="task-actions">' +
+        '<button type="button" class="action-button primary" data-session-action="approve-plan" data-session-id="' + sessionId + '">Approve plan</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-plan" data-session-id="' + sessionId + '">Reject plan</button>' +
+        '</div></div>'
+      );
+    }
+
+    if (approval.kind === 'change-set') {
+      var changeSet = (session.changeSets || []).find(function (candidate) {
+        return candidate.id === approval.subjectId;
+      });
+      if (!changeSet) {
+        return '<div class="approval-card"><p class="task-error">The pending change set is missing.</p></div>';
       }
-      actions +=
-        '<button type="button" class="action-button" data-task-action="reject-changes" data-task-id="' +
-        escapeHtml(task.id) +
-        '">Reject all</button>';
+      var changes = reviewFromChangeSet(changeSet);
+      var selection = selectedChangeIds(session.id, changes);
+      var reviews = changes
+        .map(function (change) {
+          return renderReviewCard(change, true, selection, 'data-change-check');
+        })
+        .join('');
+      return (
+        '<div class="approval-card">' +
+        '<div class="approval-head"><span class="approval-kind">Change-set approval</span>' +
+        '<span class="approval-title">' + escapeHtml(changeSet.summary) + '</span></div>' +
+        '<p class="task-notes">Select the files to apply. Backups are created for every applied file.</p>' +
+        '<div class="review-list" data-session-reviews="' + sessionId + '">' + reviews + '</div>' +
+        '<div class="task-actions">' +
+        '<button type="button" class="action-button primary" data-session-action="approve-change-selected" data-session-id="' + sessionId + '">Apply selected files</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-change" data-session-id="' + sessionId + '">Reject change set</button>' +
+        '</div></div>'
+      );
     }
-    if (
-      (task.status === 'applied' || task.status === 'validation-failed') &&
-      state.validationCommands.length > 0
-    ) {
+
+    if (approval.kind === 'repair') {
+      var proposal = (session.repairProposals || []).find(function (candidate) {
+        return candidate.id === approval.subjectId;
+      });
+      if (!proposal) {
+        return '<div class="approval-card"><p class="task-error">The pending repair proposal is missing.</p></div>';
+      }
+      var repairChanges = reviewFromRepair(proposal);
+      var repairSelection = selectedRepairIds(session.id, repairChanges);
+      var repairReviews = repairChanges
+        .map(function (change) {
+          return renderReviewCard(change, true, repairSelection, 'data-repair-check');
+        })
+        .join('');
+      return (
+        '<div class="approval-card">' +
+        '<div class="approval-head"><span class="approval-kind">Repair approval</span>' +
+        '<span class="approval-title">' + escapeHtml(proposal.summary) + '</span></div>' +
+        (proposal.diagnosis ? '<p class="approval-detail">' + escapeHtml(proposal.diagnosis) + '</p>' : '') +
+        '<div class="review-list" data-session-repairs="' + sessionId + '">' + repairReviews + '</div>' +
+        '<div class="task-actions">' +
+        '<button type="button" class="action-button primary" data-session-action="approve-repair-selected" data-session-id="' + sessionId + '">Apply repair</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-repair" data-session-id="' + sessionId + '">Reject repair</button>' +
+        '</div></div>'
+      );
+    }
+
+    return '';
+  }
+
+  function renderSessionActions(session) {
+    var sessionId = escapeHtml(session.id);
+    var actions = '';
+    if (PAUSEABLE_STATES[session.state]) {
+      actions +=
+        '<button type="button" class="action-button" data-session-action="pause" data-session-id="' +
+        sessionId +
+        '">Pause</button>';
+    }
+    if (session.state === 'paused') {
+      if (!session.needsReview) {
+        actions +=
+          '<button type="button" class="action-button primary" data-session-action="resume" data-session-id="' +
+          sessionId +
+          '">Resume</button>';
+      }
+    }
+    if (session.needsReview) {
+      actions +=
+        '<button type="button" class="action-button primary" data-session-action="restore" data-session-id="' +
+        sessionId +
+        '">Restore and revalidate</button>';
+    }
+    if (session.state === 'validating' && state.validationCommands.length > 0) {
       var options = state.validationCommands
         .map(function (command) {
           return '<option value="' + escapeHtml(command) + '">' + escapeHtml(command) + '</option>';
@@ -696,79 +966,116 @@
         .join('');
       actions +=
         '<span class="validation-picker">' +
-        '<select data-validation-command aria-label="Validation command">' + options + '</select>' +
-        '<button type="button" class="action-button primary" data-task-action="run-validation" data-task-id="' +
-        escapeHtml(task.id) +
+        '<select data-session-validation aria-label="Validation command">' + options + '</select>' +
+        '<button type="button" class="action-button primary" data-session-action="run-validation" data-session-id="' +
+        sessionId +
         '">Run validation</button>' +
         '</span>';
     }
-    if (task.status === 'validation-failed') {
+    if (session.state === 'diagnosing') {
       actions +=
-        '<button type="button" class="action-button" data-task-action="repair" data-task-id="' +
-        escapeHtml(task.id) +
+        '<button type="button" class="action-button primary" data-session-action="plan-repair" data-session-id="' +
+        sessionId +
         '">Plan a repair</button>';
     }
-    if (task.status === 'applied' || task.status === 'validation-failed') {
+    var hasApply = (session.executions || []).some(function (execution) {
+      return Boolean(execution.historyTaskId);
+    });
+    if (hasApply) {
       actions +=
-        '<button type="button" class="action-button" data-task-action="undo" data-task-id="' +
-        escapeHtml(task.id) +
-        '">Undo applied changes</button>';
+        '<button type="button" class="action-button" data-session-action="undo" data-session-id="' +
+        sessionId +
+        '">Undo last apply</button>';
     }
+    if (!isTerminalState(session)) {
+      actions +=
+        '<button type="button" class="action-button" data-session-action="cancel" data-session-id="' +
+        sessionId +
+        '">Cancel session</button>';
+    }
+    actions +=
+      '<button type="button" class="action-button subtle" data-session-action="delete" data-session-id="' +
+      sessionId +
+      '">Delete session</button>';
+    return actions ? '<div class="task-actions session-actions">' + actions + '</div>' : '';
+  }
 
+  function buildSessionArticle(session) {
     var meta = [
-      'Provider calls: ' + Number(task.providerCalls || 0),
-      task.repairIterations ? 'Repair attempts: ' + Number(task.repairIterations) : '',
-    ]
-      .filter(function (part) {
-        return part.length > 0;
+      'Provider calls: ' + Number(session.providerCalls || 0),
+      'Updated: ' + String(session.updatedAt || '').replace('T', ' ').slice(0, 19),
+    ].join(' · ');
+    var warnings = (session.plan && session.plan.warnings ? session.plan.warnings : [])
+      .map(function (warning) {
+        return '<p class="change-warning">' + escapeHtml(warning) + '</p>';
       })
-      .join(' · ');
+      .join('');
+    var appliedSets = (session.changeSets || [])
+      .filter(function (changeSet) {
+        return !session.pendingApproval || session.pendingApproval.subjectId !== changeSet.id;
+      })
+      .map(function (changeSet) {
+        var changes = reviewFromChangeSet(changeSet);
+        var selection = selectedChangeIds(session.id, changes);
+        var reviews = changes
+          .map(function (change) {
+            return renderReviewCard(change, false, selection, 'data-change-check');
+          })
+          .join('');
+        return (
+          '<div class="applied-set"><span class="section-label">Approved change set</span>' +
+          '<div class="review-list">' + reviews + '</div></div>'
+        );
+      })
+      .join('');
 
     var html =
-      '<div class="task-card status-' + escapeHtml(task.status) + '">' +
+      '<div class="task-card session-card state-' + escapeHtml(session.state) + '">' +
       '<div class="task-head">' +
-      '<span class="task-status">' + escapeHtml(TASK_STATUS_LABELS[task.status] || task.status) + '</span>' +
+      '<span class="task-status">Session · ' + escapeHtml(SESSION_STATE_LABELS[session.state] || session.state) + '</span>' +
       '<span class="task-meta">' + escapeHtml(meta) + '</span>' +
       '</div>' +
-      (task.planSummary ? '<p class="task-summary">' + escapeHtml(task.planSummary) + '</p>' : '') +
-      (task.planNotes ? '<p class="task-notes">' + escapeHtml(task.planNotes) + '</p>' : '') +
-      (task.error ? '<p class="task-error">' + escapeHtml(task.error) + '</p>' : '') +
-      (task.hint ? '<p class="task-hint">' + escapeHtml(task.hint) + '</p>' : '') +
-      '<ul class="task-stages">' + stages + '</ul>' +
+      '<p class="session-requirement">' + escapeHtml(session.requirement ? session.requirement.text : '') + '</p>' +
+      (session.needsReview ? '<p class="change-warning">This session needs review before it can continue. Restore revalidates every applied file hash.</p>' : '') +
+      (session.error ? '<p class="task-error">' + escapeHtml(session.error) + '</p>' : '') +
+      '<ul class="task-stages">' + renderStages(session.stages) + '</ul>' +
+      renderPlan(session) +
       warnings +
-      (reviews ? '<div class="review-list">' + reviews + '</div>' : '') +
-      renderValidation(task) +
-      (actions ? '<div class="task-actions">' + actions + '</div>' : '') +
+      renderSessionApproval(session) +
+      appliedSets +
+      renderValidations(session) +
+      renderDiagnostics(session) +
+      renderReport(session) +
+      renderSessionActions(session) +
       '</div>';
 
     var article = document.createElement('article');
-    article.className = 'message task';
-    article.dataset.taskId = task.id;
+    article.className = 'message session';
+    article.dataset.sessionId = session.id;
 
     var label = document.createElement('div');
     label.className = 'message-label';
-    label.textContent = 'Agent task';
+    label.textContent = 'Agent session';
 
     var body = document.createElement('div');
-    body.className = 'task-body';
+    body.className = 'task-body session-body';
     body.innerHTML = html;
 
     article.append(label, body);
     return article;
   }
 
-  function renderTask(task) {
-    if (!task || typeof task.id !== 'string') {
+  function renderSession(session) {
+    if (!session || typeof session.id !== 'string') {
       return;
     }
-    state.tasks[task.id] = task;
-    selectedIdsFor(task);
-    var article = buildTaskArticle(task);
-
+    state.session = session;
+    state.activeSessionId = session.id;
+    var article = buildSessionArticle(session);
     var existing = Array.prototype.find.call(
-      els.messages.querySelectorAll('[data-task-id]'),
+      els.messages.querySelectorAll('[data-session-id]'),
       function (node) {
-        return node.dataset.taskId === task.id;
+        return node.dataset.sessionId === session.id;
       },
     );
     if (existing) {
@@ -777,11 +1084,57 @@
       if (stick) {
         scrollToBottom(true);
       }
+      renderSessionSelect();
     } else {
       els.messages.append(article);
       setEmpty(false);
       scrollToBottom(true);
+      renderSessionSelect();
     }
+  }
+
+  function renderSessionSelect() {
+    var sessions = state.sessions || [];
+    els.sessionSelect.replaceChildren();
+    var fresh = document.createElement('option');
+    fresh.value = '';
+    fresh.textContent = sessions.length === 0 ? 'No active session' : 'No session selected';
+    els.sessionSelect.append(fresh);
+
+    let matched = false;
+    sessions.forEach(function (session) {
+      var option = document.createElement('option');
+      option.value = session.id;
+      var progress =
+        session.taskCount > 0
+          ? ' · ' + session.completedTasks + '/' + session.taskCount
+          : '';
+      option.textContent =
+        (SESSION_STATE_LABELS[session.state] || session.state) + progress + ' — ' + session.requirement;
+      if (session.id === state.activeSessionId) {
+        matched = true;
+        option.selected = true;
+      }
+      els.sessionSelect.append(option);
+    });
+
+    if (!matched) {
+      fresh.selected = true;
+    }
+  }
+
+  function removeSessionCard(sessionId) {
+    els.messages.querySelectorAll('[data-session-id]').forEach(function (node) {
+      if (node.dataset.sessionId === sessionId) {
+        node.remove();
+      }
+    });
+    if (state.activeSessionId === sessionId) {
+      state.activeSessionId = '';
+      state.session = null;
+    }
+    setEmpty(!hasMessages());
+    renderSessionSelect();
   }
 
   function renderTranscript(transcript) {
@@ -797,7 +1150,10 @@
         appendAssistantStatic(message.text || '');
       }
     });
-    setEmpty(items.length === 0);
+    if (state.session) {
+      renderSession(state.session);
+    }
+    setEmpty(!hasMessages());
     autoResize();
     scrollToBottom(true);
   }
@@ -807,8 +1163,10 @@
     state.pendingPrompt = null;
     state.attachments = [];
     state.busy = false;
-    state.tasks = {};
-    state.taskSelections = {};
+    state.session = null;
+    state.activeSessionId = '';
+    state.changeSelections = {};
+    state.repairSelections = {};
     els.messages.querySelectorAll('.message').forEach(function (node) {
       node.remove();
     });
@@ -817,6 +1175,7 @@
     autoResize();
     updateModeUi();
     renderAttachmentBar();
+    renderSessionSelect();
     setBusy(false);
     setEmpty(true);
   }
@@ -853,7 +1212,7 @@
       if (state.attachments.length > 0) {
         showToast('Agent mode retrieves workspace files itself; attachments are not sent.', 'info');
       }
-      post({ type: 'startTask', prompt: prompt });
+      post({ type: 'startSession', requirement: prompt });
       els.prompt.value = '';
       autoResize();
       return;
@@ -881,12 +1240,16 @@
           ? message.validationCommands
           : [];
         state.workspaceName = message.workspaceName || '';
+        state.sessions = Array.isArray(message.sessions) ? message.sessions : [];
+        state.activeSessionId = message.activeSessionId || '';
+        state.session = null;
         if (message.version) {
           document.title = 'QuantsMind AI Coder ' + message.version;
         }
         renderStatus();
         renderWorkspace();
         renderConversationSelect();
+        renderSessionSelect();
         renderAttachmentBar();
         updateModeUi();
         if (!hasMessages()) {
@@ -990,8 +1353,25 @@
         renderTranscript(message.transcript || []);
         break;
       }
-      case 'task': {
-        renderTask(message.task);
+      case 'session': {
+        renderSession(message.session);
+        break;
+      }
+      case 'sessions': {
+        state.sessions = Array.isArray(message.sessions) ? message.sessions : [];
+        if (typeof message.activeSessionId === 'string') {
+          state.activeSessionId = message.activeSessionId;
+        }
+        renderSessionSelect();
+        break;
+      }
+      case 'sessionRemoved': {
+        removeSessionCard(message.id || '');
+        break;
+      }
+      case 'sessionError': {
+        showToast(message.message || 'The agent session failed.', 'warn');
+        appendError({ message: message.message, hint: message.hint });
         break;
       }
       case 'workspaceSummary': {
@@ -1030,50 +1410,91 @@
     }
   }
 
-  function handleTaskAction(button) {
-    var taskId = button.dataset.taskId;
-    var action = button.dataset.taskAction;
+  function handleSessionAction(button) {
+    var sessionId = button.dataset.sessionId;
+    var action = button.dataset.sessionAction;
+    if (!sessionId) {
+      return;
+    }
+    var body = button.closest('.session-body');
 
     switch (action) {
-      case 'approve-selected': {
-        var body = button.closest('.task-body');
-        var ids = body
+      case 'approve-plan':
+        post({ type: 'approvePlan', sessionId: sessionId });
+        break;
+      case 'reject-plan':
+        post({ type: 'rejectPlan', sessionId: sessionId });
+        break;
+      case 'approve-change-selected': {
+        var changeIds = body
           ? Array.prototype.map.call(
-              body.querySelectorAll('input[data-review-check]:checked'),
+              body.querySelectorAll('[data-session-reviews] input[data-change-check]:checked'),
               function (input) {
-                return input.dataset.reviewCheck;
+                return input.dataset.changeCheck;
               },
             )
           : [];
-        if (ids.length === 0) {
+        if (changeIds.length === 0) {
           showToast('Select at least one file to apply.', 'warn');
           return;
         }
-        post({ type: 'approveChanges', taskId: taskId, ids: ids });
+        post({ type: 'approveChangeSet', sessionId: sessionId, ids: changeIds });
         break;
       }
-      case 'reject-changes':
-        post({ type: 'rejectChanges', taskId: taskId });
+      case 'reject-change':
+        post({ type: 'rejectChangeSet', sessionId: sessionId });
+        break;
+      case 'approve-repair-selected': {
+        var repairIds = body
+          ? Array.prototype.map.call(
+              body.querySelectorAll('[data-session-repairs] input[data-repair-check]:checked'),
+              function (input) {
+                return input.dataset.repairCheck;
+              },
+            )
+          : [];
+        if (repairIds.length === 0) {
+          showToast('Select at least one repair change to apply.', 'warn');
+          return;
+        }
+        post({ type: 'approveRepair', sessionId: sessionId, ids: repairIds });
+        break;
+      }
+      case 'reject-repair':
+        post({ type: 'rejectRepair', sessionId: sessionId });
         break;
       case 'run-validation': {
-        var taskBody = button.closest('.task-body');
-        var select = taskBody ? taskBody.querySelector('select[data-validation-command]') : null;
+        var select = body ? body.querySelector('select[data-session-validation]') : null;
         var command = select ? select.value : '';
         if (!command) {
           showToast('Choose an allowlisted validation command first.', 'warn');
           return;
         }
-        post({ type: 'runValidation', taskId: taskId, command: command });
+        post({ type: 'validateSession', sessionId: sessionId, command: command });
         break;
       }
-      case 'repair':
-        post({ type: 'requestRepair', taskId: taskId });
+      case 'plan-repair':
+        post({ type: 'generateRepair', sessionId: sessionId });
+        break;
+      case 'pause':
+        post({ type: 'pauseSession', sessionId: sessionId });
+        break;
+      case 'resume':
+        post({ type: 'resumeSession', sessionId: sessionId });
+        break;
+      case 'restore':
+        post({ type: 'restoreSession', sessionId: sessionId });
+        break;
+      case 'cancel':
+        post({ type: 'cancelSession', sessionId: sessionId });
         break;
       case 'undo':
-        post({ type: 'undoChanges', taskId: taskId });
+        post({ type: 'undoSession', sessionId: sessionId });
         break;
-      case 'cancel-task':
-        post({ type: 'cancelTask', taskId: taskId });
+      case 'delete':
+        if (window.confirm('Delete this agent session and its stored record?')) {
+          post({ type: 'deleteSession', sessionId: sessionId });
+        }
         break;
       default:
         break;
@@ -1134,6 +1555,21 @@
       post({ type: 'switchConversation', id: id });
     }
   });
+  els.sessionSelect.addEventListener('change', function () {
+    var id = els.sessionSelect.value;
+    if (!id) {
+      state.activeSessionId = '';
+      state.session = null;
+      els.messages.querySelectorAll('[data-session-id]').forEach(function (node) {
+        node.remove();
+      });
+      setEmpty(!hasMessages());
+      return;
+    }
+    if (id !== state.activeSessionId) {
+      post({ type: 'focusSession', sessionId: id });
+    }
+  });
   els.mode.addEventListener('change', updateModeUi);
   els.prompt.addEventListener('input', autoResize);
   els.prompt.addEventListener('keydown', function (event) {
@@ -1160,23 +1596,28 @@
   });
 
   els.messages.addEventListener('change', function (event) {
-    const input = event.target.closest('input[data-review-check]');
+    const input = event.target.closest('input[data-change-check], input[data-repair-check]');
     if (!input) {
       return;
     }
-    const article = input.closest('[data-task-id]');
-    const taskId = article ? article.dataset.taskId : '';
-    if (!taskId) {
+    const article = input.closest('[data-session-id]');
+    const sessionId = article ? article.dataset.sessionId : '';
+    if (!sessionId) {
       return;
     }
-    const selection = state.taskSelections[taskId] || (state.taskSelections[taskId] = {});
-    selection[input.dataset.reviewCheck] = input.checked;
+    if (input.hasAttribute('data-repair-check')) {
+      const repairs = state.repairSelections[sessionId] || (state.repairSelections[sessionId] = {});
+      repairs[input.dataset.repairCheck] = input.checked;
+    } else {
+      const changes = state.changeSelections[sessionId] || (state.changeSelections[sessionId] = {});
+      changes[input.dataset.changeCheck] = input.checked;
+    }
   });
 
   document.addEventListener('click', function (event) {
-    const taskButton = event.target.closest('button[data-task-action]');
-    if (taskButton) {
-      handleTaskAction(taskButton);
+    const sessionButton = event.target.closest('button[data-session-action]');
+    if (sessionButton) {
+      handleSessionAction(sessionButton);
       return;
     }
 
@@ -1207,6 +1648,9 @@
         break;
       case 'summarize-workspace':
         post({ type: 'summarizeWorkspace' });
+        break;
+      case 'refresh-sessions':
+        post({ type: 'refreshSessions' });
         break;
       case 'clear-attachments':
         post({ type: 'clearAttachments' });

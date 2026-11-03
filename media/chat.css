@@ -1125,6 +1125,348 @@ pre.diff {
   font-size: 10px;
 }
 
+/* ---------- Agent sessions ---------- */
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 6px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.session-label {
+  color: var(--qm-muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.session-row select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--qm-border));
+  border-radius: 4px;
+  font-size: 10.5px;
+}
+
+.session-card.state-awaiting-plan-approval,
+.session-card.state-awaiting-change-approval,
+.session-card.state-awaiting-repair-approval,
+.session-card.state-validating,
+.session-card.state-diagnosing {
+  --qm-task-accent: var(--qm-warning);
+}
+
+.session-card.state-completed {
+  --qm-task-accent: var(--qm-success);
+}
+
+.session-card.state-failed,
+.session-card.state-rejected {
+  --qm-task-accent: var(--qm-danger);
+}
+
+.session-card.state-cancelled,
+.session-card.state-paused {
+  --qm-task-accent: var(--qm-muted);
+}
+
+.session-requirement {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  background: var(--qm-code);
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.plan-card,
+.approval-card,
+.report-card {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--qm-border);
+  border-radius: 6px;
+  background: var(--qm-surface);
+}
+
+.plan-summary {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plan-approach {
+  margin: 5px 0 0;
+  color: var(--qm-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.plan-risks {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--qm-warning);
+}
+
+.plan-risks ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.plan-risks-label,
+.section-label {
+  display: block;
+  margin-top: 6px;
+  color: var(--qm-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.plan-tasks {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  counter-reset: plan-task;
+}
+
+.plan-task {
+  padding: 6px 7px;
+  border: 1px solid var(--qm-border);
+  border-left: 2px solid var(--qm-border);
+  border-radius: 4px;
+  background: var(--qm-card);
+}
+
+.plan-task.status-running,
+.plan-task.status-applied {
+  border-left-color: var(--qm-accent);
+}
+
+.plan-task.status-completed {
+  border-left-color: var(--qm-success);
+}
+
+.plan-task.status-failed,
+.plan-task.status-validation-failed {
+  border-left-color: var(--qm-danger);
+}
+
+.plan-task.status-skipped,
+.plan-task.status-cancelled {
+  opacity: 0.72;
+}
+
+.plan-task-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.plan-task-title {
+  font-size: 11px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.plan-task-status {
+  flex-shrink: 0;
+  color: var(--qm-muted);
+  font-size: 9.5px;
+}
+
+.plan-task-description,
+.plan-task-meta {
+  margin: 4px 0 0;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.plan-task-meta code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+}
+
+.plan-criteria {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.criterion-kind {
+  opacity: 0.8;
+  font-size: 9.5px;
+}
+
+.approval-card {
+  border-left: 2px solid var(--qm-warning);
+}
+
+.approval-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-kind {
+  color: var(--qm-warning);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.approval-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.approval-detail {
+  margin: 5px 0 0;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.applied-set {
+  margin-top: 9px;
+}
+
+.diagnostic-list {
+  margin-top: 9px;
+}
+
+.diagnostic-list ul {
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diagnostic {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 7px;
+  border: 1px solid var(--qm-border);
+  border-left: 2px solid var(--qm-danger);
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic.severity-warning {
+  border-left-color: var(--qm-warning);
+}
+
+.diagnostic-source {
+  flex-shrink: 0;
+  color: var(--qm-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.diagnostic-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.diagnostic-location {
+  color: var(--qm-muted);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 9.5px;
+}
+
+.report-card {
+  border-left: 2px solid var(--qm-accent);
+}
+
+.report-card.outcome-completed {
+  border-left-color: var(--qm-success);
+}
+
+.report-card.outcome-failed,
+.report-card.outcome-rejected {
+  border-left-color: var(--qm-danger);
+}
+
+.report-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.report-outcome {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.report-card.outcome-completed .report-outcome {
+  color: var(--qm-success);
+}
+
+.report-card.outcome-failed .report-outcome,
+.report-card.outcome-rejected .report-outcome {
+  color: var(--qm-danger);
+}
+
+.report-meta {
+  color: var(--qm-muted);
+  font-size: 9.5px;
+}
+
+.report-section ul {
+  margin: 3px 0 0;
+  padding-left: 16px;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.action-button.subtle {
+  color: var(--qm-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.action-button.subtle:hover {
+  color: var(--vscode-foreground, #ccc);
+  border-color: var(--qm-border);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

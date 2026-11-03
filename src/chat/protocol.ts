@@ -1,4 +1,9 @@
-import type { AgentTaskView } from '../agent/taskRunner';
+import type {
+  AgentSessionView,
+  AgentState,
+  ApprovalKind,
+  CompletionReport,
+} from '../agent/models';
 import type { ProviderStatus } from '../providers/completionService';
 import { isChatMode, type ChatMode } from './prompts';
 
@@ -7,6 +12,19 @@ export interface ConversationSummary {
   readonly title: string;
   readonly updatedAt: string;
   readonly messageCount: number;
+}
+
+export interface SessionSummary {
+  readonly id: string;
+  readonly state: AgentState;
+  readonly requirement: string;
+  readonly updatedAt: string;
+  readonly needsReview: boolean;
+  readonly pausedFrom?: AgentState;
+  readonly taskCount: number;
+  readonly completedTasks: number;
+  readonly pendingApproval?: ApprovalKind;
+  readonly reportOutcome?: CompletionReport['outcome'];
 }
 
 export interface TranscriptMessage {
@@ -42,13 +60,35 @@ export type WebviewToHostMessage =
   | { readonly type: 'openSettings' }
   | { readonly type: 'showLog' }
   | { readonly type: 'refreshStatus' }
-  | { readonly type: 'startTask'; readonly prompt: string }
-  | { readonly type: 'approveChanges'; readonly taskId: string; readonly ids: readonly string[] }
-  | { readonly type: 'rejectChanges'; readonly taskId: string }
-  | { readonly type: 'undoChanges'; readonly taskId: string }
-  | { readonly type: 'runValidation'; readonly taskId: string; readonly command: string }
-  | { readonly type: 'requestRepair'; readonly taskId: string }
-  | { readonly type: 'cancelTask'; readonly taskId: string }
+  | { readonly type: 'startSession'; readonly requirement: string }
+  | { readonly type: 'approvePlan'; readonly sessionId: string }
+  | { readonly type: 'rejectPlan'; readonly sessionId: string }
+  | {
+      readonly type: 'approveChangeSet';
+      readonly sessionId: string;
+      readonly ids: readonly string[];
+    }
+  | { readonly type: 'rejectChangeSet'; readonly sessionId: string }
+  | {
+      readonly type: 'approveRepair';
+      readonly sessionId: string;
+      readonly ids: readonly string[];
+    }
+  | { readonly type: 'rejectRepair'; readonly sessionId: string }
+  | {
+      readonly type: 'validateSession';
+      readonly sessionId: string;
+      readonly command: string;
+    }
+  | { readonly type: 'generateRepair'; readonly sessionId: string }
+  | { readonly type: 'pauseSession'; readonly sessionId: string }
+  | { readonly type: 'resumeSession'; readonly sessionId: string }
+  | { readonly type: 'cancelSession'; readonly sessionId: string }
+  | { readonly type: 'restoreSession'; readonly sessionId: string }
+  | { readonly type: 'deleteSession'; readonly sessionId: string }
+  | { readonly type: 'focusSession'; readonly sessionId: string }
+  | { readonly type: 'undoSession'; readonly sessionId: string }
+  | { readonly type: 'refreshSessions' }
   | { readonly type: 'newConversation' }
   | { readonly type: 'switchConversation'; readonly id: string }
   | { readonly type: 'deleteConversation'; readonly id: string }
@@ -67,6 +107,8 @@ export type HostToWebviewMessage =
       readonly transcript: readonly TranscriptMessage[];
       readonly validationCommands: readonly string[];
       readonly workspaceName?: string;
+      readonly sessions: readonly SessionSummary[];
+      readonly activeSessionId?: string;
     }
   | { readonly type: 'status'; readonly status: ProviderStatus }
   | { readonly type: 'attachments'; readonly attachments: readonly AttachmentSummary[] }
@@ -114,7 +156,19 @@ export type HostToWebviewMessage =
       readonly title: string;
       readonly transcript: readonly TranscriptMessage[];
     }
-  | { readonly type: 'task'; readonly task: AgentTaskView }
+  | {
+      readonly type: 'sessions';
+      readonly sessions: readonly SessionSummary[];
+      readonly activeSessionId?: string;
+    }
+  | { readonly type: 'session'; readonly session: AgentSessionView }
+  | { readonly type: 'sessionRemoved'; readonly id: string }
+  | {
+      readonly type: 'sessionError';
+      readonly sessionId?: string;
+      readonly message: string;
+      readonly hint?: string;
+    }
   | {
       readonly type: 'workspaceSummary';
       readonly text: string;
@@ -172,41 +226,51 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
     case 'openSettings':
     case 'showLog':
     case 'refreshStatus':
+    case 'refreshSessions':
     case 'newConversation':
     case 'summarizeWorkspace':
       return { type: record.type };
-    case 'startTask':
-      if (typeof record.prompt !== 'string') {
+    case 'startSession':
+      if (typeof record.requirement !== 'string') {
         return undefined;
       }
-      return { type: 'startTask', prompt: record.prompt };
-    case 'rejectChanges':
-    case 'cancelTask':
-      if (!isId(record.taskId)) {
+      return { type: 'startSession', requirement: record.requirement };
+    case 'rejectPlan':
+    case 'rejectChangeSet':
+    case 'rejectRepair':
+    case 'generateRepair':
+    case 'pauseSession':
+    case 'resumeSession':
+    case 'cancelSession':
+    case 'restoreSession':
+    case 'deleteSession':
+    case 'focusSession':
+    case 'undoSession':
+      if (!isId(record.sessionId)) {
         return undefined;
       }
-      return { type: record.type, taskId: record.taskId };
-    case 'undoChanges':
-      if (!isId(record.taskId)) {
+      return { type: record.type, sessionId: record.sessionId };
+    case 'approvePlan':
+      if (!isId(record.sessionId)) {
         return undefined;
       }
-      return { type: 'undoChanges', taskId: record.taskId };
-    case 'requestRepair':
-      if (!isId(record.taskId)) {
+      return { type: 'approvePlan', sessionId: record.sessionId };
+    case 'validateSession':
+      if (!isId(record.sessionId) || typeof record.command !== 'string') {
         return undefined;
       }
-      return { type: 'requestRepair', taskId: record.taskId };
-    case 'runValidation':
-      if (!isId(record.taskId) || typeof record.command !== 'string') {
-        return undefined;
-      }
-      return { type: 'runValidation', taskId: record.taskId, command: record.command };
-    case 'approveChanges': {
-      if (!isId(record.taskId) || !Array.isArray(record.ids)) {
+      return {
+        type: 'validateSession',
+        sessionId: record.sessionId,
+        command: record.command,
+      };
+    case 'approveChangeSet':
+    case 'approveRepair': {
+      if (!isId(record.sessionId) || !Array.isArray(record.ids)) {
         return undefined;
       }
       const ids = record.ids.filter(isId).slice(0, 100);
-      return { type: 'approveChanges', taskId: record.taskId, ids };
+      return { type: record.type, sessionId: record.sessionId, ids };
     }
     case 'switchConversation':
     case 'deleteConversation':

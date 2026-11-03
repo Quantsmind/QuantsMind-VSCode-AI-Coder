@@ -74,18 +74,26 @@ export function renderChatHtml(assets: WebviewAssets): string {
       <button type="button" class="text-button" data-action="attach-relevant" title="Attach files relevant to the current prompt">Relevant files</button>
     </div>
 
+    <div class="session-row" id="session-row">
+      <label class="session-label" for="session-select">Agent sessions</label>
+      <select id="session-select" aria-label="Agent sessions">
+        <option value="">No active session</option>
+      </select>
+      <button type="button" class="text-button" data-action="refresh-sessions" title="Refresh the session list from stored sessions">Refresh</button>
+    </div>
+
     <main class="messages" id="messages" aria-live="polite" aria-label="Conversation">
       <div class="empty" id="empty">
         <div class="empty-logo">${LOGO_SVG}</div>
-        <h1>Code, with context.</h1>
-        <p>Ask a question, review a multi-file plan, or run a controlled agent task. You choose exactly what gets attached and every file change needs your approval.</p>
+        <h1>Code, with evidence.</h1>
+        <p>Ask a question or run an agent session that inspects the project, proposes a plan, executes approved tasks, validates with allowlisted commands, diagnoses failures, and reports only the evidence it collected.</p>
         <div class="quick-actions">
           <button type="button" class="quick-button" data-action="explain-selection">Explain selection</button>
           <button type="button" class="quick-button" data-action="attach-active">Attach active file</button>
           <button type="button" class="quick-button" data-action="summarize-workspace">Summarize workspace</button>
           <button type="button" class="quick-button accent" data-action="set-key" id="empty-set-key" hidden>Set API key</button>
         </div>
-        <p class="empty-footnote">Files are never written without per-file approval. Undo restores backups when files are unchanged since apply.</p>
+        <p class="empty-footnote">Plan, change-set and repair approvals are separate. Files are written only after per-file approval, validation commands run without a shell from your exact allowlist, and undo restores backups.</p>
       </div>
     </main>
 
@@ -105,7 +113,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
           <option value="ask">Ask</option>
           <option value="explain">Explain</option>
           <option value="generate">Generate</option>
-          <option value="agent">Agent (plan + apply)</option>
+          <option value="agent">Agent session (plan → execute)</option>
         </select>
         <button type="button" class="text-button subtle" data-action="show-log" title="Open the QuantsMind output log">Log</button>
       </div>

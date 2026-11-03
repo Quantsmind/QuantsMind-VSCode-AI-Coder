@@ -40,9 +40,9 @@ suite('webview HTML', () => {
   test('states the explicit-send and approval-first guarantees', () => {
     const html = render();
     expect(html).to.contain('Nothing is sent until you press Send');
-    expect(html).to.contain('Files are never written without per-file approval');
-    expect(html).to.contain('Undo restores backups');
-    expect(html).to.contain('Agent (plan + apply)');
+    expect(html).to.contain('Files are written only after per-file approval');
+    expect(html).to.contain('undo restores backups');
+    expect(html).to.contain('Agent session (plan → execute)');
   });
 
   test('renders conversation history and workspace controls', () => {

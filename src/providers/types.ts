@@ -51,3 +51,5 @@ export interface AiProvider {
   readonly displayName: string;
   complete(request: CompletionRequest, options?: CompletionOptions): Promise<CompletionResult>;
 }
+
+export type IProvider = AiProvider;

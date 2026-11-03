@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { expect } from 'chai';
 import * as vscode from 'vscode';
+import { createAgentRuntime } from '../../src/agent/runtime';
 import { ChangeService } from '../../src/changes/changeService';
 import { ChangeHistoryStore } from '../../src/changes/history';
 import { ChatViewProvider } from '../../src/chat/chatViewProvider';
@@ -148,6 +149,22 @@ function createHarness(
   const completion = new CompletionService(secrets, settings, logger);
   const contextService = new ContextService(new SettingsService());
   const memento = new MemoryMemento();
+  const workspaceIndex = new WorkspaceIndexService(settings, logger);
+  const changeService = new ChangeService(
+    settings,
+    new ChangeHistoryStore(memento),
+    vscode.Uri.file(join(tmpdir(), 'quantsmind-test-backups')),
+    logger,
+  );
+  const agentRuntime = createAgentRuntime({
+    completion,
+    settings,
+    secrets,
+    logger,
+    workspaceIndex,
+    changeService,
+    sessionStore: memento,
+  });
   const provider = new ChatViewProvider({
     extensionUri: extensionUri(),
     completion,
@@ -155,15 +172,11 @@ function createHarness(
     secrets,
     settings,
     logger,
-    version: '0.2.0',
+    version: '0.3.0',
     conversations: new ConversationStore(memento),
-    workspaceIndex: new WorkspaceIndexService(settings, logger),
-    changeService: new ChangeService(
-      settings,
-      new ChangeHistoryStore(memento),
-      vscode.Uri.file(join(tmpdir(), 'quantsmind-test-backups')),
-      logger,
-    ),
+    workspaceIndex,
+    changeService,
+    agentRuntime,
   });
 
   const webview = new FakeWebview();
@@ -235,7 +248,7 @@ suite('chat webview integration', () => {
       await markReady(webview);
       const init = webview.last('init');
       expect(init).to.not.equal(undefined);
-      expect(init?.version).to.equal('0.2.0');
+      expect(init?.version).to.equal('0.3.0');
       expect(init?.attachments).to.deep.equal([]);
       expect(init?.maxPromptChars).to.equal(20000);
       expect(init?.status.providerType).to.equal('openai-compatible');
@@ -450,13 +463,27 @@ suite('chat webview integration', () => {
     }
   });
 
-  test('plans, approves, writes, and undoes a workspace change end to end', async () => {
+  test('plans, approves, writes, validates state, and undoes a workspace change end to end', async () => {
     const targetName = 'agent-demo-created.txt';
     const targetUri = vscode.Uri.joinPath(
       vscode.workspace.workspaceFolders![0].uri,
       targetName,
     );
-    const plan = JSON.stringify({
+    const developmentPlan = JSON.stringify({
+      summary: 'Create a demonstration file.',
+      approach: 'Add one text file and let the user approve it.',
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Create the demonstration file',
+          description: 'Create the file with deterministic content.',
+          dependsOn: [],
+          suggestedFiles: [targetName],
+          criteria: [{ text: 'The file exists with the expected content', verification: 'review' }],
+        },
+      ],
+    });
+    const changePlan = JSON.stringify({
       summary: 'Create a demonstration file.',
       changes: [
         {
@@ -467,23 +494,39 @@ suite('chat webview integration', () => {
         },
       ],
     });
+    let requestCount = 0;
 
     await withServer(
-      (_incoming, response) =>
+      (_incoming, response) => {
+        requestCount += 1;
+        const content = requestCount === 1 ? developmentPlan : changePlan;
         sendJson(response, 200, {
           model: 'test-model',
-          choices: [{ message: { role: 'assistant', content: plan }, finish_reason: 'stop' }],
-        }),
+          choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        });
+      },
       async (server) => {
         const { provider, webview } = createHarness({ baseUrl: server.baseUrl, stream: false });
         try {
           await markReady(webview);
-          webview.emit({ type: 'startTask', prompt: 'Create a demonstration file.' });
+          webview.emit({ type: 'startSession', requirement: 'Create a demonstration file.' });
 
-          await waitFor(() => webview.last('task')?.task.status === 'awaiting-approval', 15000);
-          const planned = webview.last('task')?.task;
-          expect(planned?.review).to.have.length(1);
-          expect(planned?.review[0].path).to.equal(targetName);
+          await waitFor(
+            () => webview.last('session')?.session.state === 'awaiting-plan-approval',
+            15000,
+          );
+          const planned = webview.last('session')?.session;
+          expect(planned?.plan?.tasks).to.have.length(1);
+          expect(planned?.pendingApproval?.kind).to.equal('plan');
+
+          webview.emit({ type: 'approvePlan', sessionId: planned!.id });
+          await waitFor(
+            () => webview.last('session')?.session.state === 'awaiting-change-approval',
+            15000,
+          );
+          const reviewed = webview.last('session')?.session;
+          expect(reviewed?.pendingApproval?.kind).to.equal('change-set');
+          expect(reviewed?.changeSets[0].plan.changes[0].path).to.equal(targetName);
 
           const beforeApply = await vscode.workspace.fs.stat(targetUri).then(
             () => true,
@@ -492,16 +535,19 @@ suite('chat webview integration', () => {
           expect(beforeApply).to.equal(false);
 
           webview.emit({
-            type: 'approveChanges',
-            taskId: planned!.id,
-            ids: [planned!.review[0].id],
+            type: 'approveChangeSet',
+            sessionId: reviewed!.id,
+            ids: reviewed!.changeSets[0].plan.changes.map((change) => change.id),
           });
-          await waitFor(() => webview.last('task')?.task.status === 'applied', 15000);
+          await waitFor(() => webview.last('session')?.session.state === 'completed', 15000);
+          const completed = webview.last('session')?.session;
+          expect(completed?.tasks[0].status).to.equal('completed');
+          expect(completed?.report?.outcome).to.equal('completed');
 
           const written = Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString('utf8');
           expect(written).to.equal('created by the agent integration test\n');
 
-          webview.emit({ type: 'undoChanges', taskId: planned!.id });
+          webview.emit({ type: 'undoSession', sessionId: completed!.id });
           await waitFor(() => webview.has('undoResult'), 15000);
           expect(webview.last('undoResult')?.restored).to.equal(1);
 

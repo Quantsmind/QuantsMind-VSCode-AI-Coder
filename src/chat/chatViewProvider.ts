@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import type { AgentTaskView, TaskStatus } from '../agent/taskRunner';
-import { AgentTaskRunner } from '../agent/taskRunner';
+import type { AgentRuntime } from '../agent/runtime';
+import type { AgentSessionView } from '../agent/models';
+import { AgentSessionError } from '../agent/orchestrator';
 import type { ChangeService } from '../changes/changeService';
 import type { WorkspaceIndexService } from '../workspace/indexService';
-import { runApprovedCommand } from '../commands/runner';
 import { COMMANDS } from '../commands/ids';
 import { LIMITS } from '../config/defaults';
 import type { SettingsService } from '../config/settings';
@@ -34,6 +34,7 @@ import {
   parseWebviewMessage,
   type AttachmentSummary,
   type HostToWebviewMessage,
+  type SessionSummary,
   type WebviewToHostMessage,
 } from './protocol';
 import { ChatSession } from './session';
@@ -76,6 +77,7 @@ export interface ChatViewDependencies {
   readonly conversations: ConversationStore;
   readonly workspaceIndex: WorkspaceIndexService;
   readonly changeService: ChangeService;
+  readonly agentRuntime: AgentRuntime;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -93,44 +95,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private viewDisposables: vscode.Disposable[] = [];
   private conversation: Conversation | undefined;
   private storedMessages: StoredMessage[] = [];
-  private activeTaskId: string | undefined;
-  private taskSource: vscode.CancellationTokenSource | undefined;
-  private taskTimer: NodeJS.Timeout | undefined;
-  private readonly lastTaskStatus = new Map<string, TaskStatus>();
-  private readonly taskRunner: AgentTaskRunner;
+  private activeSessionId: string | undefined;
+  private sessionSource: vscode.CancellationTokenSource | undefined;
+  private sessionTimer: NodeJS.Timeout | undefined;
+  private sessionsLoaded = false;
+  private readonly sessionSubscription: { dispose(): void };
 
   constructor(private readonly deps: ChatViewDependencies) {
-    this.taskRunner = new AgentTaskRunner({
-      complete: (messages, token) =>
-        this.deps.completion.complete(messages, {
-          token,
-        }),
-      retrieve: async (query, token) => {
-        void token;
-        const secret = await this.deps.secrets.get();
-        return this.deps.workspaceIndex.retrieve(query, secret);
-      },
-      changes: deps.changeService,
-      runCommand: async (command, signal) => {
-        const root = this.workspaceRoot();
-        if (root === undefined) {
-          throw new Error('Open a workspace folder before running validation.');
-        }
-        const commandSettings = this.deps.settings.getCommandSettings();
-        return runApprovedCommand(command, {
-          cwd: root.uri.fsPath,
-          workspaceRoot: root.uri.fsPath,
-          allowlist: commandSettings.allowlist,
-          timeoutMs: commandSettings.timeoutMs,
-          maxOutputChars: commandSettings.maxOutputChars,
-          secret: await this.deps.secrets.get(),
-          signal,
-        });
-      },
-      agentSettings: () => this.deps.settings.getAgentSettings(),
-      logger: this.deps.logger,
-      onChange: (task) => this.onTaskUpdate(task),
-    });
+    this.sessionSubscription = deps.agentRuntime.subscribe((view) => this.onSessionUpdate(view));
   }
 
   private workspaceRoot(): vscode.WorkspaceFolder | undefined {
@@ -241,7 +213,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   async startAgentTaskAndReveal(prompt: string): Promise<void> {
     await this.reveal();
-    await this.startTask(prompt);
+    await this.startSession(prompt);
   }
 
   async attachActiveFileAndReveal(): Promise<void> {
@@ -260,32 +232,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.notifyWarning('Wait for the current request to finish before starting a new chat.');
       return;
     }
-    if (this.activeTaskId !== undefined && this.lastTaskStatus.get(this.activeTaskId) === 'awaiting-approval') {
-      this.notifyWarning('Approve or reject the pending change review first.');
-      return;
-    }
     this.requestSeq += 1;
     this.cancelActive();
-    this.cancelTask();
     this.busy = false;
     this.session.clear();
     this.storedMessages = [];
     this.attachments = [];
     this.pendingDraft = undefined;
-    this.activeTaskId = undefined;
+    this.activeSessionId = undefined;
     const conversation = this.deps.conversations.create();
     this.conversation = await this.deps.conversations.save(conversation);
     this.post({ type: 'busy', busy: false });
     this.post({ type: 'attachments', attachments: [] });
     this.post({ type: 'clear' });
     this.postConversations();
+    this.postSessions();
     void this.refreshStatus();
   }
 
   dispose(): void {
     this.requestSeq += 1;
     this.cancelActive();
-    this.cancelTask();
+    this.cancelSessionStep();
+    this.sessionSubscription.dispose();
     this.disposeViewListeners();
     this.session.clear();
     this.attachments = [];
@@ -306,18 +275,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     source?.dispose();
   }
 
-  private cancelTask(): void {
-    if (this.taskTimer !== undefined) {
-      clearTimeout(this.taskTimer);
-      this.taskTimer = undefined;
+  private cancelSessionStep(): void {
+    if (this.sessionTimer !== undefined) {
+      clearTimeout(this.sessionTimer);
+      this.sessionTimer = undefined;
     }
-    const source = this.taskSource;
-    this.taskSource = undefined;
+    const source = this.sessionSource;
+    this.sessionSource = undefined;
     source?.cancel();
     source?.dispose();
-    if (this.activeTaskId !== undefined) {
-      this.taskRunner.cancel(this.activeTaskId);
-    }
   }
 
   private async ensureConversation(): Promise<void> {
@@ -398,10 +364,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.notifyWarning('Wait for the current request to finish before switching conversations.');
       return;
     }
-    if (this.activeTaskId !== undefined && this.lastTaskStatus.get(this.activeTaskId) === 'awaiting-approval') {
-      this.notifyWarning('Approve or reject the pending change review first.');
-      return;
-    }
     const conversation = this.deps.conversations.get(id);
     if (conversation === undefined) {
       this.notifyWarning('That conversation no longer exists.');
@@ -409,7 +371,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.cancelActive();
-    this.cancelTask();
     this.requestSeq += 1;
     this.busy = false;
     this.conversation = conversation;
@@ -419,7 +380,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     this.attachments = [];
     this.pendingDraft = undefined;
-    this.activeTaskId = undefined;
     await this.deps.conversations.setActive(id);
     this.post({ type: 'attachments', attachments: [] });
     this.post({ type: 'busy', busy: false });
@@ -460,8 +420,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.storedMessages = [];
     this.session.clear();
     this.attachments = [];
-    this.cancelTask();
-    this.activeTaskId = undefined;
   }
 
   private activeConversation(): Conversation | undefined {
@@ -533,61 +491,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private onTaskUpdate(task: AgentTaskView): void {
-    if (this.activeTaskId === undefined || this.activeTaskId !== task.id) {
-      this.activeTaskId = task.id;
-    }
-    const previous = this.lastTaskStatus.get(task.id);
-    this.lastTaskStatus.set(task.id, task.status);
+  private summarizeSession(view: AgentSessionView): SessionSummary {
+    const completedTasks = view.tasks.filter((task) => task.status === 'completed').length;
+    return {
+      id: view.id,
+      state: view.state,
+      requirement: view.requirement.text,
+      updatedAt: view.updatedAt,
+      needsReview: view.needsReview,
+      pausedFrom: view.pausedFrom,
+      taskCount: view.tasks.length,
+      completedTasks,
+      pendingApproval: view.pendingApproval?.kind,
+      reportOutcome: view.report?.outcome,
+    };
+  }
 
-    if (this.taskSource !== undefined && this.taskTimer === undefined && task.status === 'running') {
-      const timeoutMs = this.deps.settings.getAgentSettings().timeoutMs;
-      this.taskTimer = setTimeout(() => {
-        this.taskRunner.cancel(task.id);
-        this.taskSource?.cancel();
-        this.post({
-          type: 'notice',
-          level: 'warn',
-          message: `The agent task exceeded the ${timeoutMs.toLocaleString()} ms limit and was stopped.`,
-        });
-      }, timeoutMs);
-    }
+  private postSessions(): void {
+    this.post({
+      type: 'sessions',
+      sessions: this.deps.agentRuntime.controller.list().map((view) => this.summarizeSession(view)),
+      activeSessionId: this.activeSessionId,
+    });
+  }
 
-    this.post({ type: 'task', task });
+  private setActiveSession(view: AgentSessionView): void {
+    this.activeSessionId = view.id;
+    this.post({ type: 'session', session: view });
+    this.postSessions();
+  }
 
-    if (task.status === 'awaiting-approval' && previous !== 'awaiting-approval') {
-      const files =
-        task.review.length > 0
-          ? task.review.map((change) => `- ${change.kind}: ${change.path}`).join('\n')
-          : '(no file changes)';
-      void this.recordAssistant(
-        [
-          `Change plan ready for review: ${task.planSummary ?? 'proposed changes'}`,
-          files,
-          'No files have been modified. Review the diff cards and approve the files you want to apply.',
-        ].join('\n\n'),
-      );
+  /**
+   * Only the session currently displayed in this conversation is streamed to
+   * the webview. Other sessions stay visible through the refreshable list.
+   */
+  private onSessionUpdate(view: AgentSessionView): void {
+    if (this.activeSessionId === undefined || this.activeSessionId === view.id) {
+      this.activeSessionId = view.id;
+      this.post({ type: 'session', session: view });
     }
-
-    if (task.status === 'applied' && previous !== 'applied') {
-      void this.recordAssistant(
-        'Applied the approved changes. Validation has not run yet; use an allowlisted validation command to verify.',
-        false,
-      );
-    }
-
-    if (task.status === 'failed' && previous !== 'failed') {
-      void this.recordAssistant(
-        `The agent task failed: ${task.error ?? 'unknown error'}${task.hint !== undefined ? `\n${task.hint}` : ''}`,
-        false,
-      );
-    }
-
-    if (task.status !== 'running' && this.taskTimer !== undefined) {
-      clearTimeout(this.taskTimer);
-      this.taskTimer = undefined;
-    }
-    this.post({ type: 'busy', busy: task.status === 'running' });
+    this.postSessions();
   }
 
   private notifyWarning(message: string): void {
@@ -652,7 +595,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.handleSend(message.prompt, message.mode);
         break;
       case 'stop':
-        this.cancelActive();
+        if (this.sessionSource !== undefined && this.activeSessionId !== undefined) {
+          this.sessionSource.cancel();
+          await this.cancelSession(this.activeSessionId);
+        } else {
+          this.cancelActive();
+        }
         break;
       case 'newChat':
         this.startNewChat();
@@ -708,69 +656,91 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'refreshStatus':
         await this.refreshStatus();
         break;
-      case 'startTask':
-        await this.startTask(message.prompt);
+      case 'startSession':
+        await this.startSession(message.requirement);
         break;
-      case 'approveChanges':
-        await this.runTaskPhase(message.taskId, (token) =>
-          this.taskRunner.approve(message.taskId, message.ids, token),
+      case 'approvePlan':
+        await this.runSessionStep(
+          message.sessionId,
+          (token) => this.deps.agentRuntime.controller.approvePlan(message.sessionId, token),
         );
         break;
-      case 'rejectChanges':
-        await this.runTaskPhase(message.taskId, (token) =>
-          this.taskRunner.approve(message.taskId, [], token),
+      case 'rejectPlan':
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.rejectPlan(message.sessionId),
         );
         break;
-      case 'cancelTask':
-        if (message.taskId === this.activeTaskId) {
-          this.cancelTask();
-        } else {
-          this.taskRunner.cancel(message.taskId);
-        }
-        break;
-      case 'runValidation':
-        await this.validateTask(message.taskId, message.command);
-        break;
-      case 'requestRepair':
-        await this.runTaskPhase(message.taskId, (token) =>
-          this.taskRunner.repair(message.taskId, token),
+      case 'approveChangeSet':
+        await this.runSessionStep(
+          message.sessionId,
+          (token) =>
+            this.deps.agentRuntime.controller.approveChanges(
+              message.sessionId,
+              message.ids,
+              token,
+            ),
         );
         break;
-      case 'undoChanges': {
-        try {
-          const result = await this.taskRunner.undo(message.taskId);
-          if (result === undefined) {
-            this.post({
-              type: 'notice',
-              level: 'warn',
-              message: 'There is no applied change set to undo.',
-            });
-          } else {
-            const { outcome } = result;
-            this.post({
-              type: 'undoResult',
-              taskId: message.taskId,
-              restored: outcome.restored,
-              conflicts: outcome.conflicts,
-              messages: outcome.results
-                .filter((entry) => entry.message !== undefined)
-                .map((entry) => entry.message as string),
-            });
-            this.post({
-              type: 'notice',
-              level: outcome.conflicts === 0 ? 'info' : 'warn',
-              message:
-                outcome.conflicts === 0
-                  ? 'The applied changes were restored from backups.'
-                  : 'Some files could not be restored because they changed after apply.',
-            });
-          }
-        } catch (error) {
-          this.deps.logger.error('undo failed', error);
-          this.post({ type: 'notice', level: 'error', message: 'Undo failed. See the QuantsMind log.' });
-        }
+      case 'rejectChangeSet':
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.rejectChanges(message.sessionId),
+        );
         break;
-      }
+      case 'approveRepair':
+        await this.runSessionStep(
+          message.sessionId,
+          (token) =>
+            this.deps.agentRuntime.controller.approveRepair(
+              message.sessionId,
+              message.ids,
+              token,
+            ),
+        );
+        break;
+      case 'rejectRepair':
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.rejectRepair(message.sessionId),
+        );
+        break;
+      case 'generateRepair':
+        await this.runSessionStep(
+          message.sessionId,
+          (token) =>
+            this.deps.agentRuntime.controller.generateRepair(message.sessionId, token),
+        );
+        break;
+      case 'validateSession':
+        await this.validateSession(message.sessionId, message.command);
+        break;
+      case 'pauseSession':
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.pause(message.sessionId),
+        );
+        break;
+      case 'resumeSession':
+        await this.runSessionStep(
+          message.sessionId,
+          (token) => this.deps.agentRuntime.controller.resume(message.sessionId, token),
+        );
+        break;
+      case 'cancelSession':
+        await this.cancelSession(message.sessionId);
+        break;
+      case 'restoreSession':
+        await this.restoreSession(message.sessionId);
+        break;
+      case 'deleteSession':
+        await this.deleteSession(message.sessionId);
+        break;
+      case 'focusSession':
+        this.focusSession(message.sessionId);
+        break;
+      case 'undoSession':
+        await this.undoSession(message.sessionId);
+        break;
+      case 'refreshSessions':
+        this.postSessions();
+        break;
       case 'newConversation':
         await this.startNewChat();
         break;
@@ -794,6 +764,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async sendInit(): Promise<void> {
     try {
       await this.ensureConversation();
+      if (!this.sessionsLoaded) {
+        try {
+          await this.deps.agentRuntime.controller.loadStoredSessions();
+          this.sessionsLoaded = true;
+        } catch (error) {
+          this.deps.logger.error('failed to load stored agent sessions', error);
+        }
+      }
       const status = await this.deps.completion.getStatus();
       this.post({
         type: 'init',
@@ -806,7 +784,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         transcript: this.transcript(),
         validationCommands: this.deps.settings.getCommandSettings().allowlist,
         workspaceName: this.workspaceRoot()?.name,
+        sessions: this.deps.agentRuntime.controller
+          .list()
+          .map((view) => this.summarizeSession(view)),
+        activeSessionId: this.activeSessionId,
       });
+      if (this.activeSessionId !== undefined) {
+        const view = this.deps.agentRuntime.controller.view(this.activeSessionId);
+        if (view !== undefined) {
+          this.post({ type: 'session', session: view });
+        }
+      }
     } catch (error) {
       this.deps.logger.error('failed to build initial chat state', error);
       this.post({
@@ -1012,38 +1000,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return status;
   }
 
-  private postTaskError(error: unknown): void {
-    const providerError = isProviderError(error) ? error : normalizeThrownError(error);
-    if (providerError.code === 'cancelled') {
-      return;
-    }
-    this.post({
-      type: 'error',
-      message: providerError.message,
-      hint: errorHint(providerError.code),
-      code: providerError.code,
-    });
-  }
-
-  private async startTask(rawPrompt: string): Promise<void> {
-    if (this.busy) {
+  private async startSession(rawPrompt: string): Promise<void> {
+    if (this.busy || this.sessionSource !== undefined) {
       this.post({ type: 'notice', level: 'warn', message: 'A request is already running.' });
       return;
     }
-    const prompt = rawPrompt.trim();
-    if (prompt.length === 0) {
+    const requirement = rawPrompt.trim();
+    if (requirement.length === 0) {
       this.post({
         type: 'notice',
         level: 'warn',
-        message: 'Describe the change you want before starting an agent task.',
+        message: 'Describe the requirement before starting an agent session.',
       });
       return;
     }
-    if (prompt.length > LIMITS.maxPromptChars) {
+    if (requirement.length > LIMITS.maxPromptChars) {
       this.post({
         type: 'notice',
         level: 'warn',
-        message: `The prompt exceeds the ${LIMITS.maxPromptChars.toLocaleString()} character limit.`,
+        message: `The requirement exceeds the ${LIMITS.maxPromptChars.toLocaleString()} character limit.`,
       });
       return;
     }
@@ -1051,22 +1026,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({
         type: 'error',
         message: 'Open a workspace folder before using agent mode.',
-        hint: 'Agent mode needs a workspace to index and to apply approved changes.',
+        hint: 'Agent mode needs a workspace to inspect, retrieve context from, and apply approved changes to.',
         code: 'configuration',
-      });
-      return;
-    }
-    const activeStatus =
-      this.activeTaskId !== undefined ? this.lastTaskStatus.get(this.activeTaskId) : undefined;
-    if (
-      activeStatus === 'running' ||
-      activeStatus === 'awaiting-approval' ||
-      activeStatus === 'validation-failed'
-    ) {
-      this.post({
-        type: 'notice',
-        level: 'warn',
-        message: 'Finish the current change review or validation before starting another task.',
       });
       return;
     }
@@ -1076,142 +1037,296 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.cancelTask();
-    this.activeTaskId = undefined;
     this.attachments = [];
     this.post({ type: 'attachments', attachments: [] });
     await this.ensureConversation();
-    await this.recordUser(prompt, []);
-    this.session.addUser(prompt);
-    this.post({ type: 'userMessage', text: prompt, attachments: [] });
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    await this.recordUser(requirement, []);
+    this.session.addUser(requirement);
+    this.post({ type: 'userMessage', text: requirement, attachments: [] });
+
+    await this.runSessionStep(undefined, (token) =>
+      this.deps.agentRuntime.controller.start(requirement, token),
+    );
+  }
+
+  private async runSessionStep(
+    sessionId: string | undefined,
+    action: (token: vscode.CancellationToken) => Promise<AgentSessionView>,
+  ): Promise<void> {
+    if (this.sessionSource !== undefined) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'The previous agent step is still running.',
+      });
+      return;
+    }
+
+    const source = new vscode.CancellationTokenSource();
+    this.sessionSource = source;
     this.busy = true;
     this.post({ type: 'busy', busy: true });
 
-    const source = new vscode.CancellationTokenSource();
-    this.taskSource = source;
-    try {
-      const task = await this.taskRunner.start(prompt, source.token);
-      if (task.status === 'failed') {
-        this.post({
-          type: 'error',
-          message: task.error ?? 'The agent task failed.',
-          hint: task.hint,
-          code: 'agent',
-        });
-      }
-    } catch (error) {
-      this.postTaskError(error);
-    } finally {
-      this.busy = false;
-      this.post({ type: 'busy', busy: false });
-      if (this.taskSource === source) {
-        this.taskSource = undefined;
-      }
-      source.dispose();
-      if (this.taskTimer !== undefined) {
-        clearTimeout(this.taskTimer);
-        this.taskTimer = undefined;
-      }
-    }
-  }
-
-  private async runTaskPhase(
-    taskId: string,
-    action: (token: vscode.CancellationToken) => Promise<AgentTaskView>,
-  ): Promise<void> {
-    if (taskId !== this.activeTaskId) {
-      this.post({
-        type: 'notice',
-        level: 'warn',
-        message: 'That task is no longer active in this conversation.',
-      });
-      return;
-    }
-    if (this.taskSource !== undefined) {
-      this.post({
-        type: 'notice',
-        level: 'warn',
-        message: 'The previous task step is still running.',
-      });
-      return;
-    }
-
-    const source = new vscode.CancellationTokenSource();
-    this.taskSource = source;
     const timeoutMs = this.deps.settings.getAgentSettings().timeoutMs;
-    this.taskTimer = setTimeout(() => {
-      this.taskRunner.cancel(taskId);
+    this.sessionTimer = setTimeout(() => {
       source.cancel();
+      if (sessionId !== undefined) {
+        void this.deps.agentRuntime.controller
+          .cancel(sessionId)
+          .then((view) => this.setActiveSession(view))
+          .catch((error: unknown) => {
+            this.deps.logger.warn(`session cancellation after timeout failed: ${String(error)}`);
+          });
+      }
       this.post({
         type: 'notice',
         level: 'warn',
-        message: `The agent task exceeded the ${timeoutMs.toLocaleString()} ms limit and was stopped.`,
+        message: `The agent step exceeded the ${timeoutMs.toLocaleString()} ms limit and was stopped.`,
       });
     }, timeoutMs);
 
     try {
-      const task = await action(source.token);
-      if (task.status === 'failed') {
+      const view = await action(source.token);
+      this.setActiveSession(view);
+      if (view.state === 'failed' && view.error !== undefined) {
         this.post({
-          type: 'error',
-          message: task.error ?? 'The agent task failed.',
-          hint: task.hint,
-          code: 'agent',
+          type: 'sessionError',
+          sessionId: view.id,
+          message: view.error,
+          hint: 'Review the session timeline and evidence, then adjust the configuration or requirement.',
         });
       }
     } catch (error) {
-      this.postTaskError(error);
+      this.postSessionError(error, sessionId);
     } finally {
-      if (this.taskTimer !== undefined) {
-        clearTimeout(this.taskTimer);
-        this.taskTimer = undefined;
+      if (this.sessionTimer !== undefined) {
+        clearTimeout(this.sessionTimer);
+        this.sessionTimer = undefined;
       }
-      if (this.taskSource === source) {
-        this.taskSource = undefined;
+      if (this.sessionSource === source) {
+        this.sessionSource = undefined;
       }
       source.dispose();
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
     }
   }
 
-  private async validateTask(taskId: string, command: string): Promise<void> {
-    if (taskId !== this.activeTaskId) {
+  private async runSessionAction(
+    _sessionId: string,
+    action: () => Promise<AgentSessionView>,
+  ): Promise<void> {
+    if (this.sessionSource !== undefined) {
       this.post({
         type: 'notice',
         level: 'warn',
-        message: 'That task is no longer active in this conversation.',
+        message: 'The previous agent step is still running.',
+      });
+      return;
+    }
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    try {
+      this.setActiveSession(await action());
+    } catch (error) {
+      this.postSessionError(error, _sessionId);
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
+    }
+  }
+
+  private async cancelSession(sessionId: string): Promise<void> {
+    if (sessionId.length === 0) {
+      return;
+    }
+    try {
+      this.sessionSource?.cancel();
+      this.setActiveSession(await this.deps.agentRuntime.controller.cancel(sessionId));
+    } catch (error) {
+      this.postSessionError(error, sessionId);
+    }
+  }
+
+  private async restoreSession(sessionId: string): Promise<void> {
+    if (this.sessionSource !== undefined) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'Wait for the running agent step before restoring a session.',
+      });
+      return;
+    }
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    try {
+      const view = await this.deps.agentRuntime.controller.restore(sessionId);
+      if (view === undefined) {
+        this.post({
+          type: 'sessionError',
+          sessionId,
+          message: 'The stored session could not be restored in this workspace.',
+        });
+        return;
+      }
+      this.setActiveSession(view);
+      if (view.needsReview) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message:
+            view.error ??
+            'The session state needs review before it can continue. Applied files are revalidated before resume.',
+        });
+      }
+    } catch (error) {
+      this.postSessionError(error, sessionId);
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
+    }
+  }
+
+  private async deleteSession(sessionId: string): Promise<void> {
+    try {
+      await this.deps.agentRuntime.controller.remove(sessionId);
+      if (this.activeSessionId === sessionId) {
+        this.activeSessionId = undefined;
+        this.post({ type: 'sessionRemoved', id: sessionId });
+      }
+      this.postSessions();
+    } catch (error) {
+      this.postSessionError(error, sessionId);
+    }
+  }
+
+  private focusSession(sessionId: string): void {
+    const view = this.deps.agentRuntime.controller.view(sessionId);
+    if (view === undefined) {
+      this.post({
+        type: 'sessionError',
+        sessionId,
+        message: 'That session is not loaded. Restore it from storage first.',
+      });
+      return;
+    }
+    this.setActiveSession(view);
+  }
+
+  private async undoSession(sessionId: string): Promise<void> {
+    const view = this.deps.agentRuntime.controller.view(sessionId);
+    const execution = view?.executions
+      .filter((entry) => entry.historyTaskId !== undefined)
+      .slice(-1)[0];
+    if (execution?.historyTaskId === undefined) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'This session has no applied change set with backups to restore.',
+      });
+      return;
+    }
+    try {
+      const outcome = await this.deps.changeService.undo(execution.historyTaskId);
+      if (outcome === undefined) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message: 'The change history has no backups for this session.',
+        });
+        return;
+      }
+      this.post({
+        type: 'undoResult',
+        taskId: execution.historyTaskId,
+        restored: outcome.restored,
+        conflicts: outcome.conflicts,
+        messages: outcome.results
+          .filter((entry) => entry.message !== undefined)
+          .map((entry) => entry.message as string),
+      });
+      this.post({
+        type: 'notice',
+        level: outcome.conflicts === 0 ? 'info' : 'warn',
+        message:
+          outcome.conflicts === 0
+            ? 'The applied files were restored from backups. The session report keeps its original evidence.'
+            : 'Some files could not be restored because they changed after apply.',
+      });
+    } catch (error) {
+      this.deps.logger.error('session undo failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Undo failed. See the QuantsMind log.',
+      });
+    }
+  }
+
+  private async validateSession(sessionId: string, command: string): Promise<void> {
+    if (this.sessionSource !== undefined) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'The previous agent step is still running.',
       });
       return;
     }
     const controller = new AbortController();
     const timeoutMs = this.deps.settings.getCommandSettings().timeoutMs;
     const timer = setTimeout(() => controller.abort(), timeoutMs + 5_000);
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
     try {
-      const task = await this.taskRunner.validate(taskId, command, controller.signal);
-      if (task.validation !== undefined) {
+      const view = await this.deps.agentRuntime.controller.validate(
+        sessionId,
+        command,
+        controller.signal,
+      );
+      this.setActiveSession(view);
+      const run = view.validationRuns[view.validationRuns.length - 1];
+      if (run !== undefined) {
         this.post({
           type: 'commandOutput',
-          command: task.validation.command,
+          command: run.evidence.command,
           cwd: this.workspaceRoot()?.uri.fsPath ?? '.',
-          output: task.validation.output,
-          exitCode: task.validation.exitCode,
-          timedOut: task.validation.timedOut,
-          cancelled: task.validation.cancelled,
+          output: run.evidence.output,
+          exitCode: run.evidence.exitCode,
+          timedOut: run.evidence.timedOut,
+          cancelled: run.evidence.cancelled,
         });
       }
     } catch (error) {
-      this.post({
-        type: 'notice',
-        level: 'error',
-        message: error instanceof Error ? error.message : 'Validation could not run.',
-      });
+      this.postSessionError(error, sessionId);
     } finally {
       clearTimeout(timer);
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
     }
+  }
+
+  private postSessionError(error: unknown, sessionId?: string): void {
+    if (error instanceof AgentSessionError) {
+      this.post({ type: 'sessionError', sessionId, message: error.message });
+      return;
+    }
+    const providerError = isProviderError(error) ? error : normalizeThrownError(error);
+    if (providerError.code === 'cancelled') {
+      return;
+    }
+    this.post({
+      type: 'sessionError',
+      sessionId,
+      message: providerError.message,
+      hint: errorHint(providerError.code),
+    });
   }
 
   private async handleSend(rawPrompt: string, mode: ChatMode): Promise<void> {
     if (isAgentMode(mode)) {
-      await this.startTask(rawPrompt);
+      await this.startSession(rawPrompt);
       return;
     }
     if (this.busy) {

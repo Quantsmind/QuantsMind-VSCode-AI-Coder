@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { QuantsMindApi } from './api';
+import { createAgentRuntime } from './agent/runtime';
 import { ChatViewProvider } from './chat/chatViewProvider';
 import { ConversationStore } from './chat/persistence';
 import { ChangeHistoryStore } from './changes/history';
@@ -23,7 +24,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.2.0';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.0';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -42,6 +43,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     vscode.Uri.joinPath(context.globalStorageUri, 'backups'),
     logger,
   );
+  const agentRuntime = createAgentRuntime({
+    completion,
+    settings,
+    secrets,
+    logger,
+    workspaceIndex,
+    changeService,
+    sessionStore: context.globalState,
+  });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
     completion,
@@ -53,6 +63,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     conversations,
     workspaceIndex,
     changeService,
+    agentRuntime,
   });
 
   context.subscriptions.push(output);
