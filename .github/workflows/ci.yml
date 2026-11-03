@@ -14,6 +14,7 @@ jobs:
   quality:
     name: Lint and unit tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -41,9 +42,47 @@ jobs:
         run: npm run test:unit
 
   extension:
-    name: Extension-host, packaged and VSIX verification
+    name: Extension host (${{ matrix.os }}, Node 22)
     needs: quality
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Extension-host tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:integration
+
+      - name: Extension-host tests (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:integration
+
+  release:
+    name: Full verification and VSIX artifact
+    needs: extension
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -60,7 +99,7 @@ jobs:
       - name: Install virtual display
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: Verify lint, tests, VSIX and clean install
+      - name: Verify lint, dependencies, tests, VSIX and clean install
         run: xvfb-run -a npm run verify
 
       - name: Upload VSIX artifact
