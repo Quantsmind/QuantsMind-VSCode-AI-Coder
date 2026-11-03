@@ -4,8 +4,8 @@
 
 | Layer | Runner | Location | What it proves |
 | --- | --- | --- | --- |
-| Unit | Mocha TDD in plain Node | `test/unit` | Pure logic, provider HTTP behavior, security filters, change model and diffs, command validation, persistence, agent stages |
-| Extension host | `@vscode/test-cli` | `test/integration` | Activation, commands, credentials, VS Code context access, workspace index, full chat and plan/apply/undo flows |
+| Unit | Mocha TDD in plain Node | `test/unit` | Pure logic, provider HTTP behavior, security filters, change model and diffs, command policy and validation, persistence, agent state machine, planning, scheduling, sessions, and orchestration |
+| Extension host | `@vscode/test-cli` | `test/integration` | Activation, commands, credentials, VS Code context access, workspace index, chat, and a full session plan/approve/apply/undo flow |
 | Packaged | `@vscode/test-cli` with a VSIX | `test/packaged` | The installed archive activates and exposes commands |
 | Install | VS Code CLI | `scripts/verify-install.mjs` | A clean extensions directory accepts the VSIX |
 | Dependencies | Node script over the lockfile | `scripts/verify-dependencies.mjs` | Shipped minimatch is patched; older copies stay development-only |
@@ -153,16 +153,37 @@ tests, and clean-install verification.
 - `test/unit/changeHistory.test.ts`: store caps, malformed entries, undo from
   backup, conflict handling, skipped entries, and a real apply round-trip.
 
-### Agent workflow
+### Agent workflow and sessions
 
-- `test/unit/agentTaskRunner.test.ts`: retrieve/plan/review/approval stages,
-  empty plans, unparseable plans, preparation failures, cancellation,
-  provider-call limits, approved subsets, rejections, foreign change IDs,
-  validation success and failure, repair limits, command launch errors, undo
-  outcomes, and stage skipping.
+- `test/unit/agentStateMachine.test.ts`: allowed transitions, terminal-state
+  rejection, pause/resume rules, illegal transitions, and stage derivation from
+  recorded state.
+- `test/unit/agentPlanning.test.ts`: development-plan parsing, fenced and
+  prose-wrapped JSON, id and dependency validation, cycle rejection, unsafe
+  path dropping, command allowlist filtering, task and criteria limits, and
+  prompt construction.
+- `test/unit/agentScheduler.test.ts`: graph validation, duplicate ids, unknown
+  dependencies, cycle detection, blocked refresh, runnable ordering, and every
+  schedule reason.
+- `test/unit/agentOrchestrator.test.ts`: the full session lifecycle — plan
+  approval and rejection, task execution, change approval subsets, apply and
+  validation, diagnostics, repair approval and rejection, cancellation, pause
+  and resume, restore, restart, limits, and completion reports.
+- `test/unit/sessionRepository.test.ts`: schema validation, malformed and
+  corrupt snapshots, legacy migration, new-schema rejection, caps and
+  compaction, and field sanitization.
+- `test/unit/projectIntelligence.test.ts`: config detection, package manager and
+  script facts, modules and entry points, unparseable package manifests,
+  inspection reads, cancellation, and retrieval delegation.
+- `test/unit/agentTaskRunner.test.ts`: the legacy v0.2.0 single-task runner;
+  retained to prove its behavior has not regressed, though it is not wired into
+  the extension.
 
 ### Command execution
 
+- `test/unit/commandPolicy.test.ts`: validation, read-only, destructive, and
+  unknown classification; destructive commands refused even when allowlisted;
+  and approval always required.
 - `test/unit/commandRunner.test.ts`: tokenization, allowlist matching, rejection
   of metacharacters, control characters, and path-qualified executables,
   workspace containment, sanitized environment, output caps, redaction,
@@ -176,10 +197,10 @@ tests, and clean-install verification.
 
 ### End-to-end approval flow
 
-- `test/integration/chat.test.ts`: plans a create, waits for
-  `awaiting-approval`, verifies the file does not exist yet, approves it,
-  verifies the exact content, undoes the change, and verifies the file is
-  removed.
+- `test/integration/chat.test.ts`: starts an agent session, plans a create,
+  waits for plan and change approval, verifies the file does not exist before
+  approval, approves the file, verifies the exact content, undoes the change,
+  and verifies the file is removed.
 
 ## Mock provider server
 

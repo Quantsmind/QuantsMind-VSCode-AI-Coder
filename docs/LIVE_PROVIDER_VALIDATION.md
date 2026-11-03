@@ -24,7 +24,7 @@ afterward.
    ```bash
    npm ci
    npm run verify
-   code --install-extension quantsmind-vscode-ai-coder-0.2.0.vsix --force
+   code --install-extension quantsmind-vscode-ai-coder-0.3.0.vsix --force
    ```
 
    Record the VSIX size and SHA-256, the VS Code version, and the operating
@@ -72,30 +72,44 @@ afterward.
     `git status --porcelain` before and after a chat session. Nothing must change
     during chat: no files are created, edited, or deleted by the chat path.
 
-11. Verify the v0.2.0 approval workflow on a disposable file:
-    - Run **QuantsMind: Start Agent Task** and ask for a small new file.
-    - Confirm the task reaches `awaiting-approval` and `git status` is still
+11. Verify the v0.3.0 plan-first workflow on a disposable file:
+    - Run **QuantsMind: Start Agent Session** and ask for a small new file.
+    - Confirm the session reaches plan approval and `git status` is still
       clean.
+    - Approve the plan and confirm the task proceeds to per-file change review.
+    - Confirm `git status` is still clean before you approve any file.
     - Approve the file and confirm it is written.
     - Run **Undo applied changes** and confirm the file is removed and the
       workspace returns to its previous state.
     - Confirm **Show Change History** lists the change set.
 
-12. Verify the v0.2.0 workspace summary and retrieval:
-    - Run **QuantsMind: Summarize Workspace** and confirm the file count and
-      exclusions are plausible.
+12. Verify the v0.3.0 workspace summary and retrieval:
+    - Run **QuantsMind: Summarize Workspace** and confirm the file count,
+      detected scripts, and exclusions are plausible.
     - Run **QuantsMind: Attach Relevant Workspace Files** and confirm attachments
       are shown for review before any request.
     - Confirm `.env` and credential files are never listed or attached.
 
-13. Verify validation commands:
+13. Verify validation and repair:
     - Approve a change that intentionally fails an allowlisted test command, or
       use a scratch project.
     - Confirm the command is displayed verbatim, runs only after you trigger it,
       and reports the exit code and bounded output.
-    - Confirm a failing validation does not report success and offers a repair.
+    - Confirm a failing validation transitions to diagnosing, not completed, and
+      offers a repair.
+    - Approve a repair proposal only on a disposable file, then confirm that
+      validation must be run again and the previous result is not reused.
 
-14. Verify cleanup. Run **QuantsMind: Clear API Key**, confirm the warning, and
+14. Verify session lifecycle:
+    - Pause a session in a resumable state and confirm the stage list shows it
+      paused.
+    - Reload the window, restore the session, and confirm the extension reports
+      `needsReview` when it cannot verify applied files.
+    - Confirm a session from another workspace root is not restored.
+    - Cancel a running provider request and confirm pending work is skipped.
+    - Delete the session and confirm it is gone after reload.
+
+15. Verify cleanup. Run **QuantsMind: Clear API Key**, confirm the warning, and
     verify the next send reports that a key is required. Revoke the disposable
     key at the provider. Remove the scratch workspace if it is no longer needed.
 
@@ -120,6 +134,30 @@ record the failing step and stop; do not publish the candidate. A live test is
 never inferred from the automated mock-server suites.
 
 ## Current status
+
+### v0.3.0
+
+The live gate has **not** been run for v0.3.0. No live provider request was made
+while preparing this build, and no credential was requested, used, or exposed.
+
+Evidence that exists for v0.3.0:
+
+- Automated unit, extension-host, and packaged-host suites use a deterministic
+  loopback mock provider and do not demonstrate third-party provider behavior.
+- The plan-first approval, per-file change approval, command policy, diagnostics,
+  repair approval, session restore, and completion-report paths are covered by
+  deterministic tests.
+- The repository contains no credential and no live-provider transcript.
+
+Still open for v0.3.0:
+
+- The full procedure above on the installed 0.3.0 VSIX with a disposable key.
+- A manual UI pass of the control center (this build's automated tests validate
+  the webview HTML and protocol structurally, not visually).
+- Third-party live streaming observation.
+- Apple-host and Linux-host execution unless CI results are available and
+  recorded.
+- Provider-side revocation evidence for any disposable key.
 
 ### v0.2.0
 
@@ -186,6 +224,6 @@ not demonstrate third-party provider behavior.
 Evidence: [V011 live provider validation report](reports/V011_LIVE_PROVIDER_VALIDATION_REPORT.md)
 and [V0.2.0 completion report](reports/V020_COMPLETION_REPORT.md).
 
-The gate remains open until the v0.2.0 live procedure above is executed and the
-Output-channel inspection passes. Do not describe any disposable key as revoked
-at the provider without evidence.
+The gate remains open until the current v0.3.0 live procedure above is executed
+and the Output-channel inspection passes. Do not describe any disposable key as
+revoked at the provider without evidence.

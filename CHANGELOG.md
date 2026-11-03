@@ -5,6 +5,57 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-03
+
+Agentic development and execution preview. This is an alpha build and is **not**
+a general availability release.
+
+### Added
+
+- Agent sessions with an explicit lifecycle: requirement, inspection, planning,
+  plan approval, task scheduling, implementation, change review, apply,
+  validation, diagnosis, repair, revalidation and completion report.
+- A typed development plan with tasks, dependencies, acceptance criteria,
+  suggested files and allowlisted validation commands.
+- A deterministic dependency scheduler with blocked-task handling, duplicate
+  execution guards and bounded provider-call budgets.
+- Project intelligence that derives languages, package manager, scripts,
+  configuration files and modules locally, reading only `package.json` content.
+- Session control-center UI: session list, state and stage timeline, plan card,
+  task cards, per-file diff approvals, repair approvals, validation evidence,
+  diagnostics and completion report.
+- Pause, resume, cancel, restore and delete for persisted sessions.
+- Versioned session storage with schema migration, validation on read, event
+  caps and `needs-review` recovery instead of automatic resume.
+- Applied-file SHA-256 revalidation when a stored session is restored.
+- Session undo that restores the backups of the most recent applied change set.
+- Command risk policy that classifies validation, read-only, destructive and
+  unknown commands; destructive commands are always rejected.
+- Diagnostic extraction from real validation output, with bounded repair
+  proposals that require fresh per-file approval and revalidation.
+- Evidence-based completion reports with `completed`, `failed`, `cancelled` or
+  `rejected` outcomes and unresolved-item lists.
+- Capability descriptors for the provider layer; native tool calling remains
+  disabled and the model receives no executable tool channel.
+- Unit coverage for the state machine, scheduler, planning parser, command
+  policy, session repository, project intelligence, protocol and orchestrator;
+  integration coverage for the full session approval flow.
+
+### Changed
+
+- The chat view now uses a session protocol (`session`, `sessions`,
+  `sessionError`) instead of the v0.2.0 single-task message.
+- **Start Agent Task** is now **Start Agent Session**; the command id remains
+  `quantsmind.startAgentTask` for compatibility.
+- The mode label is **Agent session (plan -> execute)**.
+- Version, packaging, verification scripts and tests target 0.3.0.
+
+### Preserved
+
+- All v0.2.0 provider, context, workspace, change, command and security
+  behavior, including approval-first writes, backups, hash preflight, undo,
+  SecretStorage credentials and webview CSP.
+
 ## [0.2.0] - 2026-11-03
 
 Approval-first workspace assistant preview. This is an alpha build and is **not**
