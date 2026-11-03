@@ -204,16 +204,18 @@ test.
 - Branch: `feature/v0.3.0`
 - Implementation: `d56ece5`
 - Documentation: `4abf813`
-- Reports: this commit (hash recorded after creation)
+- Reports: `b4a9717` (adds these four report files; this section's correction
+  follows it)
 - Baseline: `8c5ebbf`
 - Remote: `origin` (GitHub, private). Push status is reported in the final
   session summary after verification, not assumed here.
 
 ## 17. Working tree and CI status
 
-The working tree is expected to contain only the four report files before their
-commit. CI was **not** executed on GitHub in this session. Local `npm run verify`
-passed with exit code 0. No GitHub Actions success is claimed.
+The working tree was clean after the reports commit. CI was **not** executed on
+GitHub in this session. Local `npm run verify` passed with exit code 0, and the
+final packaged artifact was re-verified after the last README change. No GitHub
+Actions success is claimed.
 
 ## 18. Defects and limitations
 
