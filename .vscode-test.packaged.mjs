@@ -2,7 +2,7 @@ import { defineConfig } from '@vscode/test-cli';
 
 const installation = process.env.VSCODE_INSTALLATION;
 const version = process.env.VSCODE_TEST_VERSION ?? '1.95.0';
-const vsix = process.env.QUANTSMIND_VSIX ?? './quantsmind-vscode-ai-coder-0.1.0.vsix';
+const vsix = process.env.QUANTSMIND_VSIX ?? './quantsmind-vscode-ai-coder-0.2.0.vsix';
 
 export default defineConfig({
   files: 'out/test/packaged/**/*.test.js',

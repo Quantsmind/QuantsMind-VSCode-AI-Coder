@@ -35,11 +35,12 @@ npm run test:unit
 | `npm run test:unit` | Compile and run Mocha TDD unit tests in plain Node |
 | `npm run test:integration` | Compile and run tests in an isolated VS Code 1.95 instance |
 | `npm test` | Unit tests, then integration tests |
+| `npm run verify:deps` | Fail if the shipped minimatch is below the patched release |
 | `npm run package` | Produce the VSIX with `@vscode/vsce` |
 | `npm run verify:vsix` | Inspect the VSIX archive and manifest |
 | `npm run test:packaged` | Install the VSIX into an isolated VS Code and verify activation |
 | `npm run verify:install` | Install the VSIX with the VS Code CLI into a temporary extensions directory |
-| `npm run verify` | Lint, all tests, package, and VSIX inspection |
+| `npm run verify` | Lint, dependency guard, all tests, package, VSIX inspection, packaged tests, install |
 
 ## Project layout
 
@@ -47,21 +48,25 @@ npm run test:unit
 src/
   extension.ts                 activation, commands, status bar
   api.ts                       narrow exported API
-  chat/                        webview provider, HTML, protocol, prompts, session
-  commands/ids.ts              command identifiers
+  agent/                       staged agent task runner
+  changes/                     change model, diffs, review, apply, undo, history
+  chat/                        webview provider, HTML, protocol, prompts, session, persistence
+  commands/                    command identifiers and approved command runner
   config/                      defaults, resolution, VS Code settings adapter
   context/                     explicit file access and filtering
   providers/                   provider contract, registry, OpenAI-compatible adapter
   security/                    credentials, SecretStorage, redaction, logging
+  workspace/                   local index, analysis, ignore matching
   utils.ts                     small shared helpers
 media/                         webview CSS, script, and icon
-test/unit/                     plain Node tests and mock HTTP server helpers
+test/unit/                     plain Node tests, mock HTTP server, in-memory change fs
 test/integration/              extension-host tests
 test/packaged/                 packaged-VSIX activation test
 test/packaged-extension/       minimal harness extension manifest for packaged tests
 test/fixtures/workspace/       integration workspace with dummy secrets
-scripts/                       clean, VSIX verification, install verification
-docs/                          architecture, development, testing
+test/fixtures/                 deterministic command-output helpers
+scripts/                       clean, dependency guard, VSIX verification, install verification
+docs/                          architecture, guides, and release reports
 ```
 
 ## Running the extension manually
@@ -73,9 +78,12 @@ docs/                          architecture, development, testing
 5. Run **QuantsMind: Set API Key** with a disposable key.
 6. Set `quantsmind.provider.baseUrl` to a provider you control.
 7. Attach a selection or file, ask a question, and press Send.
+8. To exercise the change workflow, run **QuantsMind: Start Agent Task**, review
+   the diffs, and approve a file you are willing to modify. Undo restores it.
+9. To exercise validation, run an allowlisted command from the task panel.
 
-The extension has no automatic activation of a webview request. Sending is
-always manual.
+The extension has no automatic activation of a webview request and no automatic
+file write. Sending and applying are always manual.
 
 ## Integration tests
 
@@ -136,7 +144,7 @@ executable is available, so set `VSCODE_EXECUTABLE` in that case.
 npm run package
 ```
 
-Output: `quantsmind-vscode-ai-coder-0.1.0.vsix`.
+Output: `quantsmind-vscode-ai-coder-0.2.0.vsix`.
 
 `.vscodeignore` excludes source, tests, docs, scripts, CI, source maps, and
 TypeScript declarations. `vsce` includes the compiled `out/src` tree, `media`,
@@ -144,13 +152,17 @@ the manifest, README, LICENSE, and CHANGELOG.
 
 ## Security checks before a change
 
-- `npm audit --omit=dev` must report zero vulnerabilities.
+- `npm run verify:deps` must pass, and `npm audit --omit=dev` should report zero
+  vulnerabilities.
 - No credential value may appear in settings, tests, logs, or the VSIX.
 - New context paths must go through `filters.ts`.
 - New webview messages must go through `protocol.ts`.
 - New network behavior must go through the provider abstraction.
 - New settings that affect credentials must remain application-scoped.
-- No file-write or command-execution API may be added to v0.1.x.
+- New file writes must go through `ChangeFs` and require explicit approval.
+- New commands must require exact allowlist membership, and must not use a shell.
+- Do not add a path that writes files or runs commands without user approval and
+  containment checks.
 
 ## Troubleshooting
 

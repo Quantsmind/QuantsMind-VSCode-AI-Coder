@@ -24,7 +24,7 @@ afterward.
    ```bash
    npm ci
    npm run verify
-   code --install-extension quantsmind-vscode-ai-coder-0.1.0.vsix --force
+   code --install-extension quantsmind-vscode-ai-coder-0.2.0.vsix --force
    ```
 
    Record the VSIX size and SHA-256, the VS Code version, and the operating
@@ -68,11 +68,34 @@ afterward.
    first and last few characters; it must not appear. Do not copy the full key
    anywhere.
 
-10. Verify workspace immutability. In the scratch workspace, run
-    `git status --porcelain` before and after the session. Nothing must change.
-    Also confirm no files were created, edited, or deleted by QuantsMind.
+10. Verify default workspace immutability. In the scratch workspace, run
+    `git status --porcelain` before and after a chat session. Nothing must change
+    during chat: no files are created, edited, or deleted by the chat path.
 
-11. Verify cleanup. Run **QuantsMind: Clear API Key**, confirm the warning, and
+11. Verify the v0.2.0 approval workflow on a disposable file:
+    - Run **QuantsMind: Start Agent Task** and ask for a small new file.
+    - Confirm the task reaches `awaiting-approval` and `git status` is still
+      clean.
+    - Approve the file and confirm it is written.
+    - Run **Undo applied changes** and confirm the file is removed and the
+      workspace returns to its previous state.
+    - Confirm **Show Change History** lists the change set.
+
+12. Verify the v0.2.0 workspace summary and retrieval:
+    - Run **QuantsMind: Summarize Workspace** and confirm the file count and
+      exclusions are plausible.
+    - Run **QuantsMind: Attach Relevant Workspace Files** and confirm attachments
+      are shown for review before any request.
+    - Confirm `.env` and credential files are never listed or attached.
+
+13. Verify validation commands:
+    - Approve a change that intentionally fails an allowlisted test command, or
+      use a scratch project.
+    - Confirm the command is displayed verbatim, runs only after you trigger it,
+      and reports the exit code and bounded output.
+    - Confirm a failing validation does not report success and offers a repair.
+
+14. Verify cleanup. Run **QuantsMind: Clear API Key**, confirm the warning, and
     verify the next send reports that a key is required. Revoke the disposable
     key at the provider. Remove the scratch workspace if it is no longer needed.
 
@@ -98,6 +121,71 @@ never inferred from the automated mock-server suites.
 
 ## Current status
 
-**Pending user execution.** No credential was available during the hardening
-campaign. This gate remains open until a disposable key is used and the
-evidence above is recorded.
+### v0.2.0
+
+The live gate has **not** been re-run for v0.2.0. No live provider request was
+made while preparing this build, and no credential was requested or exposed.
+
+Evidence that exists for v0.2.0:
+
+- The provider-masked key exposure found in the v0.1.1 Output channel is
+  addressed in `src/security/redact.ts` and covered by
+  `test/unit/redact.test.ts` and `test/unit/errors.test.ts`.
+- Automated suites use a loopback mock server and do not demonstrate
+  third-party provider behavior.
+- The v0.2.0 approval, undo, workspace summary, retrieval, and command flows are
+  covered by extension-host tests against a fixture workspace.
+
+Still open for v0.2.0:
+
+- A fresh live session on the installed 0.2.0 VSIX, including an Output-channel
+  inspection after a provider error.
+- Third-party live streaming observation.
+- Ubuntu and macOS CI execution. The jobs are configured but have not been run.
+- Provider-side revocation evidence for any disposable key.
+
+### Historical v0.1.1 observations
+
+The following records the v0.1.1 gate and is preserved unchanged in substance:
+
+**Partially validated on 2026-11-03** with a disposable credential and an
+OpenAI-compatible provider displaying `openai/gpt-4o-mini`.
+
+Passed manually at that time:
+
+- Successful provider response.
+- Model identification.
+- Conversation context recall (`QM-2026`).
+- Text generation (numbers 1 through 30).
+- Cancellation through **Stop**.
+- API-key removal with the `API key removed` confirmation.
+- Missing-key rejection with error code `authentication` and guidance to use
+  **QuantsMind: Set API Key**.
+- Credential-free user settings and unchanged scratch-workspace files, verified
+  post-session.
+
+Open at that time:
+
+- Streaming: incremental delivery verified locally with a controlled loopback
+  SSE test (deltas at 326 ms and 1,514 ms; completion at 1,822 ms). A
+  third-party live streaming observation remained unrecorded.
+- Output-channel credential scan: **failed**. The persisted Output log from the
+  2026-11-03 session contained a provider-masked key fragment in a 401 provider
+  message. No full key was present, and no fragment is reproduced here. This is
+  the defect remediated in v0.2.0.
+- Ubuntu and macOS CI: configured, not executed. Windows local verification
+  passed separately (2026-11-03, exit code 0) and is not evidence for the Ubuntu
+  or macOS jobs.
+- Provider-side revocation of the disposable key: unconfirmed. Extension-side
+  removal was confirmed.
+
+This status combines a manual live gate, one controlled local streaming check,
+and separate automated Windows results. The local check and automated results do
+not demonstrate third-party provider behavior.
+
+Evidence: [V011 live provider validation report](reports/V011_LIVE_PROVIDER_VALIDATION_REPORT.md)
+and [V0.2.0 completion report](reports/V020_COMPLETION_REPORT.md).
+
+The gate remains open until the v0.2.0 live procedure above is executed and the
+Output-channel inspection passes. Do not describe any disposable key as revoked
+at the provider without evidence.

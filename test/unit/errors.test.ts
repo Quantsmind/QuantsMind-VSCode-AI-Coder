@@ -65,6 +65,26 @@ suite('provider error normalization', () => {
     expect(error.message).to.contain('[REDACTED]');
   });
 
+  test('redacts provider-masked key fragments echoed in failure bodies', () => {
+    const fragments = ['sk-proj-abcd***wxyz', 'sk-...1234', 'sk-live-****9876', 'abcd****wxyz'];
+    for (const fragment of fragments) {
+      const error = normalizeHttpError(
+        401,
+        JSON.stringify({ error: { message: `Incorrect API key provided: ${fragment}` } }),
+      );
+      expect(error.message, fragment).to.not.contain(fragment);
+      expect(error.message, fragment).to.contain('[REDACTED]');
+      expect(error.code, fragment).to.equal('authentication');
+      expect(error.message, fragment).to.contain('Check the API key');
+    }
+  });
+
+  test('scrubs credentials from every constructed provider error', () => {
+    const error = new ProviderError('http', 'Request failed for sk-proj-abcd***wxyz');
+    expect(error.message).to.not.contain('abcd');
+    expect(error.message).to.contain('[REDACTED]');
+  });
+
   test('does not surface HTML error pages or oversized plain bodies', () => {
     expect(normalizeHttpError(502, '<html><body>Bad gateway</body></html>').message).to.not.contain(
       '<html>',

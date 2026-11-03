@@ -4,8 +4,8 @@
 
 | Layer | Runner | Location | What it proves |
 | --- | --- | --- | --- |
-| Unit | Mocha TDD in plain Node | `test/unit` | Pure logic, provider HTTP behavior, security filters |
-| Extension host | `@vscode/test-cli` | `test/integration` | Activation, commands, credentials, VS Code context access, full chat flow |
+| Unit | Mocha TDD in plain Node | `test/unit` | Pure logic, provider HTTP behavior, security filters, change model and diffs, command validation, persistence, agent stages |
+| Extension host | `@vscode/test-cli` | `test/integration` | Activation, commands, credentials, VS Code context access, workspace index, full chat and plan/apply/undo flows |
 | Packaged | `@vscode/test-cli` with a VSIX | `test/packaged` | The installed archive activates and exposes commands |
 | Install | VS Code CLI | `scripts/verify-install.mjs` | A clean extensions directory accepts the VSIX |
 | Dependencies | Node script over the lockfile | `scripts/verify-dependencies.mjs` | Shipped minimatch is patched; older copies stay development-only |
@@ -117,8 +117,69 @@ tests, and clean-install verification.
 - `test/unit/resolve.test.ts`: defaults, wrong types, clamping, rounding,
   trimming, mandatory exclusions, merge behavior, pattern caps, and byte
   conversion.
+- `test/unit/configV2.test.ts`: workspace, agent, and command setting defaults,
+  clamps, allowlist filtering, duplicate removal, and caps.
 - `test/integration/extension.test.ts`: manifest scopes and absence of a
   credential setting.
+
+### Workspace intelligence
+
+- `test/unit/workspaceAnalyze.test.ts`: path normalization, test-path detection,
+  entry-point ordering, technology detection, summary shape, and relevance
+  ranking including empty, oversized, and zero-limit cases.
+- `test/unit/workspaceIgnore.test.ts`: comments, blank lines, negation,
+  anchoring, directory rules, escaped literals, Windows separators, and merged
+  rule sets.
+- `test/integration/workspaceIndex.test.ts`: indexing the fixture workspace,
+  exclusion of `.env` and `secrets/`, technology summary, retrieval ranking,
+  redaction of the fixture key, cache invalidation, and test-only detection.
+
+### Change plans, diffs, review, apply, and undo
+
+- `test/unit/changeModel.test.ts`: path normalization and rejection of
+  traversal, absolute/drive/UNC paths, Windows drive-relative paths, and
+  alternate data streams; SHA-256; all four change kinds; plan and content
+  limits; duplicate and malformed detection.
+- `test/unit/changeDiff.test.ts`: create/delete/rename headers, hunk context,
+  separate hunks, missing trailing newline, truncation, and large-file fallback.
+- `test/unit/changePlan.test.ts`: strict JSON parsing, fenced JSON, aliases,
+  malformed entries, explicitly empty plans, prompt schema, and message
+  composition.
+- `test/unit/changeReview.test.ts`: review records, warnings, rename source
+  headers, and deletion diffs.
+- `test/unit/changeApply.test.ts`: create/overwrite/modify/delete/rename paths,
+  hash mismatch, approved subsets, write failures, undo ordering, and conflicts
+  after user edits.
+- `test/unit/changeHistory.test.ts`: store caps, malformed entries, undo from
+  backup, conflict handling, skipped entries, and a real apply round-trip.
+
+### Agent workflow
+
+- `test/unit/agentTaskRunner.test.ts`: retrieve/plan/review/approval stages,
+  empty plans, unparseable plans, preparation failures, cancellation,
+  provider-call limits, approved subsets, rejections, foreign change IDs,
+  validation success and failure, repair limits, command launch errors, undo
+  outcomes, and stage skipping.
+
+### Command execution
+
+- `test/unit/commandRunner.test.ts`: tokenization, allowlist matching, rejection
+  of metacharacters, control characters, and path-qualified executables,
+  workspace containment, sanitized environment, output caps, redaction,
+  timeouts, cancellation, and missing executables.
+
+### Conversation persistence
+
+- `test/unit/conversationStore.test.ts`: create/update/delete, title derivation,
+  recency ordering, message and character caps, conversation cap, and malformed
+  entry sanitization.
+
+### End-to-end approval flow
+
+- `test/integration/chat.test.ts`: plans a create, waits for
+  `awaiting-approval`, verifies the file does not exist yet, approves it,
+  verifies the exact content, undoes the change, and verifies the file is
+  removed.
 
 ## Mock provider server
 
@@ -144,8 +205,19 @@ loopback.
   prove exclusion.
 - `README.md` documents the fixture.
 
+`test/fixtures/output.js` and `test/fixtures/sleep.js` produce bounded output
+and a short delay for command-execution tests.
+
 The dummy values are not credentials. No automated test connects to a real
 provider.
+
+## Windows command-execution note
+
+On Windows the runner invokes an allowlisted command through `cmd.exe` without a
+shell. Node escapes embedded double quotes, so test commands avoid quoted
+arguments and use fixture scripts instead. This is a property of the platform
+launcher, not a relaxation of validation: the production allowlist contains bare
+`npm run ...` commands only.
 
 ## What is not covered automatically
 
@@ -160,12 +232,14 @@ provider.
 
 ## Reliability notes
 
-- Unit tests run in under a second and have no external network dependency.
+- Unit tests run in a few seconds and have no external network dependency.
 - Extension tests need a one-time VS Code download. Cache `.vscode-test` between
   local runs.
-- The chat tests use deterministic loopback servers and explicit wait helpers
-  rather than fixed sleeps.
-- Test timeouts are 20 seconds for unit and 60 seconds for extension tests.
-- CI runs lint, the dependency guard, and unit tests on Node 20, 22, and 24,
-  then extension-host tests on Ubuntu, Windows, and macOS. A final Ubuntu job
-  runs the complete `npm run verify` pipeline and uploads the VSIX.
+- The chat and agent tests use deterministic loopback servers and explicit wait
+  helpers rather than fixed sleeps.
+- Test timeouts are 20 seconds for unit and 60 seconds for extension tests;
+  longer agent-flow waits are bounded explicitly.
+- CI runs lint, the dependency guard, compile, and unit tests on Node 20, 22, and
+  24 on Ubuntu, plus Node 22 on Windows and macOS, then extension-host tests on
+  all three platforms. A final Ubuntu job runs the complete `npm run verify`
+  pipeline and uploads the VSIX.

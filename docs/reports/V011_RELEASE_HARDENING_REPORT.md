@@ -2,7 +2,8 @@
 
 Date: 2026-11-03
 Product: QuantsMind AI Coder (`quantsmind.quantsmind-vscode-ai-coder`)
-Status: Release-candidate hardening complete; live provider gate pending
+Status: Release-candidate hardening complete; incremental streaming verified
+locally; Output-channel scan failed; release blocked
 
 ## 1. Initial baseline
 
@@ -112,6 +113,12 @@ failed as expected. It is part of `npm run verify` and the CI release job.
 | Packaged-VSIX tests | Windows, VS Code 1.95.0 | Pass |
 | Clean install via VS Code CLI | Windows, isolated extensions dir | Pass |
 
+These Windows results were reconfirmed by a full `npm run verify` run on
+2026-11-03 (Node 24.18.1, exit code 0): 136 unit tests, 22 extension-host
+tests, 4 packaged-VSIX tests, VSIX archive inspection, and clean install. The
+rebuilt archive had the same size and entry count as the documented artifact,
+with an identical normalized content digest.
+
 ### Configured in CI, not executed in this campaign
 
 | Job | Runner | Node | Coverage |
@@ -148,6 +155,10 @@ endpoint/HTTPS/loopback validation, redirect rejection, sensitive-path
 exclusion, context redaction, webview CSP/nonce, no command execution, no
 workspace writes, and no telemetry.
 
+The automated logger-redaction tests pass, but they do not cover provider-masked
+key fragments. The live Output-channel finding in §7 is a gap outside the
+current test coverage.
+
 ## 6. Packaging evidence
 
 | Item | Value |
@@ -173,22 +184,50 @@ verification scripts, and the installed extension all report `0.1.0`.
 
 ## 7. Live provider validation status
 
-**Pending user execution.** No credential was available, and none was
-requested, fabricated, logged, or committed. The automated suites use a real
-loopback HTTP server but do not contact a third-party provider.
+Partially validated manually on 2026-11-03 with a disposable credential and a
+third-party OpenAI-compatible provider. The chat displayed
+`openai/gpt-4o-mini`.
 
-The exact procedure is documented in
-[`docs/LIVE_PROVIDER_VALIDATION.md`](../LIVE_PROVIDER_VALIDATION.md). It covers
-Set API Key, a disposable credential, provider configuration, streaming,
-multi-turn history, cancellation, credential absence from settings/logs,
-workspace immutability, and cleanup. Until that evidence exists, the release
-gate is open.
+Passed: successful provider response, model identification, conversation
+context recall (`QM-2026`), text generation (numbers 1 through 30), cancellation
+through **Stop**, API-key removal (`API key removed`), and missing-key rejection
+(`No API key is configured for this provider.`, error code `authentication`,
+guidance to use `QuantsMind: Set API Key`). Post-session inspection also found
+no credential-like QuantsMind setting and no workspace file changes.
+
+Streaming incremental delivery is **verified locally** with a controlled
+loopback test on 2026-11-03 (deltas at 326 ms and 1,514 ms; completion at
+1,822 ms). A third-party live streaming observation remains unrecorded.
+
+The Output-channel credential scan **failed**. The persisted Output log from
+the live session contains a provider-masked key fragment in a 401 provider
+message recorded during setup, before the successful requests. No full key was
+present, and no fragment is reproduced here. The redaction rules match full key
+shapes, so the provider's masked form passes through. Remediation and a re-scan
+are required.
+
+Cross-platform CI remains unexecuted on Ubuntu and macOS; Windows local
+verification passed. Extension-side key removal is confirmed. Provider-side
+revocation of the disposable key is **unconfirmed** and must not be described as
+complete. No full key was requested in chat or a terminal, printed, logged, or
+committed.
+
+Details:
+[`V011_LIVE_PROVIDER_VALIDATION_REPORT.md`](V011_LIVE_PROVIDER_VALIDATION_REPORT.md).
 
 ## 8. Remaining limitations
 
-- Live third-party provider validation is outstanding.
-- CI runs on Ubuntu, Windows, and macOS are configured but not yet observed;
-  only Windows was executed locally.
+- Live provider validation is partially complete: provider response, model
+  display, context retention, generation, cancellation, key removal, and
+  missing-key rejection passed. Incremental streaming is verified locally via a
+  loopback test; third-party live streaming remains unobserved.
+- The Output-channel scan failed: a persisted 401 log line exposed a
+  provider-masked key fragment. Full-key redaction does not remove the masked
+  form; remediation and a re-scan are outstanding.
+- CI runs on Ubuntu, Windows, and macOS are configured but not yet observed.
+  Only Windows was executed locally, and its full verification passed.
+- Extension-side API-key removal is confirmed, but provider-side revocation of
+  the disposable key is unconfirmed.
 - The development tree retains 19 tooling advisories, including the minimatch
   `9.0.9`/`10.2.6` instances, with no compatible patched release available.
 - v0.1.0 behavior is unchanged: read-only chat, one OpenAI-compatible adapter,
@@ -202,8 +241,17 @@ gate is open.
 
 Do not tag or publish yet. The candidate is technically ready once:
 
-1. The live-provider procedure passes with a disposable credential, and
-2. The CI matrix passes on Ubuntu, Windows, and macOS.
+1. The Output-channel credential exposure is remediated and a re-scan passes,
+2. The CI matrix passes on Ubuntu, Windows, and macOS, and
+3. A third-party live streaming observation is recorded under the validation
+   procedure (incremental delivery is already verified locally).
+
+The manual provider response, model display, context retention, generation,
+cancellation, key-removal, and missing-key rejection checks already pass.
+
+Separately, confirm provider-side revocation of the disposable key before
+publication. Extension-side removal is confirmed, but revocation is not
+evidenced.
 
 On approval, bump the version to **0.1.1**, update the version references in
 `package.json`, `scripts/verify-install.mjs`, `package.json`'s package script

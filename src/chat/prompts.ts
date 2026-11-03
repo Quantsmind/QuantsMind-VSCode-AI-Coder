@@ -1,14 +1,19 @@
 import type { RedactedContextItem } from '../context/filters';
 import type { ChatMessage } from '../providers/types';
 
-export const CHAT_MODES = ['ask', 'explain', 'generate'] as const;
+export const CHAT_MODES = ['ask', 'explain', 'generate', 'agent'] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
 
 export const DEFAULT_QUESTIONS: Record<ChatMode, string> = {
   ask: 'Help me with the attached code.',
   explain: 'Explain the attached code.',
   generate: 'Suggest a concrete code implementation for the attached context.',
+  agent: 'Implement the requested change in this workspace.',
 };
+
+export function isAgentMode(mode: ChatMode): boolean {
+  return mode === 'agent';
+}
 
 export function isChatMode(value: unknown): value is ChatMode {
   return typeof value === 'string' && (CHAT_MODES as readonly string[]).includes(value);
@@ -30,6 +35,8 @@ const MODE_PROMPTS: Record<ChatMode, string> = {
     'Explain the attached code: its purpose, structure, control flow, important edge cases, and risks. Do not rewrite it unless the user asks.',
   generate:
     'Propose a concrete implementation. Provide complete, idiomatic code, explain where it belongs, and describe how the user can verify it. Make clear that the code has not been applied.',
+  agent:
+    'Plan a set of workspace file changes. Never claim a file was modified: the user must approve every change before it is applied.',
 };
 
 export function buildSystemPrompt(mode: ChatMode): string {

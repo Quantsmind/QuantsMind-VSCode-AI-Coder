@@ -32,6 +32,52 @@ suite('secret redaction', () => {
     }
   });
 
+  test('redacts provider-masked key fragments', () => {
+    const samples = [
+      'sk-proj-abcd***wxyz',
+      'sk-or-v1-1234****9876',
+      'sk-...abcd',
+      'sk-live-****1234',
+      'abcd****wxyz',
+    ];
+    for (const sample of samples) {
+      const result = redactSecrets(`The provider rejected key ${sample}.`);
+      expect(result.text, sample).to.not.contain(sample);
+      expect(result.text, sample).to.contain('[REDACTED]');
+      expect(result.count, sample).to.be.greaterThan(0);
+    }
+  });
+
+  test('redacts masked credentials in headers, assignments and JSON', () => {
+    const bearer = redactSecrets('Authorization: Bearer sk-proj-abcd***wxyz');
+    expect(bearer.text).to.contain('Bearer [REDACTED]');
+    expect(bearer.text).to.not.contain('abcd');
+
+    const assigned = redactSecrets('api_key = "abcd****wxyz"');
+    expect(assigned.text).to.contain('[REDACTED]');
+    expect(assigned.text).to.not.contain('wxyz');
+
+    const json = redactSecrets('{"apiKey":"sk-proj-****1234"}');
+    expect(json.text).to.contain('[REDACTED]');
+    expect(json.text).to.not.contain('1234');
+
+    const header = redactSecrets('x-api-key: masked-value-1234');
+    expect(header.text).to.contain('[REDACTED]');
+    expect(header.text).to.not.contain('masked-value-1234');
+  });
+
+  test('redacts JWTs and URL credentials', () => {
+    const jwt =
+      'eyJhbGciOiJub25lIn0.eyJzdWIiOiJkZW1vLXVzZXIifQ.abcdefghijklmnop';
+    const token = redactSecrets(`token ${jwt}`);
+    expect(token.text).to.not.contain(jwt);
+    expect(token.text).to.contain('[REDACTED]');
+
+    const url = redactSecrets('https://demo-user:demo-pass@example.test/path');
+    expect(url.text).to.not.contain('demo-pass');
+    expect(url.text).to.contain('https://[REDACTED]@example.test/path');
+  });
+
   test('redacts private key blocks', () => {
     const pem =
       '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----';

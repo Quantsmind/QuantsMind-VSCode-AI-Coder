@@ -47,27 +47,45 @@ export function renderChatHtml(assets: WebviewAssets): string {
         <span class="brand-name">QuantsMind</span>
         <span class="alpha-badge">ALPHA</span>
       </div>
-      <button id="new-chat" class="icon-button" type="button" title="New chat" aria-label="New chat">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      </button>
+      <div class="topbar-actions">
+        <button id="delete-conversation" class="icon-button" type="button" title="Delete this conversation" aria-label="Delete this conversation" hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </button>
+        <button id="new-chat" class="icon-button" type="button" title="New chat" aria-label="New chat">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
     </header>
+
+    <div class="conversation-row">
+      <select id="conversation-select" aria-label="Conversation history">
+        <option value="">New chat</option>
+      </select>
+    </div>
 
     <button id="provider-status" class="status-pill" type="button" title="Provider settings">
       <span class="status-dot" id="status-dot"></span>
       <span class="status-text" id="status-text">Loading provider…</span>
     </button>
 
+    <div class="workspace-row">
+      <span class="workspace-name" id="workspace-name" title="Active workspace folder">No workspace</span>
+      <button type="button" class="text-button" data-action="summarize-workspace" title="Summarize the workspace locally without sending anything">Summary</button>
+      <button type="button" class="text-button" data-action="attach-relevant" title="Attach files relevant to the current prompt">Relevant files</button>
+    </div>
+
     <main class="messages" id="messages" aria-live="polite" aria-label="Conversation">
       <div class="empty" id="empty">
         <div class="empty-logo">${LOGO_SVG}</div>
         <h1>Code, with context.</h1>
-        <p>Ask a question, explain a selection, or generate a suggestion. You choose exactly what gets attached.</p>
+        <p>Ask a question, review a multi-file plan, or run a controlled agent task. You choose exactly what gets attached and every file change needs your approval.</p>
         <div class="quick-actions">
           <button type="button" class="quick-button" data-action="explain-selection">Explain selection</button>
           <button type="button" class="quick-button" data-action="attach-active">Attach active file</button>
+          <button type="button" class="quick-button" data-action="summarize-workspace">Summarize workspace</button>
           <button type="button" class="quick-button accent" data-action="set-key" id="empty-set-key" hidden>Set API key</button>
         </div>
-        <p class="empty-footnote">Nothing is written to your workspace. Every request requires an explicit Send.</p>
+        <p class="empty-footnote">Files are never written without per-file approval. Undo restores backups when files are unchanged since apply.</p>
       </div>
     </main>
 
@@ -77,6 +95,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
         <button type="button" class="text-button" data-action="attach-selection">Selection</button>
         <button type="button" class="text-button" data-action="attach-active">Active file</button>
         <button type="button" class="text-button" data-action="attach-files">Files…</button>
+        <button type="button" class="text-button" data-action="attach-relevant">Relevant files</button>
         <button type="button" class="text-button subtle" data-action="clear-attachments" id="clear-attachments" hidden>Clear</button>
         <span class="context-budget" id="context-budget"></span>
       </div>
@@ -86,6 +105,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
           <option value="ask">Ask</option>
           <option value="explain">Explain</option>
           <option value="generate">Generate</option>
+          <option value="agent">Agent (plan + apply)</option>
         </select>
         <button type="button" class="text-button subtle" data-action="show-log" title="Open the QuantsMind output log">Log</button>
       </div>
@@ -96,7 +116,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
           <button type="button" id="send" class="send-button">Send <span class="key-hint">↵</span></button>
         </div>
       </div>
-      <p class="privacy-note">Only attached content is sent. The AI cannot modify files in v0.1.0.</p>
+      <p class="privacy-note" id="privacy-note">Only attached content is sent. Ask/Explain/Generate never modify files; Agent mode requires per-file approval before applying and can be undone.</p>
     </section>
   </div>
 

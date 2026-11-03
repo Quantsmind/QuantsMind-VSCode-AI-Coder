@@ -1,10 +1,16 @@
 import * as vscode from 'vscode';
 import { CONFIG_SECTION } from './defaults';
 import {
+  resolveAgentSettings,
+  resolveCommandSettings,
   resolveContextSettings,
   resolveProviderSettings,
+  resolveWorkspaceSettings,
+  type ResolvedAgentSettings,
+  type ResolvedCommandSettings,
   type ResolvedContextSettings,
   type ResolvedProviderSettings,
+  type ResolvedWorkspaceSettings,
 } from './resolve';
 
 /**
@@ -33,6 +39,33 @@ export class SettingsService {
       maxFileSizeKb: config.get<unknown>('context.maxFileSizeKb'),
       maxTotalChars: config.get<unknown>('context.maxTotalChars'),
       maxFiles: config.get<unknown>('context.maxFiles'),
+    });
+  }
+
+  getWorkspaceSettings(): ResolvedWorkspaceSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveWorkspaceSettings({
+      maxIndexedFiles: config.get<unknown>('workspace.maxIndexedFiles'),
+      maxRetrievedFiles: config.get<unknown>('workspace.maxRetrievedFiles'),
+      retrievalMaxChars: config.get<unknown>('workspace.retrievalMaxChars'),
+    });
+  }
+
+  getAgentSettings(): ResolvedAgentSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveAgentSettings({
+      maxSteps: config.get<unknown>('agent.maxSteps'),
+      maxRepairIterations: config.get<unknown>('agent.maxRepairIterations'),
+      timeoutMs: config.get<unknown>('agent.timeoutMs'),
+    });
+  }
+
+  getCommandSettings(): ResolvedCommandSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveCommandSettings({
+      allowlist: config.get<unknown>('commands.allowlist'),
+      timeoutMs: config.get<unknown>('commands.timeoutMs'),
+      maxOutputChars: config.get<unknown>('commands.maxOutputChars'),
     });
   }
 
