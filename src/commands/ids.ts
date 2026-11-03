@@ -1,0 +1,14 @@
+export const COMMANDS = Object.freeze({
+  openChat: 'quantsmind.openChat',
+  newChat: 'quantsmind.newChat',
+  explainSelection: 'quantsmind.explainSelection',
+  askAboutSelection: 'quantsmind.askAboutSelection',
+  generateCode: 'quantsmind.generateCode',
+  attachActiveFile: 'quantsmind.attachActiveFile',
+  setApiKey: 'quantsmind.setApiKey',
+  clearApiKey: 'quantsmind.clearApiKey',
+  configureProvider: 'quantsmind.configureProvider',
+  selectModel: 'quantsmind.selectModel',
+  showLog: 'quantsmind.showLog',
+  showMenu: 'quantsmind.showMenu',
+});

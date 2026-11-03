@@ -1,0 +1,334 @@
+{
+  "name": "quantsmind-vscode-ai-coder",
+  "displayName": "QuantsMind AI Coder",
+  "description": "Project-aware AI coding assistant for VS Code with explicit context control, streaming responses, and approval-first workflows.",
+  "version": "0.1.0",
+  "publisher": "quantsmind",
+  "license": "MIT",
+  "private": true,
+  "preview": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding assistant",
+    "openai compatible",
+    "code explanation",
+    "code generation",
+    "local llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder.git"
+  },
+  "galleryBanner": {
+    "color": "#0B1020",
+    "theme": "dark"
+  },
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "quantsmind",
+          "title": "QuantsMind",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "quantsmind": [
+        {
+          "type": "webview",
+          "id": "quantsmind.chatView",
+          "name": "AI Chat",
+          "icon": "media/icon.svg",
+          "contextualTitle": "QuantsMind AI Coder"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "quantsmind.openChat",
+        "title": "Open Chat",
+        "category": "QuantsMind",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "quantsmind.newChat",
+        "title": "New Chat",
+        "category": "QuantsMind",
+        "icon": "$(add)"
+      },
+      {
+        "command": "quantsmind.explainSelection",
+        "title": "Explain Selection",
+        "category": "QuantsMind",
+        "icon": "$(book)"
+      },
+      {
+        "command": "quantsmind.askAboutSelection",
+        "title": "Ask About Selection",
+        "category": "QuantsMind",
+        "icon": "$(question)"
+      },
+      {
+        "command": "quantsmind.generateCode",
+        "title": "Generate Code Suggestion",
+        "category": "QuantsMind",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "quantsmind.attachActiveFile",
+        "title": "Attach Active File to Chat",
+        "category": "QuantsMind",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "quantsmind.setApiKey",
+        "title": "Set API Key",
+        "category": "QuantsMind",
+        "icon": "$(key)"
+      },
+      {
+        "command": "quantsmind.clearApiKey",
+        "title": "Clear API Key",
+        "category": "QuantsMind",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "quantsmind.configureProvider",
+        "title": "Configure Provider",
+        "category": "QuantsMind",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "quantsmind.selectModel",
+        "title": "Select Model",
+        "category": "QuantsMind",
+        "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "quantsmind.showLog",
+        "title": "Show Log",
+        "category": "QuantsMind",
+        "icon": "$(output)"
+      },
+      {
+        "command": "quantsmind.showMenu",
+        "title": "Show Menu",
+        "category": "QuantsMind"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "quantsmind.explainSelection",
+          "when": "editorHasSelection",
+          "group": "quantsmind@1"
+        },
+        {
+          "command": "quantsmind.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "quantsmind@2"
+        },
+        {
+          "command": "quantsmind.generateCode",
+          "when": "editorHasSelection",
+          "group": "quantsmind@3"
+        },
+        {
+          "command": "quantsmind.attachActiveFile",
+          "when": "editorTextFocus",
+          "group": "quantsmind@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "quantsmind.showMenu",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "quantsmind.newChat",
+          "when": "view == quantsmind.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "quantsmind.setApiKey",
+          "when": "view == quantsmind.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "quantsmind.configureProvider",
+          "when": "view == quantsmind.chatView",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "QuantsMind AI Coder",
+      "properties": {
+        "quantsmind.provider.type": {
+          "type": "string",
+          "enum": [
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "Any provider exposing an OpenAI-compatible /chat/completions API."
+          ],
+          "default": "openai-compatible",
+          "scope": "application",
+          "order": 1,
+          "markdownDescription": "AI provider adapter. v0.1.0 ships the **openai-compatible** adapter."
+        },
+        "quantsmind.provider.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "scope": "application",
+          "order": 2,
+          "markdownDescription": "Base URL of the OpenAI-compatible API (for example `https://api.openai.com/v1`). HTTPS is required except for loopback addresses. The `/chat/completions` path is appended automatically. Stored as an application setting so a workspace cannot redirect your credentials."
+        },
+        "quantsmind.provider.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "scope": "application",
+          "order": 3,
+          "markdownDescription": "Model name sent to the provider (for example `gpt-4o-mini` or a local model identifier)."
+        },
+        "quantsmind.provider.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "maximum": 600000,
+          "scope": "application",
+          "order": 4,
+          "markdownDescription": "Total request timeout in milliseconds, including streaming time."
+        },
+        "quantsmind.provider.maxOutputTokens": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 16,
+          "maximum": 131072,
+          "scope": "application",
+          "order": 5,
+          "markdownDescription": "Maximum number of tokens the provider may generate (`max_tokens`)."
+        },
+        "quantsmind.provider.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "scope": "application",
+          "order": 6,
+          "markdownDescription": "Sampling temperature. Lower values are more deterministic."
+        },
+        "quantsmind.provider.stream": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "order": 7,
+          "markdownDescription": "Stream responses with server-sent events when the provider supports it."
+        },
+        "quantsmind.provider.allowInsecureLocalhost": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "order": 8,
+          "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected."
+        },
+        "quantsmind.context.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "uniqueItems": true,
+          "scope": "resource",
+          "order": 20,
+          "markdownDescription": "Additional glob patterns (workspace-relative) excluded from attachable context. Built-in secret and dependency exclusions are always applied and cannot be disabled."
+        },
+        "quantsmind.context.maxFileSizeKb": {
+          "type": "number",
+          "default": 256,
+          "minimum": 1,
+          "maximum": 2048,
+          "scope": "resource",
+          "order": 21,
+          "markdownDescription": "Maximum size of a single attached file, in kilobytes."
+        },
+        "quantsmind.context.maxTotalChars": {
+          "type": "number",
+          "default": 48000,
+          "minimum": 2000,
+          "maximum": 400000,
+          "scope": "resource",
+          "order": 22,
+          "markdownDescription": "Maximum total characters of attached context in one request."
+        },
+        "quantsmind.context.maxFiles": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 100,
+          "scope": "resource",
+          "order": 23,
+          "markdownDescription": "Maximum number of files or selections attached to one request."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "clean": "node scripts/clean.mjs",
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json",
+    "lint": "eslint .",
+    "test:unit": "npm run compile && mocha --ui tdd --timeout 20000 \"out/test/unit/**/*.test.js\"",
+    "test:integration": "npm run compile && vscode-test",
+    "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
+    "test": "npm run test:unit && npm run test:integration",
+    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.1.0.vsix",
+    "verify:vsix": "node scripts/verify-vsix.mjs",
+    "verify:install": "node scripts/verify-install.mjs",
+    "verify": "npm run lint && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
+  },
+  "dependencies": {
+    "minimatch": "11.0.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/chai": "4.3.20",
+    "@types/mocha": "10.0.10",
+    "@types/node": "20.19.43",
+    "@types/sinon": "22.0.2",
+    "@types/vscode": "1.95.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.0",
+    "chai": "4.5.0",
+    "eslint": "10.14.0",
+    "fflate": "0.8.3",
+    "globals": "15.15.0",
+    "mocha": "11.8.0",
+    "sinon": "22.1.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1"
+  }
+}

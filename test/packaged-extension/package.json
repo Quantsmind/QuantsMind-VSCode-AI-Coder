@@ -1,0 +1,10 @@
+{
+  "name": "quantsmind-packaged-test-harness",
+  "displayName": "QuantsMind packaged test harness",
+  "publisher": "quantsmind",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  }
+}

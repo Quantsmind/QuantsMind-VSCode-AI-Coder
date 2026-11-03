@@ -1,0 +1,20 @@
+node_modules/
+out/
+dist/
+coverage/
+.tmp/
+.vscode-test/
+*.vsix
+*.log
+npm-debug.log*
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Test fixture intentionally contains a dummy .env
+!test/fixtures/workspace/.env
+
+.DS_Store
+Thumbs.db
