@@ -21,7 +21,9 @@ npm run test:packaged
 npm run verify:install
 ```
 
-`npm run verify` covers lint, tests, package, and archive inspection.
+`npm run verify` runs every layer above: lint, unit and extension-host tests,
+VSIX packaging, archive inspection, packaged-host tests, and clean-install
+verification.
 
 ## Requirement coverage
 
