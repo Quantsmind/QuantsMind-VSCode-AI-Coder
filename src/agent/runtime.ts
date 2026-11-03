@@ -98,6 +98,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
         timeoutMs: commandSettings.timeoutMs,
         maxOutputChars: commandSettings.maxOutputChars,
         secret: await deps.secrets.get(),
+        trusted: vscode.workspace.isTrusted,
         signal,
       });
     },
@@ -106,6 +107,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
     hashFile: hashWorkspaceFile,
     repository,
     logger: deps.logger,
+    isTrusted: () => vscode.workspace.isTrusted,
     onChange: (view) => {
       for (const listener of [...listeners]) {
         listener(view);

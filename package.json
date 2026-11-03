@@ -2,7 +2,7 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
@@ -39,7 +39,7 @@
     "untrustedWorkspaces": {
       "supported": true
     },
-    "virtualWorkspaces": true
+    "virtualWorkspaces": false
   },
   "contributes": {
     "viewsContainers": {
@@ -362,7 +362,7 @@
           "default": 6,
           "minimum": 1,
           "maximum": 20,
-          "scope": "resource",
+          "scope": "application",
           "order": 40,
           "markdownDescription": "Maximum number of provider calls an agent task may make, including repair iterations."
         },
@@ -371,7 +371,7 @@
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "scope": "resource",
+          "scope": "application",
           "order": 41,
           "markdownDescription": "Maximum number of repair passes after a validation failure."
         },
@@ -380,7 +380,7 @@
           "default": 180000,
           "minimum": 10000,
           "maximum": 900000,
-          "scope": "resource",
+          "scope": "application",
           "order": 42,
           "markdownDescription": "Wall-clock limit for an agent task step. The task is cancelled when the limit is reached."
         },
@@ -397,7 +397,7 @@
             "npm run verify"
           ],
           "uniqueItems": true,
-          "scope": "resource",
+          "scope": "application",
           "order": 50,
           "markdownDescription": "Exact validation commands that may run after you approve them. Commands are executed without a shell and cannot contain shell metacharacters. Nothing runs automatically."
         },
@@ -406,7 +406,7 @@
           "default": 120000,
           "minimum": 1000,
           "maximum": 600000,
-          "scope": "resource",
+          "scope": "application",
           "order": 51,
           "markdownDescription": "Timeout for an approved validation command."
         },
@@ -415,7 +415,7 @@
           "default": 120000,
           "minimum": 1000,
           "maximum": 1000000,
-          "scope": "resource",
+          "scope": "application",
           "order": 52,
           "markdownDescription": "Maximum captured output characters for a validation command. Output is redacted before display."
         }
@@ -432,7 +432,7 @@
     "test:integration": "npm run compile && vscode-test",
     "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.3.0.vsix",
+    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.3.1.vsix",
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
     "verify:install": "node scripts/verify-install.mjs",

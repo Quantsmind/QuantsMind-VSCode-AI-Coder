@@ -127,6 +127,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
         status: approvedIds.includes(change.id) ? ('applied' as const) : ('skipped' as const),
       }));
       const entry: HistoryEntry = {
+        applyId: taskId,
         taskId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

@@ -15,6 +15,7 @@ export interface CommandRunOptions {
   readonly maxOutputChars?: number;
   readonly secret?: string;
   readonly signal?: AbortSignal;
+  readonly trusted?: boolean;
 }
 
 export interface CommandValidation {
@@ -221,6 +222,20 @@ export async function runApprovedCommand(
   const validation = validateCommand(raw, options.allowlist);
   const cwd = path.resolve(options.cwd);
   const maxOutputChars = Math.max(1_000, options.maxOutputChars ?? MAX_COMMAND_OUTPUT);
+
+  if (options.trusted === false) {
+    return {
+      command: raw,
+      cwd: path.resolve(options.cwd),
+      exitCode: null,
+      output: '',
+      timedOut: false,
+      cancelled: false,
+      truncated: false,
+      durationMs: 0,
+      error: 'Workspace trust is required before running validation commands.',
+    };
+  }
 
   if (!validation.ok || validation.normalized === undefined || validation.tokens === undefined) {
     return {

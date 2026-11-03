@@ -24,7 +24,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.0';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.1';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -367,6 +367,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     settings.onDidChange(() => {
       workspaceIndex.invalidate();
       void refreshAll();
+    }),
+  );
+  context.subscriptions.push(
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      workspaceIndex.invalidate();
+      void refreshAll();
+      void chatProvider.refreshStatus();
     }),
   );
   context.subscriptions.push(

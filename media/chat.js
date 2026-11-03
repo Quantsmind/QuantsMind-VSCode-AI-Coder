@@ -17,6 +17,8 @@
     statusPill: document.getElementById('provider-status'),
     statusDot: document.getElementById('status-dot'),
     statusText: document.getElementById('status-text'),
+    workspaceName: document.getElementById('workspace-name'),
+    privacyNote: document.getElementById('privacy-note'),
     attachmentBar: document.getElementById('attachment-bar'),
     clearAttachments: document.getElementById('clear-attachments'),
     contextBudget: document.getElementById('context-budget'),

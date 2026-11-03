@@ -68,6 +68,7 @@ export interface OrchestratorDependencies {
   readonly now?: () => string;
   readonly logger?: OrchestratorLogger;
   readonly onChange?: (view: AgentSessionView) => void;
+  readonly isTrusted?: () => boolean;
 }
 
 export interface IAgentController
@@ -366,7 +367,16 @@ export class AgentOrchestrator implements IAgentController {
     return this.sessions.get(sessionId)?.pendingApproval;
   }
 
+  private requireTrusted(action: string): void {
+    if ((this.deps.isTrusted ?? (() => true))() === false) {
+      throw new AgentSessionError(
+        `Workspace trust is required to ${action}. Open a trusted workspace or grant trust before using agent mode.`,
+      );
+    }
+  }
+
   async start(requirementText: string, token: CancellationTokenLike): Promise<AgentSessionView> {
+    this.requireTrusted('start an agent session');
     const at = this.timestamp();
     const id = this.nextId('session');
     const requirement = createRequirement(`${id}-requirement`, requirementText, at);
@@ -511,6 +521,7 @@ export class AgentOrchestrator implements IAgentController {
   }
 
   async approvePlan(sessionId: string, token: CancellationTokenLike): Promise<AgentSessionView> {
+    this.requireTrusted('approve an agent plan');
     this.requireIdle(sessionId, 'approve the plan');
     const session = this.require(sessionId);
     this.requireReviewed(session);
@@ -763,6 +774,7 @@ export class AgentOrchestrator implements IAgentController {
     approvedIds: readonly string[],
     token: CancellationTokenLike,
   ): Promise<AgentSessionView> {
+    this.requireTrusted('apply file changes');
     this.requireIdle(sessionId, 'approve changes');
     const session = this.require(sessionId);
     this.requireReviewed(session);
@@ -805,6 +817,7 @@ export class AgentOrchestrator implements IAgentController {
       await this.record(current);
 
       const historyTaskId = this.changeTaskId(sessionId, changeSet.taskId);
+      const applyId = this.nextId('apply');
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -812,6 +825,7 @@ export class AgentOrchestrator implements IAgentController {
           selected,
           historyTaskId,
           changeSet.summary,
+          applyId,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -923,6 +937,7 @@ export class AgentOrchestrator implements IAgentController {
     command: string,
     signal: AbortSignal,
   ): Promise<AgentSessionView> {
+    this.requireTrusted('run validation commands');
     this.requireIdle(sessionId, 'run validation');
     const session = this.require(sessionId);
     this.requireReviewed(session);
@@ -1247,6 +1262,7 @@ export class AgentOrchestrator implements IAgentController {
     approvedIds: readonly string[],
     token: CancellationTokenLike,
   ): Promise<AgentSessionView> {
+    this.requireTrusted('apply repair changes');
     this.requireIdle(sessionId, 'approve the repair');
     const session = this.require(sessionId);
     this.requireReviewed(session);
@@ -1293,6 +1309,7 @@ export class AgentOrchestrator implements IAgentController {
       await this.record(current);
 
       const historyTaskId = this.changeTaskId(sessionId, proposal.taskId);
+      const applyId = this.nextId('apply');
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -1300,6 +1317,7 @@ export class AgentOrchestrator implements IAgentController {
           selected,
           historyTaskId,
           proposal.summary,
+          applyId,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -1393,6 +1411,7 @@ export class AgentOrchestrator implements IAgentController {
     sessionId: string,
     token: CancellationTokenLike,
   ): Promise<AgentSessionView> {
+    this.requireTrusted('resume an agent session');
     this.requireIdle(sessionId, 'resume');
     const session = this.require(sessionId);
     if (session.state !== 'paused') {

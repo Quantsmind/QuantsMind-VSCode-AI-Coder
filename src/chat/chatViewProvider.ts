@@ -795,6 +795,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'session', session: view });
         }
       }
+      if (vscode.workspace.isTrusted !== true) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message:
+            'This workspace is in Restricted Mode. Chat and inspection are available; agent sessions, file changes, repairs, and validation commands are disabled until you trust the workspace.',
+        });
+      }
     } catch (error) {
       this.deps.logger.error('failed to build initial chat state', error);
       this.post({
@@ -1027,6 +1035,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'error',
         message: 'Open a workspace folder before using agent mode.',
         hint: 'Agent mode needs a workspace to inspect, retrieve context from, and apply approved changes to.',
+        code: 'configuration',
+      });
+      return;
+    }
+    if (vscode.workspace.isTrusted !== true) {
+      this.post({
+        type: 'error',
+        message: 'Workspace trust is required before starting an agent session.',
+        hint: 'Restricted Mode blocks agent execution, file changes, repairs, and validation commands.',
         code: 'configuration',
       });
       return;

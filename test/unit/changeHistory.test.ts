@@ -25,6 +25,7 @@ class MemoryMemento {
 
 function entry(taskId: string, overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {
+    applyId: taskId,
     taskId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
