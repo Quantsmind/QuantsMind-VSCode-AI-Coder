@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-const vsixPath = resolve(process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.3.1.vsix');
-const expected = 'quantsmind.quantsmind-vscode-ai-coder@0.3.1';
+const vsixPath = resolve(process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.3.2.vsix');
+const expected = 'quantsmind.quantsmind-vscode-ai-coder@0.3.2';
 
 function cliFromInstallationRoot(root) {
   const scripts = [

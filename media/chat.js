@@ -17,6 +17,7 @@
     statusPill: document.getElementById('provider-status'),
     statusDot: document.getElementById('status-dot'),
     statusText: document.getElementById('status-text'),
+    version: document.getElementById('version'),
     workspaceName: document.getElementById('workspace-name'),
     privacyNote: document.getElementById('privacy-note'),
     attachmentBar: document.getElementById('attachment-bar'),
@@ -1247,6 +1248,9 @@
         state.session = null;
         if (message.version) {
           document.title = 'QuantsMind AI Coder ' + message.version;
+          if (els.version) {
+            els.version.textContent = 'v' + message.version;
+          }
         }
         renderStatus();
         renderWorkspace();

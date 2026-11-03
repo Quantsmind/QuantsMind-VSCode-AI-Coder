@@ -24,7 +24,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.1';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.2';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -352,7 +352,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.configureProvider, configureProvider);
   register(COMMANDS.selectModel, selectModel);
   register(COMMANDS.showLog, () => output.show());
+  const showVersion = async (): Promise<void> => {
+    let providerLine = 'Provider status: unavailable';
+    try {
+      const status = await completion.getStatus();
+      providerLine = `Provider: ${status.displayName} · ${status.model} @ ${status.endpointHost} · ${status.ready ? 'ready' : status.configurationError ?? (status.credentialRequired && !status.hasCredential ? 'API key required' : 'not ready')}`;
+    } catch (error) {
+      logger.error('version command provider status failed', error);
+    }
+    const message = [
+      'QuantsMind AI Coder',
+      `Version: ${version}`,
+      'Extension ID: quantsmind.quantsmind-vscode-ai-coder',
+      providerLine,
+    ].join('\n');
+    void vscode.window.showInformationMessage(message, { modal: true });
+  };
+
   register(COMMANDS.showMenu, showMenu);
+  register(COMMANDS.showVersion, showVersion);
 
   const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
   const invalidateIndex = (): void => workspaceIndex.invalidate();

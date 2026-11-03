@@ -67,6 +67,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
       <span class="status-dot" id="status-dot"></span>
       <span class="status-text" id="status-text">Loading provider…</span>
     </button>
+    <span class="version-badge" id="version" title="Installed QuantsMind AI Coder version">v0.0.0</span>
 
     <div class="workspace-row">
       <span class="workspace-name" id="workspace-name" title="Active workspace folder">No workspace</span>

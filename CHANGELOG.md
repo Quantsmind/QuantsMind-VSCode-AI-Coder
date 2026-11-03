@@ -5,6 +5,18 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-11-03
+
+### Added
+
+- Visible extension version badge in the QuantsMind chat sidebar (sourced from package.json).
+- `QuantsMind: About QuantsMind / Version` command (Command Palette) showing product name, version, extension ID, and provider status.
+- Version included in diagnostic/support reporting via the About command.
+
+### Changed
+
+- Extension manifest version bumped to 0.3.2.
+
 ## [0.3.0] - 2026-11-03
 
 Agentic development and execution preview. This is an alpha build and is **not**

@@ -2,7 +2,7 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
@@ -152,6 +152,12 @@
         "title": "Show Change History",
         "category": "QuantsMind",
         "icon": "$(history)"
+      },
+      {
+        "command": "quantsmind.showVersion",
+        "title": "About QuantsMind / Version",
+        "category": "QuantsMind",
+        "icon": "$(info)"
       },
       {
         "command": "quantsmind.showMenu",
@@ -432,7 +438,7 @@
     "test:integration": "npm run compile && vscode-test",
     "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.3.1.vsix",
+    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.3.2.vsix",
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
     "verify:install": "node scripts/verify-install.mjs",

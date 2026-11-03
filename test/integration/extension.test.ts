@@ -17,7 +17,7 @@ suite('extension activation and manifest', () => {
     const api = await ext.activate();
 
     expect(ext.isActive).to.equal(true);
-    expect(api.version).to.equal('0.3.1');
+    expect(api.version).to.equal('0.3.2');
     expect(api.getProviderStatus).to.be.a('function');
     expect(api.revealChat).to.be.a('function');
     expect(Object.keys(api).sort()).to.deep.equal(['getProviderStatus', 'revealChat', 'version']);
