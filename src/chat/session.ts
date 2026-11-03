@@ -2,8 +2,8 @@ import { DEFAULT_HISTORY_CHARS } from '../config/defaults';
 import type { ChatMessage } from '../providers/types';
 
 /**
- * In-memory conversation history for one chat session. Nothing is persisted;
- * closing VS Code or starting a new chat drops the transcript.
+ * Bounded provider history for one conversation. Durable transcripts live in
+ * ConversationStore; this class only controls what is sent to the provider.
  */
 export class ChatSession {
   private messages: ChatMessage[] = [];
@@ -32,6 +32,17 @@ export class ChatSession {
 
   clear(): void {
     this.messages = [];
+  }
+
+  load(messages: readonly ChatMessage[]): void {
+    this.messages = [];
+    for (const message of messages) {
+      if (message.content.length === 0) {
+        continue;
+      }
+      this.messages.push({ role: message.role, content: message.content });
+    }
+    this.trim();
   }
 
   private push(message: ChatMessage): void {

@@ -5,25 +5,84 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-03
 
-Release-hardening work for the next preview. No user-facing behavior changed.
+Approval-first workspace assistant preview. This is an alpha build and is **not**
+a general availability release. It includes the release-hardening work that had
+been staged for an unreleased 0.1.1 build.
 
 ### Added
 
-- Offline dependency guard (`npm run verify:deps`) that fails if the shipped
-  minimatch runtime dependency drops below the patched 11.0.1 release or if an
-  older minimatch copy becomes non-development.
-- Windows and macOS extension-host jobs in CI, alongside the existing Ubuntu
-  full-verification job.
-- Manual live-provider validation procedure in
-  [docs/LIVE_PROVIDER_VALIDATION.md](docs/LIVE_PROVIDER_VALIDATION.md).
+- Workspace intelligence: local file index, technology and entry-point
+  detection, `.gitignore`-aware filtering, and relevance ranking against a task
+  description. The index never leaves the machine on its own.
+- **Summarize Workspace** and **Attach Relevant Workspace Files** commands.
+- Structured multi-file change plans supporting create, modify, delete, and
+  rename, with per-file reasons and a plan summary.
+- Unified diffs in the review view, including create/delete/rename headers,
+  hunk context, large-file fallback, and per-file warnings.
+- Approval flow with per-file selection, reject-all, cancellation, stale-file
+  detection using SHA-256 baseline hashes, and workspace-containment checks.
+- Workspace-scoped apply with per-file backups and an undo path that refuses to
+  overwrite files edited after apply.
+- Change history in extension storage (50 entries) with restore from backups.
+- Agent task workflow with explicit stages (retrieve, plan, review, approval,
+  apply, validate, repair), provider-call limits, repair-iteration limits, an
+  overall timeout, and cancellation.
+- Approved validation command execution: allowlist, no shell, sanitized
+  environment, workspace containment, output caps, timeouts, cancellation, and
+  redaction. Commands are displayed exactly before running.
+- Bounded repair planning after a failed validation; repairs are reviewed and
+  approved like any other plan.
+- Persisted conversations with create, switch, and delete, bounded to 30
+  conversations and 120,000 characters each.
+- Markdown and fenced-code rendering, per-block copy, inline file references,
+  streaming status, and actionable error panels in the chat view.
+- New commands: **Summarize Workspace**, **Attach Relevant Workspace Files**,
+  **Start Agent Task (Plan Changes)**, and **Show Change History**.
+- New settings for workspace indexing/retrieval, agent limits, and approved
+  command execution.
+
+### Changed
+
+- The extension is now workspace-aware and can apply approved changes; the
+  previous "read-only, no file writes, no command execution" boundary no longer
+  applies.
+- Chat history survives window reloads through extension `Memento` storage.
+- Tool-call responses from a provider are rejected with a message that refers to
+  the current release rather than v0.1.0.
+- CI runs lint, compile, unit tests, extension-host tests, dependency
+  verification, VSIX packaging, archive inspection, and packaged-host tests, with
+  Windows and macOS jobs alongside Ubuntu.
 
 ### Security
 
+- Fixed provider-masked API-key redaction: the exact stored credential and
+  masked forms such as `sk-…abcd` are now scrubbed from prompts, error bodies,
+  and logs.
+- Authorization headers, URL userinfo, JWTs, bearer tokens, and common provider
+  key formats are sanitized before display or logging.
+- Error messages are normalized with actionable hints and never echo a
+  credential.
+- Change paths reject absolute paths, drive letters, Windows drive-relative
+  paths, alternate data streams, UNC paths, control characters, and traversal.
+- Command validation rejects path-qualified executables and shell
+  metacharacters, and execution never uses a shell.
 - Reconciled GHSA-g3hv-75wg-m249. Runtime minimatch 11.0.4 is patched. The
   nested 9.0.9 and 10.2.6 copies are development-only build and test tooling and
   are not shipped in the VSIX.
+- Offline dependency guard (`npm run verify:deps`) fails if the shipped
+  minimatch runtime dependency drops below the patched 11.0.1 release.
+
+### Tests
+
+- Unit coverage for workspace analysis and ignore matching, configuration
+  clamping, change model/diff/plan/review/apply/history, command validation and
+  execution, conversation persistence, agent task stages, and redaction.
+- Extension-host coverage for workspace indexing/redaction and a full
+  plan, approve, write, and undo cycle.
+- Regression coverage for masked-key redaction, Windows path containment,
+  executable-path validation, and the empty-plan response.
 
 ## [0.1.0] - 2026-11-03
 

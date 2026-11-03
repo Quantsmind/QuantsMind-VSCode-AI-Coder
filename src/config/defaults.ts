@@ -14,6 +14,30 @@ export const DEFAULT_MAX_TOTAL_CHARS = 48_000;
 export const DEFAULT_MAX_FILES = 20;
 export const DEFAULT_HISTORY_CHARS = 24_000;
 
+export const DEFAULT_WORKSPACE_MAX_INDEXED_FILES = 5_000;
+export const DEFAULT_WORKSPACE_MAX_RETRIEVED_FILES = 8;
+export const DEFAULT_WORKSPACE_RETRIEVAL_MAX_CHARS = 40_000;
+
+export const DEFAULT_AGENT_MAX_STEPS = 6;
+export const DEFAULT_AGENT_MAX_REPAIR_ITERATIONS = 1;
+export const DEFAULT_AGENT_TIMEOUT_MS = 180_000;
+
+export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+export const DEFAULT_COMMAND_OUTPUT_MAX_CHARS = 120_000;
+export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = Object.freeze([
+  'npm run compile',
+  'npm run lint',
+  'npm test',
+  'npm run test:unit',
+  'npm run verify',
+]);
+
+export const MAX_CONVERSATIONS = 30;
+export const MAX_CONVERSATION_CHARS = 120_000;
+export const CONVERSATION_STORAGE_KEY = 'quantsmind.chat.conversations.v1';
+export const CHANGE_HISTORY_KEY = 'quantsmind.changes.history.v1';
+export const MAX_CHANGE_HISTORY = 50;
+
 /**
  * These exclusions are mandatory. User settings can add patterns but cannot
  * remove the built-in secret, dependency, and build-output protections.
@@ -61,4 +85,13 @@ export const LIMITS = Object.freeze({
   maxFiles: { min: 1, max: 100 },
   maxExcludePatterns: 100,
   maxPromptChars: 20_000,
+  maxIndexedFiles: { min: 100, max: 20_000 },
+  maxRetrievedFiles: { min: 1, max: 50 },
+  retrievalMaxChars: { min: 2_000, max: 200_000 },
+  agentMaxSteps: { min: 1, max: 20 },
+  agentMaxRepairIterations: { min: 0, max: 5 },
+  agentTimeoutMs: { min: 10_000, max: 900_000 },
+  commandTimeoutMs: { min: 1_000, max: 600_000 },
+  commandOutputMaxChars: { min: 1_000, max: 1_000_000 },
+  maxCommandAllowlist: 20,
 });

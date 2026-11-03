@@ -20,7 +20,7 @@ import type {
 } from './types';
 
 export const OPENAI_COMPATIBLE_PROVIDER_ID = 'openai-compatible';
-export const USER_AGENT = 'QuantsMind-VSCode-AI-Coder/0.1.0';
+export const USER_AGENT = 'QuantsMind-VSCode-AI-Coder/0.2.0';
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_JSON_RESPONSE_BYTES = 20 * 1024 * 1024;
@@ -318,7 +318,7 @@ function parseJsonResponse(
   if (text === undefined) {
     throw new ProviderError(
       'invalid_response',
-      'The provider response did not contain message text. Tool-call responses are not supported in v0.1.0.',
+      'The provider response did not contain message text. Tool-call responses are not supported in v0.2.0.',
     );
   }
 

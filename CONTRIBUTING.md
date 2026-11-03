@@ -1,11 +1,14 @@
 # Contributing
 
-QuantsMind AI Coder v0.1.0 is an alpha preview. Contributions should preserve
-its two core invariants:
+QuantsMind AI Coder v0.2.0 is an alpha preview. Contributions should preserve
+its core invariants:
 
 1. **Explicit context and explicit sending.** No automatic workspace scanning,
-   no background requests, and no file modification.
-2. **Independent packaging.** The project stays a single npm package with no
+   no background provider requests, and no file modification without per-file
+   approval.
+2. **Contained change and command execution.** Writes stay inside the workspace
+   with backups, and commands are allowlisted, shell-free, and user-triggered.
+3. **Independent packaging.** The project stays a single npm package with no
    QuantsMind-Agent, shared SDK, submodule, monorepo, Python runtime, backend,
    or database dependency.
 
@@ -55,7 +58,8 @@ baseline is intentionally separate from any hosting decision.
   responses, webview messages, endpoint URLs, credentials, and file content.
 - Never log request bodies, credentials, or attached file content.
 - Never add a setting that stores a credential.
-- Never add a file-write or command-execution capability to v0.1.x.
+- Do not add a file write or command execution without explicit approval,
+  workspace containment, and tests.
 - Keep webview markup free of remote assets and inline executable scripts.
 - Add tests for every security-relevant behavior.
 

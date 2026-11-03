@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import type { QuantsMindApi } from './api';
 import { ChatViewProvider } from './chat/chatViewProvider';
+import { ConversationStore } from './chat/persistence';
+import { ChangeHistoryStore } from './changes/history';
+import { ChangeService } from './changes/changeService';
 import { COMMANDS } from './commands/ids';
 import { SettingsService } from './config/settings';
 import { ContextService } from './context/contextService';
@@ -8,6 +11,7 @@ import { CompletionService } from './providers/completionService';
 import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
 import { API_KEY_SECRET_KEY, SecretStore } from './security/secretStore';
+import { WorkspaceIndexService } from './workspace/indexService';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
@@ -19,7 +23,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.1.0';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.2.0';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -29,6 +33,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   const settings = new SettingsService();
   const completion = new CompletionService(secrets, settings, logger);
   const contextService = new ContextService(settings);
+  const conversations = new ConversationStore(context.globalState);
+  const workspaceIndex = new WorkspaceIndexService(settings, logger);
+  const changeHistory = new ChangeHistoryStore(context.globalState);
+  const changeService = new ChangeService(
+    settings,
+    changeHistory,
+    vscode.Uri.joinPath(context.globalStorageUri, 'backups'),
+    logger,
+  );
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
     completion,
@@ -37,6 +50,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     settings,
     logger,
     version,
+    conversations,
+    workspaceIndex,
+    changeService,
   });
 
   context.subscriptions.push(output);
@@ -195,6 +211,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     const items: ActionItem[] = [
       { label: '$(comment-discussion) Open Chat', command: COMMANDS.openChat },
       { label: '$(add) New Chat', command: COMMANDS.newChat },
+      { label: '$(map) Summarize Workspace', command: COMMANDS.summarizeWorkspace },
+      { label: '$(file-add) Attach Relevant Files', command: COMMANDS.attachRelevantFiles },
+      { label: '$(rocket) Start Agent Task', command: COMMANDS.startAgentTask },
+      { label: '$(history) Change History', command: COMMANDS.showChangeHistory },
       { label: '$(key) Set API Key', command: COMMANDS.setApiKey },
       { label: '$(trash) Clear API Key', command: COMMANDS.clearApiKey },
       { label: '$(settings-gear) Configure Provider', command: COMMANDS.configureProvider },
@@ -210,11 +230,99 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     }
   };
 
+  const summarizeWorkspace = async (): Promise<void> => {
+    await chatProvider.summarizeWorkspaceAndReveal();
+  };
+
+  const attachRelevantFiles = async (): Promise<void> => {
+    const query = await vscode.window.showInputBox({
+      title: 'QuantsMind: Attach Relevant Files',
+      prompt:
+        'Describe the task. Matching workspace paths are attached locally for your review; nothing is sent until you press Send.',
+      ignoreFocusOut: true,
+      placeHolder: 'For example: authentication middleware and its tests',
+    });
+    if (query === undefined || query.trim().length === 0) {
+      return;
+    }
+    await chatProvider.attachRelevantFilesAndReveal(query.trim());
+  };
+
+  const startAgentTask = async (): Promise<void> => {
+    const prompt = await vscode.window.showInputBox({
+      title: 'QuantsMind: Start Agent Task',
+      prompt:
+        'Describe the change. A plan and diffs will be prepared for explicit approval; no file is modified until you approve it.',
+      ignoreFocusOut: true,
+      placeHolder: 'For example: add retry handling to the provider request',
+    });
+    if (prompt === undefined || prompt.trim().length === 0) {
+      return;
+    }
+    await chatProvider.startAgentTaskAndReveal(prompt.trim());
+  };
+
+  const showChangeHistory = async (): Promise<void> => {
+    const entries = changeHistory.list();
+    if (entries.length === 0) {
+      void vscode.window.showInformationMessage('QuantsMind: no change sets have been recorded.');
+      return;
+    }
+
+    interface HistoryItem extends vscode.QuickPickItem {
+      readonly taskId: string;
+      readonly undoable: boolean;
+    }
+
+    const items: HistoryItem[] = entries.map((entry) => ({
+      label: `${entry.status} · ${entry.summary}`,
+      description: entry.updatedAt,
+      detail: entry.files.map((file) => `${file.kind}: ${file.path}`).join(', ').slice(0, 300),
+      taskId: entry.taskId,
+      undoable: entry.undoable,
+    }));
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'QuantsMind: Change History',
+      placeHolder: 'Select an undone change set to restore its backups',
+    });
+    if (picked === undefined || !picked.undoable) {
+      return;
+    }
+
+    const confirmation = await vscode.window.showWarningMessage(
+      'Restore the files from this change set? Files modified after apply are left untouched.',
+      { modal: true },
+      'Undo',
+    );
+    if (confirmation !== 'Undo') {
+      return;
+    }
+
+    try {
+      const outcome = await changeService.undo(picked.taskId);
+      if (outcome === undefined) {
+        void vscode.window.showWarningMessage('QuantsMind: this change set has no backups to restore.');
+        return;
+      }
+      void vscode.window.showInformationMessage(
+        `QuantsMind: restored ${outcome.restored} file(s); ${outcome.conflicts} conflict(s).`,
+      );
+    } catch (error) {
+      logger.error('undo from history failed', error);
+      void vscode.window.showErrorMessage('QuantsMind: the change set could not be undone.');
+    }
+  };
+
   register(COMMANDS.openChat, () => chatProvider.reveal());
   register(COMMANDS.newChat, async () => {
-    chatProvider.startNewChat();
+    await chatProvider.startNewChat();
     await chatProvider.reveal();
   });
+  register(COMMANDS.summarizeWorkspace, summarizeWorkspace);
+  register(COMMANDS.attachRelevantFiles, attachRelevantFiles);
+  register(COMMANDS.startAgentTask, startAgentTask);
+  register(COMMANDS.showChangeHistory, showChangeHistory);
   register(COMMANDS.explainSelection, () =>
     chatProvider.requestSelection('explain', 'Explain the selected code.'),
   );
@@ -235,7 +343,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.showLog, () => output.show());
   register(COMMANDS.showMenu, showMenu);
 
-  context.subscriptions.push(settings.onDidChange(() => void refreshAll()));
+  const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
+  const invalidateIndex = (): void => workspaceIndex.invalidate();
+  context.subscriptions.push(
+    workspaceWatcher,
+    workspaceWatcher.onDidCreate(invalidateIndex),
+    workspaceWatcher.onDidDelete(invalidateIndex),
+    vscode.workspace.onDidRenameFiles(invalidateIndex),
+  );
+
+  context.subscriptions.push(
+    settings.onDidChange(() => {
+      workspaceIndex.invalidate();
+      void refreshAll();
+    }),
+  );
   context.subscriptions.push(
     context.secrets.onDidChange((event) => {
       if (event.key === API_KEY_SECRET_KEY) {

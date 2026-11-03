@@ -1,5 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
+import type { AgentTaskView, TaskStatus } from '../agent/taskRunner';
+import { AgentTaskRunner } from '../agent/taskRunner';
+import type { ChangeService } from '../changes/changeService';
+import type { WorkspaceIndexService } from '../workspace/indexService';
+import { runApprovedCommand } from '../commands/runner';
 import { COMMANDS } from '../commands/ids';
 import { LIMITS } from '../config/defaults';
 import type { SettingsService } from '../config/settings';
@@ -17,8 +22,14 @@ import type { SecretStore } from '../security/secretStore';
 import {
   buildMessages,
   DEFAULT_QUESTIONS,
+  isAgentMode,
   type ChatMode,
 } from './prompts';
+import {
+  ConversationStore,
+  type Conversation,
+  type StoredMessage,
+} from './persistence';
 import {
   parseWebviewMessage,
   type AttachmentSummary,
@@ -62,6 +73,9 @@ export interface ChatViewDependencies {
   readonly settings: SettingsService;
   readonly logger: Logger;
   readonly version: string;
+  readonly conversations: ConversationStore;
+  readonly workspaceIndex: WorkspaceIndexService;
+  readonly changeService: ChangeService;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -77,8 +91,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private attachmentSeq = 0;
   private pendingDraft: { readonly prompt: string; readonly mode: ChatMode } | undefined;
   private viewDisposables: vscode.Disposable[] = [];
+  private conversation: Conversation | undefined;
+  private storedMessages: StoredMessage[] = [];
+  private activeTaskId: string | undefined;
+  private taskSource: vscode.CancellationTokenSource | undefined;
+  private taskTimer: NodeJS.Timeout | undefined;
+  private readonly lastTaskStatus = new Map<string, TaskStatus>();
+  private readonly taskRunner: AgentTaskRunner;
 
-  constructor(private readonly deps: ChatViewDependencies) {}
+  constructor(private readonly deps: ChatViewDependencies) {
+    this.taskRunner = new AgentTaskRunner({
+      complete: (messages, token) =>
+        this.deps.completion.complete(messages, {
+          token,
+        }),
+      retrieve: async (query, token) => {
+        void token;
+        const secret = await this.deps.secrets.get();
+        return this.deps.workspaceIndex.retrieve(query, secret);
+      },
+      changes: deps.changeService,
+      runCommand: async (command, signal) => {
+        const root = this.workspaceRoot();
+        if (root === undefined) {
+          throw new Error('Open a workspace folder before running validation.');
+        }
+        const commandSettings = this.deps.settings.getCommandSettings();
+        return runApprovedCommand(command, {
+          cwd: root.uri.fsPath,
+          workspaceRoot: root.uri.fsPath,
+          allowlist: commandSettings.allowlist,
+          timeoutMs: commandSettings.timeoutMs,
+          maxOutputChars: commandSettings.maxOutputChars,
+          secret: await this.deps.secrets.get(),
+          signal,
+        });
+      },
+      agentSettings: () => this.deps.settings.getAgentSettings(),
+      logger: this.deps.logger,
+      onChange: (task) => this.onTaskUpdate(task),
+    });
+  }
+
+  private workspaceRoot(): vscode.WorkspaceFolder | undefined {
+    return vscode.workspace.workspaceFolders?.[0];
+  }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -172,6 +229,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendDraft();
   }
 
+  async summarizeWorkspaceAndReveal(): Promise<void> {
+    await this.reveal();
+    await this.summarizeWorkspace();
+  }
+
+  async attachRelevantFilesAndReveal(query: string): Promise<void> {
+    await this.reveal();
+    await this.attachRelevantFiles(query);
+  }
+
+  async startAgentTaskAndReveal(prompt: string): Promise<void> {
+    await this.reveal();
+    await this.startTask(prompt);
+  }
+
   async attachActiveFileAndReveal(): Promise<void> {
     const result = await this.attachFromEditor('file');
     if (result.added === 0 && this.attachments.length === 0) {
@@ -183,22 +255,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.reveal();
   }
 
-  startNewChat(): void {
+  async startNewChat(): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish before starting a new chat.');
+      return;
+    }
+    if (this.activeTaskId !== undefined && this.lastTaskStatus.get(this.activeTaskId) === 'awaiting-approval') {
+      this.notifyWarning('Approve or reject the pending change review first.');
+      return;
+    }
     this.requestSeq += 1;
     this.cancelActive();
+    this.cancelTask();
     this.busy = false;
     this.session.clear();
+    this.storedMessages = [];
     this.attachments = [];
     this.pendingDraft = undefined;
+    this.activeTaskId = undefined;
+    const conversation = this.deps.conversations.create();
+    this.conversation = await this.deps.conversations.save(conversation);
     this.post({ type: 'busy', busy: false });
     this.post({ type: 'attachments', attachments: [] });
     this.post({ type: 'clear' });
+    this.postConversations();
     void this.refreshStatus();
   }
 
   dispose(): void {
     this.requestSeq += 1;
     this.cancelActive();
+    this.cancelTask();
     this.disposeViewListeners();
     this.session.clear();
     this.attachments = [];
@@ -217,6 +304,290 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.cancelSource = undefined;
     source?.cancel();
     source?.dispose();
+  }
+
+  private cancelTask(): void {
+    if (this.taskTimer !== undefined) {
+      clearTimeout(this.taskTimer);
+      this.taskTimer = undefined;
+    }
+    const source = this.taskSource;
+    this.taskSource = undefined;
+    source?.cancel();
+    source?.dispose();
+    if (this.activeTaskId !== undefined) {
+      this.taskRunner.cancel(this.activeTaskId);
+    }
+  }
+
+  private async ensureConversation(): Promise<void> {
+    if (this.conversation !== undefined) {
+      return;
+    }
+    const activeId = this.deps.conversations.activeId();
+    const existing = activeId !== undefined ? this.deps.conversations.get(activeId) : undefined;
+    if (existing !== undefined) {
+      this.conversation = existing;
+      this.storedMessages = [...existing.messages];
+      this.session.load(
+        existing.messages.map((message) => ({ role: message.role, content: message.text })),
+      );
+      return;
+    }
+    const created = this.deps.conversations.create();
+    this.conversation = await this.deps.conversations.save(created);
+    this.storedMessages = [];
+    this.session.clear();
+  }
+
+  private transcript(): { role: 'user' | 'assistant'; text: string; attachments: readonly string[] }[] {
+    return this.storedMessages.map((message) => ({
+      role: message.role,
+      text: message.text,
+      attachments: message.attachments,
+    }));
+  }
+
+  private postConversations(): void {
+    this.post({
+      type: 'conversations',
+      conversations: this.deps.conversations.list(),
+      activeConversationId: this.conversation?.id ?? '',
+    });
+  }
+
+  private async persistConversation(): Promise<void> {
+    if (this.conversation === undefined) {
+      return;
+    }
+    this.conversation = await this.deps.conversations.save({
+      ...this.conversation,
+      messages: this.storedMessages,
+    });
+    this.postConversations();
+  }
+
+  private async recordUser(text: string, attachments: readonly string[]): Promise<void> {
+    this.storedMessages.push({
+      role: 'user',
+      text,
+      attachments,
+      createdAt: new Date().toISOString(),
+    });
+    await this.persistConversation();
+  }
+
+  private async recordAssistant(text: string, addToSession = true): Promise<void> {
+    if (text.trim().length === 0) {
+      return;
+    }
+    if (addToSession) {
+      this.session.addAssistant(text);
+    }
+    this.storedMessages.push({
+      role: 'assistant',
+      text,
+      attachments: [],
+      createdAt: new Date().toISOString(),
+    });
+    await this.persistConversation();
+  }
+
+  private async switchConversation(id: string): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish before switching conversations.');
+      return;
+    }
+    if (this.activeTaskId !== undefined && this.lastTaskStatus.get(this.activeTaskId) === 'awaiting-approval') {
+      this.notifyWarning('Approve or reject the pending change review first.');
+      return;
+    }
+    const conversation = this.deps.conversations.get(id);
+    if (conversation === undefined) {
+      this.notifyWarning('That conversation no longer exists.');
+      this.postConversations();
+      return;
+    }
+    this.cancelActive();
+    this.cancelTask();
+    this.requestSeq += 1;
+    this.busy = false;
+    this.conversation = conversation;
+    this.storedMessages = [...conversation.messages];
+    this.session.load(
+      conversation.messages.map((message) => ({ role: message.role, content: message.text })),
+    );
+    this.attachments = [];
+    this.pendingDraft = undefined;
+    this.activeTaskId = undefined;
+    await this.deps.conversations.setActive(id);
+    this.post({ type: 'attachments', attachments: [] });
+    this.post({ type: 'busy', busy: false });
+    this.post({
+      type: 'conversation',
+      id: conversation.id,
+      title: conversation.title,
+      transcript: this.transcript(),
+    });
+    this.postConversations();
+  }
+
+  private async deleteConversation(id: string): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish before deleting a conversation.');
+      return;
+    }
+    const wasActive = this.conversation?.id === id;
+    await this.deps.conversations.delete(id);
+    if (wasActive) {
+      this.resetConversationState();
+      await this.ensureConversation();
+      this.post({ type: 'clear' });
+      this.post({ type: 'attachments', attachments: [] });
+      const active = this.activeConversation();
+      this.post({
+        type: 'conversation',
+        id: active?.id ?? '',
+        title: active?.title ?? 'New chat',
+        transcript: this.transcript(),
+      });
+    }
+    this.postConversations();
+  }
+
+  private resetConversationState(): void {
+    this.conversation = undefined;
+    this.storedMessages = [];
+    this.session.clear();
+    this.attachments = [];
+    this.cancelTask();
+    this.activeTaskId = undefined;
+  }
+
+  private activeConversation(): Conversation | undefined {
+    return this.conversation;
+  }
+
+  private async summarizeWorkspace(): Promise<void> {
+    try {
+      const summary = await this.deps.workspaceIndex.summarize();
+      this.post({
+        type: 'workspaceSummary',
+        text: summary.text,
+        fileCount: summary.fileCount,
+        truncated: false,
+      });
+      await this.recordAssistant(`Workspace summary (local index; nothing was sent):\n\n${summary.text}`, false);
+    } catch (error) {
+      this.deps.logger.error('workspace summary failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Could not summarize the workspace. See the QuantsMind log.',
+      });
+    }
+  }
+
+  private async attachRelevantFiles(query: string): Promise<void> {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      this.notifyWarning('Type a request first so relevant files can be selected.');
+      return;
+    }
+    try {
+      const secret = await this.deps.secrets.get();
+      const retrieval = await this.deps.workspaceIndex.retrieve(trimmed, secret);
+      let added = 0;
+      for (const item of retrieval.items) {
+        if (this.attachments.length >= this.deps.settings.getContextSettings().maxFiles) {
+          break;
+        }
+        this.attachments.push({
+          id: `attachment-${++this.attachmentSeq}`,
+          path: item.path,
+          content: item.content,
+          languageId: item.languageId,
+          isSelection: item.isSelection === true,
+          startLine: item.startLine,
+          endLine: item.endLine,
+          redactions: item.redactions,
+        });
+        added += 1;
+      }
+      this.postAttachments();
+      this.post({
+        type: 'notice',
+        level: added > 0 ? 'info' : 'warn',
+        message:
+          added > 0
+            ? `Attached ${added} relevant file(s). Review them before sending.`
+            : 'No relevant files were found. Attach files manually or refine the request.',
+      });
+    } catch (error) {
+      this.deps.logger.error('relevant file retrieval failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Could not retrieve workspace files. See the QuantsMind log.',
+      });
+    }
+  }
+
+  private onTaskUpdate(task: AgentTaskView): void {
+    if (this.activeTaskId === undefined || this.activeTaskId !== task.id) {
+      this.activeTaskId = task.id;
+    }
+    const previous = this.lastTaskStatus.get(task.id);
+    this.lastTaskStatus.set(task.id, task.status);
+
+    if (this.taskSource !== undefined && this.taskTimer === undefined && task.status === 'running') {
+      const timeoutMs = this.deps.settings.getAgentSettings().timeoutMs;
+      this.taskTimer = setTimeout(() => {
+        this.taskRunner.cancel(task.id);
+        this.taskSource?.cancel();
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message: `The agent task exceeded the ${timeoutMs.toLocaleString()} ms limit and was stopped.`,
+        });
+      }, timeoutMs);
+    }
+
+    this.post({ type: 'task', task });
+
+    if (task.status === 'awaiting-approval' && previous !== 'awaiting-approval') {
+      const files =
+        task.review.length > 0
+          ? task.review.map((change) => `- ${change.kind}: ${change.path}`).join('\n')
+          : '(no file changes)';
+      void this.recordAssistant(
+        [
+          `Change plan ready for review: ${task.planSummary ?? 'proposed changes'}`,
+          files,
+          'No files have been modified. Review the diff cards and approve the files you want to apply.',
+        ].join('\n\n'),
+      );
+    }
+
+    if (task.status === 'applied' && previous !== 'applied') {
+      void this.recordAssistant(
+        'Applied the approved changes. Validation has not run yet; use an allowlisted validation command to verify.',
+        false,
+      );
+    }
+
+    if (task.status === 'failed' && previous !== 'failed') {
+      void this.recordAssistant(
+        `The agent task failed: ${task.error ?? 'unknown error'}${task.hint !== undefined ? `\n${task.hint}` : ''}`,
+        false,
+      );
+    }
+
+    if (task.status !== 'running' && this.taskTimer !== undefined) {
+      clearTimeout(this.taskTimer);
+      this.taskTimer = undefined;
+    }
+    this.post({ type: 'busy', busy: task.status === 'running' });
   }
 
   private notifyWarning(message: string): void {
@@ -337,6 +708,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'refreshStatus':
         await this.refreshStatus();
         break;
+      case 'startTask':
+        await this.startTask(message.prompt);
+        break;
+      case 'approveChanges':
+        await this.runTaskPhase(message.taskId, (token) =>
+          this.taskRunner.approve(message.taskId, message.ids, token),
+        );
+        break;
+      case 'rejectChanges':
+        await this.runTaskPhase(message.taskId, (token) =>
+          this.taskRunner.approve(message.taskId, [], token),
+        );
+        break;
+      case 'cancelTask':
+        if (message.taskId === this.activeTaskId) {
+          this.cancelTask();
+        } else {
+          this.taskRunner.cancel(message.taskId);
+        }
+        break;
+      case 'runValidation':
+        await this.validateTask(message.taskId, message.command);
+        break;
+      case 'requestRepair':
+        await this.runTaskPhase(message.taskId, (token) =>
+          this.taskRunner.repair(message.taskId, token),
+        );
+        break;
+      case 'undoChanges': {
+        try {
+          const result = await this.taskRunner.undo(message.taskId);
+          if (result === undefined) {
+            this.post({
+              type: 'notice',
+              level: 'warn',
+              message: 'There is no applied change set to undo.',
+            });
+          } else {
+            const { outcome } = result;
+            this.post({
+              type: 'undoResult',
+              taskId: message.taskId,
+              restored: outcome.restored,
+              conflicts: outcome.conflicts,
+              messages: outcome.results
+                .filter((entry) => entry.message !== undefined)
+                .map((entry) => entry.message as string),
+            });
+            this.post({
+              type: 'notice',
+              level: outcome.conflicts === 0 ? 'info' : 'warn',
+              message:
+                outcome.conflicts === 0
+                  ? 'The applied changes were restored from backups.'
+                  : 'Some files could not be restored because they changed after apply.',
+            });
+          }
+        } catch (error) {
+          this.deps.logger.error('undo failed', error);
+          this.post({ type: 'notice', level: 'error', message: 'Undo failed. See the QuantsMind log.' });
+        }
+        break;
+      }
+      case 'newConversation':
+        await this.startNewChat();
+        break;
+      case 'switchConversation':
+        await this.switchConversation(message.id);
+        break;
+      case 'deleteConversation':
+        await this.deleteConversation(message.id);
+        break;
+      case 'summarizeWorkspace':
+        await this.summarizeWorkspace();
+        break;
+      case 'attachRelevantFiles':
+        await this.attachRelevantFiles(message.query);
+        break;
       default:
         break;
     }
@@ -344,6 +793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendInit(): Promise<void> {
     try {
+      await this.ensureConversation();
       const status = await this.deps.completion.getStatus();
       this.post({
         type: 'init',
@@ -351,6 +801,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         attachments: this.attachments.map((attachment) => this.toSummary(attachment)),
         maxPromptChars: LIMITS.maxPromptChars,
         version: this.deps.version,
+        conversations: this.deps.conversations.list(),
+        activeConversationId: this.conversation?.id ?? '',
+        transcript: this.transcript(),
+        validationCommands: this.deps.settings.getCommandSettings().allowlist,
+        workspaceName: this.workspaceRoot()?.name,
       });
     } catch (error) {
       this.deps.logger.error('failed to build initial chat state', error);
@@ -522,7 +977,243 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.addCandidates(read.candidates);
   }
 
+  private async providerReadiness(): Promise<ProviderStatus | undefined> {
+    let status: ProviderStatus;
+    try {
+      status = await this.deps.completion.getStatus();
+    } catch (error) {
+      this.deps.logger.error('failed to read provider status before send', error);
+      this.post({
+        type: 'error',
+        message: 'Could not read the provider configuration.',
+        hint: 'Open the QuantsMind provider settings or show the log.',
+        code: 'configuration',
+      });
+      return undefined;
+    }
+    if (status.configurationError !== undefined) {
+      this.post({
+        type: 'error',
+        message: status.configurationError,
+        hint: errorHint('configuration'),
+        code: 'configuration',
+      });
+      return undefined;
+    }
+    if (!status.ready) {
+      this.post({
+        type: 'error',
+        message: 'No API key is configured for this provider.',
+        hint: errorHint('authentication'),
+        code: 'authentication',
+      });
+      return undefined;
+    }
+    return status;
+  }
+
+  private postTaskError(error: unknown): void {
+    const providerError = isProviderError(error) ? error : normalizeThrownError(error);
+    if (providerError.code === 'cancelled') {
+      return;
+    }
+    this.post({
+      type: 'error',
+      message: providerError.message,
+      hint: errorHint(providerError.code),
+      code: providerError.code,
+    });
+  }
+
+  private async startTask(rawPrompt: string): Promise<void> {
+    if (this.busy) {
+      this.post({ type: 'notice', level: 'warn', message: 'A request is already running.' });
+      return;
+    }
+    const prompt = rawPrompt.trim();
+    if (prompt.length === 0) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'Describe the change you want before starting an agent task.',
+      });
+      return;
+    }
+    if (prompt.length > LIMITS.maxPromptChars) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: `The prompt exceeds the ${LIMITS.maxPromptChars.toLocaleString()} character limit.`,
+      });
+      return;
+    }
+    if (this.workspaceRoot() === undefined) {
+      this.post({
+        type: 'error',
+        message: 'Open a workspace folder before using agent mode.',
+        hint: 'Agent mode needs a workspace to index and to apply approved changes.',
+        code: 'configuration',
+      });
+      return;
+    }
+    const activeStatus =
+      this.activeTaskId !== undefined ? this.lastTaskStatus.get(this.activeTaskId) : undefined;
+    if (
+      activeStatus === 'running' ||
+      activeStatus === 'awaiting-approval' ||
+      activeStatus === 'validation-failed'
+    ) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'Finish the current change review or validation before starting another task.',
+      });
+      return;
+    }
+
+    const status = await this.providerReadiness();
+    if (status === undefined) {
+      return;
+    }
+
+    this.cancelTask();
+    this.activeTaskId = undefined;
+    this.attachments = [];
+    this.post({ type: 'attachments', attachments: [] });
+    await this.ensureConversation();
+    await this.recordUser(prompt, []);
+    this.session.addUser(prompt);
+    this.post({ type: 'userMessage', text: prompt, attachments: [] });
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+
+    const source = new vscode.CancellationTokenSource();
+    this.taskSource = source;
+    try {
+      const task = await this.taskRunner.start(prompt, source.token);
+      if (task.status === 'failed') {
+        this.post({
+          type: 'error',
+          message: task.error ?? 'The agent task failed.',
+          hint: task.hint,
+          code: 'agent',
+        });
+      }
+    } catch (error) {
+      this.postTaskError(error);
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
+      if (this.taskSource === source) {
+        this.taskSource = undefined;
+      }
+      source.dispose();
+      if (this.taskTimer !== undefined) {
+        clearTimeout(this.taskTimer);
+        this.taskTimer = undefined;
+      }
+    }
+  }
+
+  private async runTaskPhase(
+    taskId: string,
+    action: (token: vscode.CancellationToken) => Promise<AgentTaskView>,
+  ): Promise<void> {
+    if (taskId !== this.activeTaskId) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'That task is no longer active in this conversation.',
+      });
+      return;
+    }
+    if (this.taskSource !== undefined) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'The previous task step is still running.',
+      });
+      return;
+    }
+
+    const source = new vscode.CancellationTokenSource();
+    this.taskSource = source;
+    const timeoutMs = this.deps.settings.getAgentSettings().timeoutMs;
+    this.taskTimer = setTimeout(() => {
+      this.taskRunner.cancel(taskId);
+      source.cancel();
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: `The agent task exceeded the ${timeoutMs.toLocaleString()} ms limit and was stopped.`,
+      });
+    }, timeoutMs);
+
+    try {
+      const task = await action(source.token);
+      if (task.status === 'failed') {
+        this.post({
+          type: 'error',
+          message: task.error ?? 'The agent task failed.',
+          hint: task.hint,
+          code: 'agent',
+        });
+      }
+    } catch (error) {
+      this.postTaskError(error);
+    } finally {
+      if (this.taskTimer !== undefined) {
+        clearTimeout(this.taskTimer);
+        this.taskTimer = undefined;
+      }
+      if (this.taskSource === source) {
+        this.taskSource = undefined;
+      }
+      source.dispose();
+    }
+  }
+
+  private async validateTask(taskId: string, command: string): Promise<void> {
+    if (taskId !== this.activeTaskId) {
+      this.post({
+        type: 'notice',
+        level: 'warn',
+        message: 'That task is no longer active in this conversation.',
+      });
+      return;
+    }
+    const controller = new AbortController();
+    const timeoutMs = this.deps.settings.getCommandSettings().timeoutMs;
+    const timer = setTimeout(() => controller.abort(), timeoutMs + 5_000);
+    try {
+      const task = await this.taskRunner.validate(taskId, command, controller.signal);
+      if (task.validation !== undefined) {
+        this.post({
+          type: 'commandOutput',
+          command: task.validation.command,
+          cwd: this.workspaceRoot()?.uri.fsPath ?? '.',
+          output: task.validation.output,
+          exitCode: task.validation.exitCode,
+          timedOut: task.validation.timedOut,
+          cancelled: task.validation.cancelled,
+        });
+      }
+    } catch (error) {
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: error instanceof Error ? error.message : 'Validation could not run.',
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async handleSend(rawPrompt: string, mode: ChatMode): Promise<void> {
+    if (isAgentMode(mode)) {
+      await this.startTask(rawPrompt);
+      return;
+    }
     if (this.busy) {
       this.post({ type: 'notice', level: 'warn', message: 'A request is already running.' });
       return;
@@ -546,37 +1237,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    let status: ProviderStatus;
-    try {
-      status = await this.deps.completion.getStatus();
-    } catch (error) {
-      this.deps.logger.error('failed to read provider status before send', error);
-      this.post({
-        type: 'error',
-        message: 'Could not read the provider configuration.',
-        hint: 'Open the QuantsMind provider settings or show the log.',
-        code: 'configuration',
-      });
-      return;
-    }
-
-    if (status.configurationError !== undefined) {
-      this.post({
-        type: 'error',
-        message: status.configurationError,
-        hint: errorHint('configuration'),
-        code: 'configuration',
-      });
-      return;
-    }
-
-    if (!status.ready) {
-      this.post({
-        type: 'error',
-        message: 'No API key is configured for this provider.',
-        hint: errorHint('authentication'),
-        code: 'authentication',
-      });
+    const status = await this.providerReadiness();
+    if (status === undefined) {
       return;
     }
 
@@ -611,6 +1273,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userContent = messages[messages.length - 1]?.content ?? prompt;
     this.session.addUser(userContent);
 
+    const displayPrompt = prompt.length > 0 ? prompt : DEFAULT_QUESTIONS[mode];
+    const attachmentLabels = built.items.map((item) =>
+      item.isSelection === true && item.startLine !== undefined
+        ? `${item.path}:${item.startLine}-${item.endLine ?? item.startLine}`
+        : item.path,
+    );
+    await this.ensureConversation();
+    await this.recordUser(displayPrompt, attachmentLabels);
+
     const requestId = ++this.requestSeq;
     const assistantId = `assistant-${requestId}`;
     this.attachments = [];
@@ -619,7 +1290,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', busy: true });
     this.post({
       type: 'userMessage',
-      text: prompt.length > 0 ? prompt : DEFAULT_QUESTIONS[mode],
+      text: displayPrompt,
       attachments: built.items.map((item, index) => this.summaryFromItem(item, index)),
     });
     this.post({ type: 'assistantStart', id: assistantId, model: status.model });
@@ -641,7 +1312,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      this.session.addAssistant(result.text);
+      await this.recordAssistant(result.text);
       this.post({
         type: 'assistantEnd',
         id: assistantId,

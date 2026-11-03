@@ -11,4 +11,8 @@ export const COMMANDS = Object.freeze({
   selectModel: 'quantsmind.selectModel',
   showLog: 'quantsmind.showLog',
   showMenu: 'quantsmind.showMenu',
+  summarizeWorkspace: 'quantsmind.summarizeWorkspace',
+  attachRelevantFiles: 'quantsmind.attachRelevantFiles',
+  startAgentTask: 'quantsmind.startAgentTask',
+  showChangeHistory: 'quantsmind.showChangeHistory',
 });

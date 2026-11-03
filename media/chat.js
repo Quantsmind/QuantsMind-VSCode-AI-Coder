@@ -12,6 +12,8 @@
     stop: document.getElementById('stop'),
     mode: document.getElementById('mode'),
     newChat: document.getElementById('new-chat'),
+    deleteConversation: document.getElementById('delete-conversation'),
+    conversationSelect: document.getElementById('conversation-select'),
     statusPill: document.getElementById('provider-status'),
     statusDot: document.getElementById('status-dot'),
     statusText: document.getElementById('status-text'),
@@ -28,6 +30,12 @@
     maxPromptChars: 20000,
     streaming: null,
     pendingPrompt: null,
+    conversations: [],
+    activeConversationId: '',
+    validationCommands: [],
+    workspaceName: '',
+    tasks: {},
+    taskSelections: {},
   };
 
   let toastTimer = 0;
@@ -82,11 +90,15 @@
       const language = sanitizeLanguage(match[1]);
       const code = match[2].replace(/\n$/, '');
       html +=
+        '<div class="code-block">' +
+        '<div class="code-head"><span class="code-language">' +
+        escapeHtml(language) +
+        '</span><button type="button" class="text-button" data-action="copy-code">Copy</button></div>' +
         '<pre class="code"><code class="language-' +
         escapeHtml(language) +
         '">' +
         escapeHtml(code) +
-        '</code></pre>';
+        '</code></pre></div>';
       lastIndex = fence.lastIndex;
     }
 
@@ -95,6 +107,25 @@
     }
 
     return html || '<div class="text"></div>';
+  }
+
+  function diffHtml(diff) {
+    return String(diff || '')
+      .split('\n')
+      .map(function (line) {
+        let className = '';
+        if (line.indexOf('+++') === 0 || line.indexOf('---') === 0) {
+          className = 'diff-file';
+        } else if (line.indexOf('@@') === 0) {
+          className = 'diff-hunk';
+        } else if (line.indexOf('+') === 0) {
+          className = 'diff-add';
+        } else if (line.indexOf('-') === 0) {
+          className = 'diff-del';
+        }
+        return '<span' + (className ? ' class="' + className + '"' : '') + '>' + (line.length > 0 ? escapeHtml(line) : '&nbsp;') + '</span>';
+      })
+      .join('');
   }
 
   function formatNumber(value) {
@@ -144,7 +175,7 @@
     els.stop.hidden = !busy;
     els.mode.disabled = busy;
     const buttons = document.querySelectorAll(
-      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="clear-attachments"]',
+      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="clear-attachments"]',
     );
     buttons.forEach(function (button) {
       button.disabled = busy;
@@ -186,6 +217,54 @@
       status.hasCredential ? 'API key stored in VS Code SecretStorage' : 'No API key required',
       'Click to open provider settings.',
     ].join('\n');
+  }
+
+  function renderWorkspace() {
+    if (state.workspaceName) {
+      els.workspaceName.textContent = state.workspaceName;
+      els.workspaceName.title = 'Workspace: ' + state.workspaceName;
+    } else {
+      els.workspaceName.textContent = 'No workspace';
+      els.workspaceName.title = 'Open a folder to enable workspace retrieval and agent mode';
+    }
+  }
+
+  function renderConversationSelect() {
+    const list = state.conversations || [];
+    els.conversationSelect.replaceChildren();
+
+    const fresh = document.createElement('option');
+    fresh.value = '';
+    fresh.textContent = 'New chat';
+    els.conversationSelect.append(fresh);
+
+    let matched = false;
+    list.forEach(function (conversation) {
+      const option = document.createElement('option');
+      option.value = conversation.id;
+      const count = conversation.messageCount > 0 ? ' (' + conversation.messageCount + ')' : '';
+      option.textContent = conversation.title + count;
+      if (conversation.id === state.activeConversationId) {
+        matched = true;
+        option.selected = true;
+      }
+      els.conversationSelect.append(option);
+    });
+
+    if (!matched) {
+      fresh.selected = true;
+    }
+    els.deleteConversation.hidden = !state.activeConversationId;
+  }
+
+  function updateModeUi() {
+    const agent = els.mode.value === 'agent';
+    els.prompt.placeholder = agent
+      ? 'Describe the multi-file change you want. The agent proposes a plan for review.'
+      : 'Ask about your code. Nothing is sent until you press Send.';
+    els.privacyNote.textContent = agent
+      ? 'Agent mode sends only retrieved, redacted workspace files. No file is written until you approve each change. Apply creates backups that Undo can restore.'
+      : 'Only attached content is sent. Ask/Explain/Generate never modify files.';
   }
 
   function renderAttachmentBar() {
@@ -264,7 +343,25 @@
     container.append(wrapper);
   }
 
-  function appendUserMessage(text, attachments) {
+  function appendLabelChips(container, labels) {
+    if (!labels || labels.length === 0) {
+      return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-attachments';
+    labels.forEach(function (labelText) {
+      const chip = document.createElement('span');
+      chip.className = 'chip static';
+      const label = document.createElement('span');
+      label.className = 'chip-label';
+      label.textContent = labelText;
+      chip.append(label);
+      wrapper.append(chip);
+    });
+    container.append(wrapper);
+  }
+
+  function appendUserMessage(text, attachments, labels) {
     const article = document.createElement('article');
     article.className = 'message user';
 
@@ -278,6 +375,28 @@
 
     article.append(label, bubble);
     appendAttachmentChips(article, attachments);
+    appendLabelChips(article, labels);
+    els.messages.append(article);
+    setEmpty(false);
+    scrollToBottom(true);
+  }
+
+  function appendAssistantStatic(text, heading) {
+    const article = document.createElement('article');
+    article.className = 'message assistant';
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = heading || 'QuantsMind';
+
+    const card = document.createElement('div');
+    card.className = 'assistant-card';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.innerHTML = renderMarkdown(text);
+
+    card.append(content);
+    article.append(label, card);
     els.messages.append(article);
     setEmpty(false);
     scrollToBottom(true);
@@ -448,17 +567,255 @@
     scrollToBottom(true);
   }
 
+  var TASK_STATUS_LABELS = {
+    running: 'Working',
+    'awaiting-approval': 'Awaiting your approval',
+    applied: 'Applied — validation pending',
+    'validation-failed': 'Validation failed',
+    rejected: 'Rejected',
+    cancelled: 'Cancelled',
+    failed: 'Failed',
+    undone: 'Undone',
+  };
+
+  var STAGE_LABELS = {
+    retrieve: 'Retrieve workspace context',
+    plan: 'Plan changes',
+    review: 'Build diffs',
+    approval: 'Wait for approval',
+    apply: 'Apply approved files',
+    validate: 'Validate',
+    repair: 'Repair',
+  };
+
+  function selectedIdsFor(task) {
+    if (!state.taskSelections[task.id]) {
+      state.taskSelections[task.id] = {};
+      (task.review || []).forEach(function (change) {
+        state.taskSelections[task.id][change.id] = true;
+      });
+    }
+    return state.taskSelections[task.id];
+  }
+
+  function renderReviewCard(change, editable, selection) {
+    var renameLabel =
+      change.kind === 'rename' && change.fromPath
+        ? change.fromPath + ' → ' + change.path
+        : change.path;
+    var checked = selection[change.id] ? ' checked' : '';
+    return (
+      '<div class="review-card" data-change-id="' + escapeHtml(change.id) + '">' +
+      '<label class="review-head">' +
+      '<input type="checkbox" data-review-check="' + escapeHtml(change.id) + '"' + checked + (editable ? '' : ' disabled') + ' />' +
+      '<span class="change-kind kind-' + escapeHtml(change.kind) + '">' + escapeHtml(change.kind) + '</span>' +
+      '<span class="change-path" title="' + escapeHtml(renameLabel) + '">' + escapeHtml(renameLabel) + '</span>' +
+      '<span class="change-stat">+' + Number(change.additions || 0) + ' −' + Number(change.deletions || 0) + '</span>' +
+      '</label>' +
+      (change.summary ? '<p class="change-summary">' + escapeHtml(change.summary) + '</p>' : '') +
+      (change.warning ? '<p class="change-warning">' + escapeHtml(change.warning) + '</p>' : '') +
+      '<pre class="diff">' + diffHtml(change.diff) + '</pre>' +
+      (change.diffTruncated ? '<p class="change-warning">The diff was truncated; the full file content is still part of the plan.</p>' : '') +
+      '</div>'
+    );
+  }
+
+  function renderValidation(task) {
+    var validation = task.validation;
+    if (!validation) {
+      return '';
+    }
+    var stateLabel = validation.cancelled
+      ? 'cancelled'
+      : validation.timedOut
+        ? 'timed out'
+        : 'exit ' + (validation.exitCode === null ? 'unknown' : validation.exitCode);
+    return (
+      '<div class="validation ' + (validation.passed ? 'ok' : 'bad') + '">' +
+      '<div class="validation-head"><span class="validation-command">' + escapeHtml(validation.command) + '</span>' +
+      '<span class="validation-state">' + escapeHtml(stateLabel) + '</span></div>' +
+      '<pre class="command-output">' + escapeHtml(validation.output || '(no output)') + '</pre>' +
+      '</div>'
+    );
+  }
+
+  function buildTaskArticle(task) {
+    var selection = selectedIdsFor(task);
+    var editable = task.status === 'awaiting-approval';
+    var stages = (task.stages || [])
+      .map(function (stage) {
+        return (
+          '<li class="stage ' + escapeHtml(stage.status) + '">' +
+          '<span class="stage-dot" aria-hidden="true"></span>' +
+          '<span class="stage-name">' + escapeHtml(STAGE_LABELS[stage.name] || stage.name) + '</span>' +
+          (stage.detail ? '<span class="stage-detail">' + escapeHtml(stage.detail) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+
+    var warnings = (task.warnings || [])
+      .map(function (warning) {
+        return '<p class="change-warning">' + escapeHtml(warning) + '</p>';
+      })
+      .join('');
+
+    var reviews = (task.review || [])
+      .map(function (change) {
+        return renderReviewCard(change, editable, selection);
+      })
+      .join('');
+
+    var actions = '';
+    if (task.status === 'running') {
+      actions +=
+        '<button type="button" class="action-button" data-task-action="cancel-task" data-task-id="' +
+        escapeHtml(task.id) +
+        '">Cancel task</button>';
+    }
+    if (task.status === 'awaiting-approval') {
+      if ((task.review || []).length > 0) {
+        actions +=
+          '<button type="button" class="action-button primary" data-task-action="approve-selected" data-task-id="' +
+          escapeHtml(task.id) +
+          '">Apply selected files</button>';
+      }
+      actions +=
+        '<button type="button" class="action-button" data-task-action="reject-changes" data-task-id="' +
+        escapeHtml(task.id) +
+        '">Reject all</button>';
+    }
+    if (
+      (task.status === 'applied' || task.status === 'validation-failed') &&
+      state.validationCommands.length > 0
+    ) {
+      var options = state.validationCommands
+        .map(function (command) {
+          return '<option value="' + escapeHtml(command) + '">' + escapeHtml(command) + '</option>';
+        })
+        .join('');
+      actions +=
+        '<span class="validation-picker">' +
+        '<select data-validation-command aria-label="Validation command">' + options + '</select>' +
+        '<button type="button" class="action-button primary" data-task-action="run-validation" data-task-id="' +
+        escapeHtml(task.id) +
+        '">Run validation</button>' +
+        '</span>';
+    }
+    if (task.status === 'validation-failed') {
+      actions +=
+        '<button type="button" class="action-button" data-task-action="repair" data-task-id="' +
+        escapeHtml(task.id) +
+        '">Plan a repair</button>';
+    }
+    if (task.status === 'applied' || task.status === 'validation-failed') {
+      actions +=
+        '<button type="button" class="action-button" data-task-action="undo" data-task-id="' +
+        escapeHtml(task.id) +
+        '">Undo applied changes</button>';
+    }
+
+    var meta = [
+      'Provider calls: ' + Number(task.providerCalls || 0),
+      task.repairIterations ? 'Repair attempts: ' + Number(task.repairIterations) : '',
+    ]
+      .filter(function (part) {
+        return part.length > 0;
+      })
+      .join(' · ');
+
+    var html =
+      '<div class="task-card status-' + escapeHtml(task.status) + '">' +
+      '<div class="task-head">' +
+      '<span class="task-status">' + escapeHtml(TASK_STATUS_LABELS[task.status] || task.status) + '</span>' +
+      '<span class="task-meta">' + escapeHtml(meta) + '</span>' +
+      '</div>' +
+      (task.planSummary ? '<p class="task-summary">' + escapeHtml(task.planSummary) + '</p>' : '') +
+      (task.planNotes ? '<p class="task-notes">' + escapeHtml(task.planNotes) + '</p>' : '') +
+      (task.error ? '<p class="task-error">' + escapeHtml(task.error) + '</p>' : '') +
+      (task.hint ? '<p class="task-hint">' + escapeHtml(task.hint) + '</p>' : '') +
+      '<ul class="task-stages">' + stages + '</ul>' +
+      warnings +
+      (reviews ? '<div class="review-list">' + reviews + '</div>' : '') +
+      renderValidation(task) +
+      (actions ? '<div class="task-actions">' + actions + '</div>' : '') +
+      '</div>';
+
+    var article = document.createElement('article');
+    article.className = 'message task';
+    article.dataset.taskId = task.id;
+
+    var label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = 'Agent task';
+
+    var body = document.createElement('div');
+    body.className = 'task-body';
+    body.innerHTML = html;
+
+    article.append(label, body);
+    return article;
+  }
+
+  function renderTask(task) {
+    if (!task || typeof task.id !== 'string') {
+      return;
+    }
+    state.tasks[task.id] = task;
+    selectedIdsFor(task);
+    var article = buildTaskArticle(task);
+
+    var existing = Array.prototype.find.call(
+      els.messages.querySelectorAll('[data-task-id]'),
+      function (node) {
+        return node.dataset.taskId === task.id;
+      },
+    );
+    if (existing) {
+      var stick = isNearBottom();
+      existing.replaceWith(article);
+      if (stick) {
+        scrollToBottom(true);
+      }
+    } else {
+      els.messages.append(article);
+      setEmpty(false);
+      scrollToBottom(true);
+    }
+  }
+
+  function renderTranscript(transcript) {
+    state.streaming = null;
+    els.messages.querySelectorAll('.message').forEach(function (node) {
+      node.remove();
+    });
+    var items = Array.isArray(transcript) ? transcript : [];
+    items.forEach(function (message) {
+      if (message.role === 'user') {
+        appendUserMessage(message.text || '', [], message.attachments || []);
+      } else if (message.role === 'assistant') {
+        appendAssistantStatic(message.text || '');
+      }
+    });
+    setEmpty(items.length === 0);
+    autoResize();
+    scrollToBottom(true);
+  }
+
   function clearConversation() {
     state.streaming = null;
     state.pendingPrompt = null;
     state.attachments = [];
     state.busy = false;
+    state.tasks = {};
+    state.taskSelections = {};
     els.messages.querySelectorAll('.message').forEach(function (node) {
       node.remove();
     });
     els.prompt.value = '';
     els.mode.value = 'ask';
     autoResize();
+    updateModeUi();
     renderAttachmentBar();
     setBusy(false);
     setEmpty(true);
@@ -476,8 +833,14 @@
     }
 
     const prompt = els.prompt.value.trim();
-    if (prompt.length === 0 && state.attachments.length === 0) {
-      showToast('Add a question or attach code first.', 'warn');
+    const mode = els.mode.value;
+    if (prompt.length === 0 && (mode === 'agent' || state.attachments.length === 0)) {
+      showToast(
+        mode === 'agent'
+          ? 'Describe the change you want before starting an agent task.'
+          : 'Add a question or attach code first.',
+        'warn',
+      );
       els.prompt.focus();
       return;
     }
@@ -486,8 +849,18 @@
       return;
     }
 
+    if (mode === 'agent') {
+      if (state.attachments.length > 0) {
+        showToast('Agent mode retrieves workspace files itself; attachments are not sent.', 'info');
+      }
+      post({ type: 'startTask', prompt: prompt });
+      els.prompt.value = '';
+      autoResize();
+      return;
+    }
+
     state.pendingPrompt = els.prompt.value;
-    post({ type: 'send', prompt: els.prompt.value, mode: els.mode.value });
+    post({ type: 'send', prompt: els.prompt.value, mode: mode });
     els.prompt.value = '';
     autoResize();
   }
@@ -502,11 +875,23 @@
         state.status = message.status;
         state.attachments = Array.isArray(message.attachments) ? message.attachments : [];
         state.maxPromptChars = message.maxPromptChars || 20000;
+        state.conversations = Array.isArray(message.conversations) ? message.conversations : [];
+        state.activeConversationId = message.activeConversationId || '';
+        state.validationCommands = Array.isArray(message.validationCommands)
+          ? message.validationCommands
+          : [];
+        state.workspaceName = message.workspaceName || '';
         if (message.version) {
           document.title = 'QuantsMind AI Coder ' + message.version;
         }
         renderStatus();
+        renderWorkspace();
+        renderConversationSelect();
         renderAttachmentBar();
+        updateModeUi();
+        if (!hasMessages()) {
+          renderTranscript(message.transcript || []);
+        }
         setEmpty(!hasMessages());
         break;
       }
@@ -522,8 +907,11 @@
       }
       case 'draft': {
         state.attachments = Array.isArray(message.attachments) ? message.attachments : [];
-        els.prompt.value = typeof message.prompt === 'string' ? message.prompt : '';
         els.mode.value = message.mode || 'ask';
+        updateModeUi();
+        if (typeof message.prompt === 'string' && message.prompt.length > 0) {
+          els.prompt.value = message.prompt;
+        }
         renderAttachmentBar();
         if (els.prompt.value.length > 0 || state.attachments.length > 0) {
           setEmpty(false);
@@ -535,7 +923,7 @@
       }
       case 'userMessage': {
         state.pendingPrompt = null;
-        appendUserMessage(message.text || '', message.attachments || []);
+        appendUserMessage(message.text || '', message.attachments || [], []);
         break;
       }
       case 'assistantStart': {
@@ -590,9 +978,133 @@
         clearConversation();
         break;
       }
+      case 'conversations': {
+        state.conversations = Array.isArray(message.conversations) ? message.conversations : [];
+        state.activeConversationId = message.activeConversationId || state.activeConversationId;
+        renderConversationSelect();
+        break;
+      }
+      case 'conversation': {
+        state.activeConversationId = message.id || '';
+        renderConversationSelect();
+        renderTranscript(message.transcript || []);
+        break;
+      }
+      case 'task': {
+        renderTask(message.task);
+        break;
+      }
+      case 'workspaceSummary': {
+        var header =
+          'Workspace summary · ' + Number(message.fileCount || 0) + ' file(s)' +
+          (message.truncated ? ' · truncated' : '');
+        appendAssistantStatic(message.text || '', header);
+        showToast('Workspace summarized locally. Nothing was sent to the provider.', 'info');
+        break;
+      }
+      case 'undoResult': {
+        showToast(
+          message.conflicts > 0
+            ? 'Undo restored ' + message.restored + ' file(s); ' + message.conflicts + ' conflict(s) were left untouched.'
+            : 'Undo restored ' + message.restored + ' file(s) from backups.',
+          message.conflicts > 0 ? 'warn' : 'info',
+        );
+        break;
+      }
+      case 'commandOutput': {
+        showToast(
+          'Validation finished (' +
+            (message.command || 'command') +
+            '): ' +
+            (message.timedOut
+              ? 'timed out'
+              : message.cancelled
+                ? 'cancelled'
+                : 'exit ' + (message.exitCode === null ? 'unknown' : message.exitCode)),
+          message.timedOut || message.cancelled ? 'warn' : message.exitCode === 0 ? 'info' : 'warn',
+        );
+        break;
+      }
       default:
         break;
     }
+  }
+
+  function handleTaskAction(button) {
+    var taskId = button.dataset.taskId;
+    var action = button.dataset.taskAction;
+
+    switch (action) {
+      case 'approve-selected': {
+        var body = button.closest('.task-body');
+        var ids = body
+          ? Array.prototype.map.call(
+              body.querySelectorAll('input[data-review-check]:checked'),
+              function (input) {
+                return input.dataset.reviewCheck;
+              },
+            )
+          : [];
+        if (ids.length === 0) {
+          showToast('Select at least one file to apply.', 'warn');
+          return;
+        }
+        post({ type: 'approveChanges', taskId: taskId, ids: ids });
+        break;
+      }
+      case 'reject-changes':
+        post({ type: 'rejectChanges', taskId: taskId });
+        break;
+      case 'run-validation': {
+        var taskBody = button.closest('.task-body');
+        var select = taskBody ? taskBody.querySelector('select[data-validation-command]') : null;
+        var command = select ? select.value : '';
+        if (!command) {
+          showToast('Choose an allowlisted validation command first.', 'warn');
+          return;
+        }
+        post({ type: 'runValidation', taskId: taskId, command: command });
+        break;
+      }
+      case 'repair':
+        post({ type: 'requestRepair', taskId: taskId });
+        break;
+      case 'undo':
+        post({ type: 'undoChanges', taskId: taskId });
+        break;
+      case 'cancel-task':
+        post({ type: 'cancelTask', taskId: taskId });
+        break;
+      default:
+        break;
+    }
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () {
+          showToast('Copied to clipboard.', 'info');
+        },
+        function () {
+          showToast('Could not copy to the clipboard.', 'warn');
+        },
+      );
+      return;
+    }
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    var copied = document.execCommand('copy');
+    area.remove();
+    showToast(
+      copied ? 'Copied to clipboard.' : 'Could not copy to the clipboard.',
+      copied ? 'info' : 'warn',
+    );
   }
 
   window.addEventListener('message', function (event) {
@@ -606,6 +1118,23 @@
   els.newChat.addEventListener('click', function () {
     post({ type: 'newChat' });
   });
+  els.deleteConversation.addEventListener('click', function () {
+    if (!state.activeConversationId) {
+      return;
+    }
+    if (window.confirm('Delete this conversation? This cannot be undone.')) {
+      post({ type: 'deleteConversation', id: state.activeConversationId });
+    }
+  });
+  els.conversationSelect.addEventListener('change', function () {
+    var id = els.conversationSelect.value;
+    if (!id) {
+      post({ type: 'newConversation' });
+    } else if (id !== state.activeConversationId) {
+      post({ type: 'switchConversation', id: id });
+    }
+  });
+  els.mode.addEventListener('change', updateModeUi);
   els.prompt.addEventListener('input', autoResize);
   els.prompt.addEventListener('keydown', function (event) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -630,12 +1159,40 @@
     }
   });
 
+  els.messages.addEventListener('change', function (event) {
+    const input = event.target.closest('input[data-review-check]');
+    if (!input) {
+      return;
+    }
+    const article = input.closest('[data-task-id]');
+    const taskId = article ? article.dataset.taskId : '';
+    if (!taskId) {
+      return;
+    }
+    const selection = state.taskSelections[taskId] || (state.taskSelections[taskId] = {});
+    selection[input.dataset.reviewCheck] = input.checked;
+  });
+
   document.addEventListener('click', function (event) {
+    const taskButton = event.target.closest('button[data-task-action]');
+    if (taskButton) {
+      handleTaskAction(taskButton);
+      return;
+    }
+
     const button = event.target.closest('button[data-action]');
     if (!button) {
       return;
     }
     switch (button.dataset.action) {
+      case 'copy-code': {
+        const block = button.closest('.code-block');
+        const code = block ? block.querySelector('code') : null;
+        if (code) {
+          copyText(code.textContent || '');
+        }
+        break;
+      }
       case 'attach-selection':
         post({ type: 'attachSelection' });
         break;
@@ -644,6 +1201,12 @@
         break;
       case 'attach-files':
         post({ type: 'attachFiles' });
+        break;
+      case 'attach-relevant':
+        post({ type: 'attachRelevantFiles', query: els.prompt.value.trim() });
+        break;
+      case 'summarize-workspace':
+        post({ type: 'summarizeWorkspace' });
         break;
       case 'clear-attachments':
         post({ type: 'clearAttachments' });
@@ -666,7 +1229,10 @@
   });
 
   renderStatus();
+  renderWorkspace();
+  renderConversationSelect();
   renderAttachmentBar();
+  updateModeUi();
   setBusy(false);
   autoResize();
   post({ type: 'ready' });

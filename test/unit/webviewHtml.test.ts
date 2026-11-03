@@ -9,7 +9,7 @@ function render(): string {
     scriptUri: 'https://file+.vscode-resource.vscode-cdn.net/media/chat.js',
     styleUri: 'https://file+.vscode-resource.vscode-cdn.net/media/chat.css',
     nonce: NONCE,
-    version: '0.1.0',
+    version: '0.2.0',
   });
 }
 
@@ -37,11 +37,20 @@ suite('webview HTML', () => {
     expect(html).to.not.match(/https?:\/\/(?!file\+\.vscode-resource\.vscode-cdn\.net)/);
   });
 
-  test('states the explicit-send and no-file-modification guarantees', () => {
+  test('states the explicit-send and approval-first guarantees', () => {
     const html = render();
     expect(html).to.contain('Nothing is sent until you press Send');
-    expect(html).to.contain('Nothing is written to your workspace');
-    expect(html).to.contain('The AI cannot modify files in v0.1.0');
+    expect(html).to.contain('Files are never written without per-file approval');
+    expect(html).to.contain('Undo restores backups');
+    expect(html).to.contain('Agent (plan + apply)');
+  });
+
+  test('renders conversation history and workspace controls', () => {
+    const html = render();
+    expect(html).to.contain('id="conversation-select"');
+    expect(html).to.contain('id="delete-conversation"');
+    expect(html).to.contain('data-action="summarize-workspace"');
+    expect(html).to.contain('data-action="attach-relevant"');
   });
 
   test('escapes asset attributes to prevent markup injection', () => {
@@ -50,7 +59,7 @@ suite('webview HTML', () => {
       scriptUri: '"><script>alert(1)</script>',
       styleUri: '" style="background:url(https://evil.example)',
       nonce: '"><img src=x onerror=alert(1)>',
-      version: '0.1.0',
+      version: '0.2.0',
     });
 
     expect(html).to.not.contain('<script>alert(1)</script>');

@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { expect } from 'chai';
 import * as vscode from 'vscode';
+import { ChangeService } from '../../src/changes/changeService';
+import { ChangeHistoryStore } from '../../src/changes/history';
 import { ChatViewProvider } from '../../src/chat/chatViewProvider';
+import { ConversationStore } from '../../src/chat/persistence';
 import type { HostToWebviewMessage } from '../../src/chat/protocol';
 import type { ResolvedProviderSettings } from '../../src/config/resolve';
 import { SettingsService } from '../../src/config/settings';
@@ -11,6 +15,7 @@ import { ContextService } from '../../src/context/contextService';
 import { CompletionService } from '../../src/providers/completionService';
 import { Logger } from '../../src/security/logger';
 import { API_KEY_SECRET_KEY, SecretStore } from '../../src/security/secretStore';
+import { WorkspaceIndexService } from '../../src/workspace/indexService';
 import {
   MemoryLogSink,
   MemorySecretStorage,
@@ -112,6 +117,22 @@ function workspaceRoot(): string {
   return folder!.uri.fsPath;
 }
 
+class MemoryMemento {
+  private readonly values = new Map<string, unknown>();
+
+  keys(): readonly string[] {
+    return [...this.values.keys()];
+  }
+
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    return (this.values.has(key) ? this.values.get(key) : defaultValue) as T | undefined;
+  }
+
+  async update(key: string, value: unknown): Promise<void> {
+    this.values.set(key, value);
+  }
+}
+
 function createHarness(
   settingsOverrides: Partial<ResolvedProviderSettings>,
   withKey = true,
@@ -126,6 +147,7 @@ function createHarness(
   const settings = createSettings({ model: 'test-model', ...settingsOverrides });
   const completion = new CompletionService(secrets, settings, logger);
   const contextService = new ContextService(new SettingsService());
+  const memento = new MemoryMemento();
   const provider = new ChatViewProvider({
     extensionUri: extensionUri(),
     completion,
@@ -133,7 +155,15 @@ function createHarness(
     secrets,
     settings,
     logger,
-    version: '0.1.0',
+    version: '0.2.0',
+    conversations: new ConversationStore(memento),
+    workspaceIndex: new WorkspaceIndexService(settings, logger),
+    changeService: new ChangeService(
+      settings,
+      new ChangeHistoryStore(memento),
+      vscode.Uri.file(join(tmpdir(), 'quantsmind-test-backups')),
+      logger,
+    ),
   });
 
   const webview = new FakeWebview();
@@ -205,7 +235,7 @@ suite('chat webview integration', () => {
       await markReady(webview);
       const init = webview.last('init');
       expect(init).to.not.equal(undefined);
-      expect(init?.version).to.equal('0.1.0');
+      expect(init?.version).to.equal('0.2.0');
       expect(init?.attachments).to.deep.equal([]);
       expect(init?.maxPromptChars).to.equal(20000);
       expect(init?.status.providerType).to.equal('openai-compatible');
@@ -418,5 +448,76 @@ suite('chat webview integration', () => {
     } finally {
       provider.dispose();
     }
+  });
+
+  test('plans, approves, writes, and undoes a workspace change end to end', async () => {
+    const targetName = 'agent-demo-created.txt';
+    const targetUri = vscode.Uri.joinPath(
+      vscode.workspace.workspaceFolders![0].uri,
+      targetName,
+    );
+    const plan = JSON.stringify({
+      summary: 'Create a demonstration file.',
+      changes: [
+        {
+          kind: 'create',
+          path: targetName,
+          summary: 'Add it for the approval test.',
+          content: 'created by the agent integration test\n',
+        },
+      ],
+    });
+
+    await withServer(
+      (_incoming, response) =>
+        sendJson(response, 200, {
+          model: 'test-model',
+          choices: [{ message: { role: 'assistant', content: plan }, finish_reason: 'stop' }],
+        }),
+      async (server) => {
+        const { provider, webview } = createHarness({ baseUrl: server.baseUrl, stream: false });
+        try {
+          await markReady(webview);
+          webview.emit({ type: 'startTask', prompt: 'Create a demonstration file.' });
+
+          await waitFor(() => webview.last('task')?.task.status === 'awaiting-approval', 15000);
+          const planned = webview.last('task')?.task;
+          expect(planned?.review).to.have.length(1);
+          expect(planned?.review[0].path).to.equal(targetName);
+
+          const beforeApply = await vscode.workspace.fs.stat(targetUri).then(
+            () => true,
+            () => false,
+          );
+          expect(beforeApply).to.equal(false);
+
+          webview.emit({
+            type: 'approveChanges',
+            taskId: planned!.id,
+            ids: [planned!.review[0].id],
+          });
+          await waitFor(() => webview.last('task')?.task.status === 'applied', 15000);
+
+          const written = Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString('utf8');
+          expect(written).to.equal('created by the agent integration test\n');
+
+          webview.emit({ type: 'undoChanges', taskId: planned!.id });
+          await waitFor(() => webview.has('undoResult'), 15000);
+          expect(webview.last('undoResult')?.restored).to.equal(1);
+
+          const afterUndo = await vscode.workspace.fs.stat(targetUri).then(
+            () => true,
+            () => false,
+          );
+          expect(afterUndo).to.equal(false);
+        } finally {
+          provider.dispose();
+          await vscode.workspace.fs.delete(targetUri).then(
+            () => undefined,
+            () => undefined,
+          );
+        }
+      },
+    );
   });
 });
