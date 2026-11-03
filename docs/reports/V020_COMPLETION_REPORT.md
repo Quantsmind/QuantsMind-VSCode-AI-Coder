@@ -8,6 +8,9 @@ Version: 0.2.0 (alpha preview, not general availability)
 
 Branch: `feature/v0.2.0`, created from `develop` at `1bbff3a`
 
+Implementation commit: `e8e87f8` (`feat: add approval-first workspace assistant
+for v0.2.0`)
+
 ## 1. Scope and outcome
 
 The v0.2.0 campaign extended the read-only chat extension into a
