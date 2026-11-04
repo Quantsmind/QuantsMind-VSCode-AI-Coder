@@ -334,6 +334,7 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 - [v0.3.0 security report](docs/reports/V030_SECURITY_REPORT.md)
 - [v0.3.4 final qualification status](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
 - [GA security and trust audit](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
+- [Release-candidate validation protocol](docs/RC_VALIDATION_PROTOCOL.md)
 - [Path to General Availability](docs/ROADMAP_GA.md)
 - [Contributing](CONTRIBUTING.md)
 

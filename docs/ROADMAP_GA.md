@@ -255,6 +255,15 @@ repo-sensitivity review that goes with making the repository public.
 Automated tests run against a mock provider and a temp profile, so they cannot prove the two things
 GA actually depends on: a real provider under real load, and a real upgrade touching real data.
 
+**STATUS: INSTRUMENTATION READY, RUNS NOT YET EXECUTED (2026-11-04).** The agent-owned half is done:
+[RC_VALIDATION_PROTOCOL.md](./RC_VALIDATION_PROTOCOL.md) is the procedure, and two tracked scripts make
+each claim measurable — `scripts/inspect-conversation-store.mjs` (read-only, content-free fingerprint of
+the persisted store, so "no records lost" is one comparable line) and `scripts/seed-test-profile.mjs`
+(a throwaway profile holding a legacy v1 record, a schema-v2 record with captured attachment context and
+two deliberately unreadable rows, which is the on-disk salvage exercise). Both self-tested against a
+temp profile this session; neither was ever pointed at your real one, and the seeder refuses a directory
+that already holds a state DB. What remains is USER-owned machine time, plus the push that Run 7 needs.
+
 - **RC build** produced by `npm run release` from a tagged commit; SHA-256 recorded.
 - **Cold install:** fresh VS Code profile, no prior QuantsMind, install the RC VSIX, configure the
   provider, run the nine qualification tests from the manual report top to bottom.
@@ -265,7 +274,11 @@ GA actually depends on: a real provider under real load, and a real upgrade touc
 - **Migration salvage:** the read-and-salvage path for unreadable records needs a deliberately
   corrupted store exercised on disk, not only in a unit fixture.
 - **Three-host CI evidence:** Windows, macOS, Linux extension host all green on the RC.
-- **Exit gate:** RC report with PASS on every item, no unobserved rows.
+- **Trust caveat now recorded in the protocol:** both test configs launch with
+  `--disable-workspace-trust`, so row 9b can *only* be observed in a live window — the automated suite
+  can never be cited for it.
+- **Exit gate:** RC report with PASS on every item, no unobserved rows; the protocol's §8 table is that
+  report's skeleton, and every row names the VSIX by SHA-256 rather than by version string.
 
 ### Phase 8 — Publish
 **Owner: User (PAT, Marketplace consent) + Agent (mechanical publish) · Effort: 0.5 day**
