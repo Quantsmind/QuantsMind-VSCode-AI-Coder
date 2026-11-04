@@ -1,0 +1,83 @@
+name: Bug report
+description: Something QuantsMind did not do as documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        QuantsMind sends no telemetry, so this form is how a problem reaches a maintainer.
+        Run **QuantsMind: Run Complete Self-Diagnostics** first — it writes a sanitized report
+        you can attach or paste, and it is safe to share.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Steps you took, what you expected, what you saw instead.
+      placeholder: |
+        1. Opened the QuantsMind panel…
+        2. Selected conversation "…", pressed Restore…
+        3. Expected 11 previous messages, saw none.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Self-diagnostics report
+      description: >-
+        Paste the contents of the file the command tells you about
+        (…/globalStorage/quantsmind.quantsmind-vscode-ai-coder/diagnostics/self-diagnostics-<timestamp>.md).
+        It contains versions, trust state, provider readiness and counts — no prompts, no file content, no keys.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: output-log
+    attributes:
+      label: QuantsMind Output channel lines
+      description: >-
+        The lines around the failure from View → Output → "QuantsMind AI Coder".
+        They carry identifiers, counts and sizes only. Start VS Code with --logsPath if you want them on disk.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      description: Extensions → QuantsMind AI Coder, or the first lines of the diagnostics report.
+      placeholder: "0.3.4"
+    validations:
+      required: true
+  - type: input
+    id: vscode-version
+    attributes:
+      label: VS Code version and platform
+      placeholder: "1.144.1, Windows 11"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat / conversation history
+        - Attachments
+        - Provider request / streaming / Stop
+        - Agent session / planning
+        - Changes, apply and undo
+        - Validation commands
+        - Workspace indexing / context
+        - Security or trust behaviour
+        - Installation or upgrade
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have not pasted my API key, an Authorization header or any `sk-…` value
+          required: true
+        - label: I have not pasted prompt text or private file contents that I did not intend to share
+          required: true

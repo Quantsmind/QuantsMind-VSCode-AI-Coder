@@ -225,6 +225,8 @@ Three findings need your decision before this phase can be signed.
 
 ### Phase 6 — Support & operations
 **Owner: Agent (docs) + User (channel) · Effort: 0.5 day · [B-only skip: public channel]**
+**STATUS: DOCS-COMPLETE (2026-11-04)**, gated only on the Gate-0 channel decision and the
+repo-sensitivity review that goes with making the repository public.
 
 - Publish **known issues for GA** derived from `LIMITATIONS.md` plus the §6 "expected, not defects"
   notes (legacy conversations showing `unavailable`/`capturedContext=0` after upgrade is the one most
@@ -235,8 +237,17 @@ Three findings need your decision before this phase can be signed.
 - Verify `QuantsMind: Run Complete Self-Diagnostics` writes a sanitized report to
   `globalStorage\quantsmind.quantsmind-vscode-ai-coder\diagnostics\` and that pasting one is enough to
   triage a report without asking the user for their key.
-- **Exit gate:** README "Getting help" section, issue template asking for the diagnostics path and
-  version, and an explicit statement that the extension collects no telemetry.
+- **Exit gate: MET except for the channel choice.** Delivered in the README: a *Getting help*
+  section (self-diagnostics command → sanitized report path → what to attach), an explicit
+  **no-telemetry** statement, a **Restricted Mode** paragraph that says plainly what is *not* blocked
+  by trust (finding F1, so the documentation is honest whichever way that decision goes), and a
+  corrected loopback statement — the old text claimed plain HTTP was "opt-in" when
+  `allowInsecureLocalhost` ships `true`. New `.github/ISSUE_TEMPLATE/bug_report.yml` requires the
+  diagnostics report and both version numbers and gates submission on "I have not pasted my API key".
+  The *known issues for GA* bullet above is satisfied by pointing the README at `LIMITATIONS.md` and
+  `TROUBLESHOOTING.md` instead of duplicating a second list that would drift from the first. Verified
+  against source: the command writes
+  `<globalStorage>/diagnostics/self-diagnostics-<timestamp>.md` and shows the path in a notification.
 
 ### Phase 7 — Release-candidate validation on a clean environment
 **Owner: User (machine/profile) + Agent (instrumentation & evidence) · Effort: 1 day · On the critical path**

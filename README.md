@@ -10,7 +10,7 @@ This product is completely independent. It does not depend on QuantsMind-Agent,
 another QuantsMind repository, a shared source folder, a common SDK, a shared
 runtime, or an external project workspace.
 
-## What works in v0.3.0
+## What works today
 
 ### Agent sessions
 
@@ -249,8 +249,12 @@ hidden from the Command Palette.
 - **Redaction.** Exact stored credentials, masked credential forms, JWTs,
   bearer tokens, and URL userinfo are replaced before context is sent. Error
   bodies, command output and logs are redacted too.
-- **Endpoint validation.** HTTPS is required remotely; loopback HTTP is opt-in.
-  URLs with embedded credentials, query strings, or fragments are rejected.
+- **Endpoint validation.** HTTPS is required for remote endpoints. Loopback HTTP
+  is allowed out of the box so local runtimes such as Ollama and LM Studio work
+  without configuration; set `quantsmind.provider.allowInsecureLocalhost` to
+  `false` to require HTTPS everywhere. Plain HTTP to a remote host is always
+  rejected. URLs with embedded credentials, query strings or fragments are
+  rejected.
 - **Contained writes.** Change paths must be relative, symlink-free, and inside
   the workspace. Windows drive-relative paths, alternate data streams, `..`
   traversal and UNC paths are rejected.
@@ -258,12 +262,43 @@ hidden from the Command Palette.
   shell, with a sanitized environment, output caps, timeouts and cancellation.
 - **Webview lockdown.** Strict CSP, nonce-based scripts, no remote assets, and
   no inline executable scripts.
+- **Restricted Mode.** Agent sessions, file writes, repairs and validation
+  commands require workspace trust. Chat and context retrieval stay available,
+  which means attached or retrieved file content can still be sent to your
+  provider in an untrusted workspace — trust controls what the extension may
+  *do*, not what you may ask it to *read*.
+- **No telemetry.** The extension sends nothing to us. The only outbound
+  request is the one to the provider endpoint you configure.
 
 See [SECURITY.md](SECURITY.md) and
 [docs/architecture/V030_SECURITY_MODEL.md](docs/architecture/V030_SECURITY_MODEL.md)
 for the full threat model, and
 [docs/TERMINAL_SECURITY.md](docs/TERMINAL_SECURITY.md) for command execution
 constraints.
+
+## Getting help
+
+QuantsMind collects no telemetry, so diagnosing a report needs the two things only
+you can see. Start with the built-in diagnostics:
+
+1. `Ctrl+Shift+P` → **QuantsMind: Run Complete Self-Diagnostics**. It writes a
+   sanitized Markdown report — versions, workspace trust state, provider readiness,
+   index counts — to
+   `<extension globalStorage>/diagnostics/self-diagnostics-<timestamp>.md` and shows
+   you that path. It never contains prompt text, file content or keys.
+2. Open the **QuantsMind AI Coder** Output channel and copy the lines around the
+   failure. Those lines carry identifiers, counts and sizes by design.
+3. Note the extension version and your VS Code version (both are in the report).
+
+Then open an issue with the report attached:
+<https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder/issues>. Do not paste your API
+key "to help debug" — a `sk-…` value in an issue is a live credential, and the logs
+are built so that you never need to.
+
+Behaviour that is expected but looks wrong at first glance — for example pre-0.3.4
+conversations reporting `capturedContext=0` or `legacy` attachment chips after an
+upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Documentation
 
@@ -297,6 +332,9 @@ constraints.
 - [v0.3.0 completion report](docs/reports/V030_COMPLETION_REPORT.md)
 - [v0.3.0 test and validation report](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
 - [v0.3.0 security report](docs/reports/V030_SECURITY_REPORT.md)
+- [v0.3.4 final qualification status](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
+- [GA security and trust audit](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
+- [Path to General Availability](docs/ROADMAP_GA.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Development
@@ -319,12 +357,16 @@ repository never contains one.
 
 ## Packaging and release status
 
-`npm run package` produces `quantsmind-vscode-ai-coder-0.3.0.vsix` locally.
-`npm run verify:vsix` validates the archive contents. `npm run test:packaged`
+`npm run package` produces `quantsmind-vscode-ai-coder-<version>.vsix`, named from
+`package.json`, locally. `npm run verify:vsix` validates the archive contents.
+`npm run verify:release` fails if any script, source file or test pins the release
+version to a literal. `npm run test:packaged`
 installs the VSIX into an isolated VS Code instance and verifies activation and
 basic interaction. `npm run verify` runs the full release-candidate pipeline,
 including the dependency guard, lint, tests, archive inspection, packaged-host
-tests and clean-install verification.
+tests and clean-install verification. `npm run release -- --bump patch|minor|major`
+performs the manifest and lockfile bump and prints the commit, tag and checksum
+steps; it never commits, tags, pushes or publishes on its own.
 
 This baseline is **not published** to the Visual Studio Marketplace, Open VSX,
 or any other registry. Do not treat it as a GA release.
