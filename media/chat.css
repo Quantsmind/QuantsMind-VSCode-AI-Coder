@@ -737,6 +737,63 @@ textarea:focus-visible {
   font-size: 10.5px;
 }
 
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 5px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.history-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--qm-muted);
+  font-size: 10px;
+}
+
+.history-status[data-state="restored"] {
+  color: var(--vscode-charts-blue, var(--vscode-foreground));
+}
+
+.history-status[data-state="clean"] {
+  color: var(--vscode-charts-green, var(--vscode-foreground));
+}
+
+.history-status[data-state="warn"] {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.context-strip {
+  margin: 0 12px 6px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--qm-border);
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.08));
+  color: var(--qm-muted);
+  font-size: 9.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  flex-shrink: 0;
+}
+
+.chip.ctx-unavailable,
+.chip.ctx-legacy {
+  border-color: var(--vscode-inputValidation-warningBorder, var(--qm-border));
+}
+
+.chip.ctx-unavailable .chip-meta,
+.chip.ctx-legacy .chip-meta {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.chip.ctx-captured .chip-meta {
+  color: var(--vscode-descriptionForeground, var(--qm-muted));
+}
+
 .workspace-row {
   display: flex;
   align-items: center;

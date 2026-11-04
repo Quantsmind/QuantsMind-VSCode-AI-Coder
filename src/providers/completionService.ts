@@ -95,8 +95,17 @@ export class CompletionService {
 
     const started = Date.now();
     const requestChars = messages.reduce((total, message) => total + message.content.length, 0);
+    let systemChars = 0;
+    let replayedChars = 0;
+    for (const message of messages) {
+      if (message.role === 'system') {
+        systemChars += message.content.length;
+      } else {
+        replayedChars += message.content.length;
+      }
+    }
     this.logger.info(
-      `completion start provider=${config.type} model=${config.model} messages=${messages.length} chars=${requestChars} stream=${config.stream} timeoutMs=${config.timeoutMs}`,
+      `completion start provider=${config.type} model=${config.model} messages=${messages.length} chars=${requestChars} systemChars=${systemChars} messageChars=${replayedChars} stream=${config.stream} timeoutMs=${config.timeoutMs}`,
     );
 
     try {

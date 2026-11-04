@@ -63,6 +63,14 @@ export function renderChatHtml(assets: WebviewAssets): string {
       </select>
     </div>
 
+    <div class="history-row">
+      <span class="history-status" id="history-status" title="Conversation history status">History: not loaded</span>
+      <button type="button" class="text-button subtle" data-action="clear-conversation" id="clear-conversation" title="Clear this conversation only. Other conversations are kept." hidden>Clear</button>
+      <button type="button" class="text-button subtle" data-action="restore-conversation" id="restore-conversation" title="Open the most recently updated stored conversation">Restore</button>
+    </div>
+
+    <div class="context-strip" id="context-strip" hidden></div>
+
     <button id="provider-status" class="status-pill" type="button" title="Provider settings">
       <span class="status-dot" id="status-dot"></span>
       <span class="status-text" id="status-text">Loading provider…</span>
