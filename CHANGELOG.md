@@ -5,6 +5,36 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Deleting a conversation no longer promotes an empty one as the new active chat; the
+  next conversation that actually holds messages is selected, and an all-empty store
+  falls back to a fresh chat.
+- `src/extension.ts` contained raw Windows-1252 separator bytes, so the compiled status
+  bar rendered a replacement character instead of the intended separator. The file is
+  now valid UTF-8 end to end.
+- The CI release job uploaded `quantsmind-vscode-ai-coder-0.3.0.vsix`, a name no build
+  has produced since 0.3.0, with `if-no-files-found: error` — so the job could only ever
+  fail on a current release.
+
+### Changed
+
+- Release verification is version-agnostic: artefact names, the installed-extension
+  identity check and the VSIX identity marker are derived from `package.json`, so a
+  version bump no longer requires editing scripts, test configs and assertions.
+- New `npm run verify:release` guard fails the chain when an artefact name, extension id
+  or user-agent is pinned to a literal version; new `npm run release` performs the
+  package.json and lockfile bump and prints the follow-up steps without committing,
+  tagging or publishing; new `npm run sha256` records artefact checksums.
+- The provider `User-Agent` reports the version supplied at activation instead of a
+  string baked into the source, which would otherwise keep shipping the previous
+  release's number.
+- CI now also runs on `release/**` branches and manual dispatch, executes the literal
+  guard, reports (without blocking on) `npm audit --audit-level=high`, and publishes the
+  VSIX plus its SHA-256 checksum as build artifacts.
+
 ## [0.3.4] - 2026-11-04
 
 ### Added

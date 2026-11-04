@@ -272,7 +272,7 @@ export class ConversationStore {
     const next = conversations.filter((entry) => entry.id !== id);
     await this.memento.update(CONVERSATION_STORAGE_KEY, next.map(toRecord));
     if (this.activeId() === id) {
-      await this.setActive(next[0]?.id);
+      await this.setActive(next.find((entry) => entry.messages.length > 0)?.id);
     }
   }
 

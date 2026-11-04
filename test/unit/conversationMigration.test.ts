@@ -212,6 +212,25 @@ suite('conversation persistence migration (v0.3.4)', () => {
     expect(store.mostRecent('old-one')?.id).to.equal('newer-one');
   });
 
+  test('delete() promotes a successor that actually has messages, never a blank one', async () => {
+    const memento = new MemoryMemento();
+    memento.seed([
+      legacyConversation('blank-successor', [], '2026-10-07T00:00:00.000Z'),
+      legacyConversation('real-successor', [legacyMessage('user', 'keep')], '2026-10-06T00:00:00.000Z'),
+      legacyConversation('active', [legacyMessage('user', 'now')], '2026-10-05T00:00:00.000Z'),
+    ]);
+    const store = new ConversationStore(memento);
+    await store.setActive('active');
+
+    await store.delete('active');
+
+    expect(store.list().map((entry) => entry.id)).to.deep.equal(['blank-successor', 'real-successor']);
+    expect(store.activeId()).to.equal('real-successor');
+
+    await store.delete('real-successor');
+    expect(store.activeId()).to.equal(undefined);
+  });
+
   test('a failed storage write surfaces to the caller instead of silently dropping history', async () => {
     const memento = new MemoryMemento();
     const store = new ConversationStore(memento);
