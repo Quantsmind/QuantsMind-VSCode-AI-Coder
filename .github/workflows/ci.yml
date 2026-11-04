@@ -5,7 +5,9 @@ on:
     branches:
       - main
       - develop
+      - 'release/**'
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,6 +46,9 @@ jobs:
 
       - name: Verify runtime dependency versions
         run: npm run verify:deps
+
+      - name: Verify no hardcoded release versions
+        run: npm run verify:release
 
       - name: Lint
         run: npm run lint
@@ -112,13 +117,30 @@ jobs:
       - name: Install virtual display
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
+      - name: Audit dependencies
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
       - name: Verify lint, dependencies, tests, VSIX and clean install
         run: xvfb-run -a npm run verify
+
+      - name: Record artefact checksum
+        run: |
+          node scripts/sha256.mjs quantsmind-vscode-ai-coder-*.vsix | tee checksum.txt
+          node scripts/sha256.mjs quantsmind-vscode-ai-coder-*.vsix >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: quantsmind-vscode-ai-coder-vsix
-          path: quantsmind-vscode-ai-coder-0.3.0.vsix
+          path: quantsmind-vscode-ai-coder-*.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantsmind-vscode-ai-coder-sha256
+          path: checksum.txt
           if-no-files-found: error
           retention-days: 14

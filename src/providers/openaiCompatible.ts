@@ -20,7 +20,22 @@ import type {
 } from './types';
 
 export const OPENAI_COMPATIBLE_PROVIDER_ID = 'openai-compatible';
-export const USER_AGENT = 'QuantsMind-VSCode-AI-Coder/0.3.4';
+
+const USER_AGENT_PRODUCT = 'QuantsMind-VSCode-AI-Coder';
+let userAgentVersion = 'dev';
+
+/**
+ * Activation sets this from the manifest version. Keeping it out of a literal is
+ * deliberate: a pinned string silently ships the previous release's version in
+ * every request header after a bump.
+ */
+export function setUserAgentVersion(version: string): void {
+  userAgentVersion = version;
+}
+
+export function userAgent(): string {
+  return `${USER_AGENT_PRODUCT}/${userAgentVersion}`;
+}
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_JSON_RESPONSE_BYTES = 20 * 1024 * 1024;
@@ -167,7 +182,7 @@ export function buildRequestHeaders(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
-    'User-Agent': USER_AGENT,
+    'User-Agent': userAgent(),
   };
   if (apiKey !== undefined && apiKey.length > 0) {
     headers.Authorization = `Bearer ${apiKey}`;

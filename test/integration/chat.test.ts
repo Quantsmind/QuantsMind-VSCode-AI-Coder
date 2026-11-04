@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -32,6 +33,11 @@ import {
 const EXTENSION_ID = 'quantsmind.quantsmind-vscode-ai-coder';
 const TEST_KEY = 'sk-chat-integration-0000000000000000';
 const DEMO_KEY = 'sk-demo-not-a-real-key-000000000000';
+
+/** Taken from the manifest so a version bump cannot leave a stale assertion behind. */
+const MANIFEST_VERSION = String(
+  JSON.parse(readFileSync(join(__dirname, '../../../package.json'), 'utf8')).version,
+);
 
 class FakeWebview {
   readonly posted: HostToWebviewMessage[] = [];
@@ -178,7 +184,7 @@ function createHarness(
     secrets,
     settings,
     logger,
-    version: '0.3.4',
+    version: MANIFEST_VERSION,
     conversations: new ConversationStore(memento),
     workspaceIndex,
     changeService,
@@ -297,7 +303,7 @@ suite('chat webview integration', () => {
       await markReady(webview);
       const init = webview.last('init');
       expect(init).to.not.equal(undefined);
-      expect(init?.version).to.equal('0.3.4');
+      expect(init?.version).to.equal(MANIFEST_VERSION);
       expect(init?.attachments).to.deep.equal([]);
       expect(init?.maxPromptChars).to.equal(20000);
       expect(init?.status.providerType).to.equal('openai-compatible');

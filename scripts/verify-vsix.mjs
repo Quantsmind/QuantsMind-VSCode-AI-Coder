@@ -1,7 +1,8 @@
 import { readFileSync, statSync } from 'node:fs';
 import { unzipSync } from 'fflate';
+import { vsixPath as defaultVsixPath, version as projectVersion } from './project-meta.mjs';
 
-const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.3.4.vsix';
+const vsixPath = process.argv[2] ?? defaultVsixPath;
 const failures = [];
 
 function ok(message) {
@@ -97,7 +98,10 @@ try {
 
 assert(manifest.name === 'quantsmind-vscode-ai-coder', 'name is quantsmind-vscode-ai-coder');
 assert(manifest.publisher === 'quantsmind', 'publisher is quantsmind');
-assert(manifest.version === '0.3.4', 'version is 0.3.4');
+assert(
+  manifest.version === projectVersion,
+  `version is ${projectVersion} (matches package.json)`,
+);
 assert(typeof manifest.engines?.vscode === 'string', 'declares an engines.vscode range');
 assert(manifest.main === './out/src/extension.js', 'main points at the compiled entry point');
 assert(manifest.preview === true, 'is marked as preview, not GA');
@@ -187,7 +191,11 @@ if (identity === undefined) {
 } else {
   ok('extension.vsixmanifest is present');
   assert(/<Identity[^>]*Publisher="quantsmind"/.test(identity), 'vsix identity publisher is quantsmind');
-  assert(/<Identity[^>]*Version="0\.3\.4"/.test(identity), 'vsix identity version is 0.3.4');
+  const escapedVersion = projectVersion.replace(/\./g, '\\.');
+  assert(
+    new RegExp(`<Identity[^>]*Version="${escapedVersion}"`).test(identity),
+    `vsix identity version is ${projectVersion}`,
+  );
 }
 
 if (failures.length > 0) {

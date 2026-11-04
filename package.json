@@ -450,11 +450,14 @@
     "test:integration": "npm run compile && vscode-test",
     "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.3.4.vsix",
+    "package": "npm run compile && node scripts/package.mjs",
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "verify:install": "node scripts/verify-install.mjs",
-    "verify": "npm run lint && npm run verify:deps && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
+    "release": "node scripts/release.mjs",
+    "sha256": "node scripts/sha256.mjs",
+    "verify": "npm run lint && npm run verify:deps && npm run verify:release && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
   },
   "dependencies": {
     "minimatch": "11.0.4"

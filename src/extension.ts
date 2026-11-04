@@ -9,6 +9,7 @@ import { COMMANDS } from './commands/ids';
 import { SettingsService } from './config/settings';
 import { ContextService } from './context/contextService';
 import { CompletionService } from './providers/completionService';
+import { setUserAgentVersion } from './providers/openaiCompatible';
 import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
 import { API_KEY_SECRET_KEY, SecretStore } from './security/secretStore';
@@ -25,7 +26,8 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.4';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
+  setUserAgentVersion(version);
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -365,7 +367,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     let providerLine = 'Provider status: unavailable';
     try {
       const status = await completion.getStatus();
-      providerLine = `Provider: ${status.displayName} · ${status.model} @ ${status.endpointHost} · ${status.ready ? 'ready' : status.configurationError ?? (status.credentialRequired && !status.hasCredential ? 'API key required' : 'not ready')}`;
+      providerLine = `Provider: ${status.displayName} Â· ${status.model} @ ${status.endpointHost} Â· ${status.ready ? 'ready' : status.configurationError ?? (status.credentialRequired && !status.hasCredential ? 'API key required' : 'not ready')}`;
     } catch (error) {
       logger.error('version command provider status failed', error);
     }
