@@ -20,6 +20,18 @@ import { errorHint, isProviderError, normalizeThrownError } from '../providers/e
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
 import {
+  attachmentRestoreWarnings,
+  captureAttachments,
+  displaysForStoredAttachments,
+  droppedContentNotice,
+  enforceAttachmentBudget,
+  freshnessOf,
+  providerHistoryMessages,
+  type AttachmentDisplay,
+  type StoredAttachment,
+} from './attachmentContext';
+import { formatRequestBreakdown, measureRequest } from './requestMetrics';
+import {
   buildMessages,
   DEFAULT_QUESTIONS,
   isAgentMode,
@@ -28,17 +40,32 @@ import {
 import {
   ConversationStore,
   type Conversation,
+  type ConversationMeta,
   type StoredMessage,
 } from './persistence';
 import {
   parseWebviewMessage,
   type AttachmentSummary,
+  type HistoryState,
   type HostToWebviewMessage,
   type SessionSummary,
+  type TranscriptMessage,
   type WebviewToHostMessage,
 } from './protocol';
 import { ChatSession } from './session';
 import { renderChatHtml } from './webviewHtml';
+
+/** Upper bound on disk comparisons a single restoration may trigger. */
+const FRESHNESS_AUDIT_LIMIT = 12;
+
+const EMPTY_HISTORY: HistoryState = {  conversationId: '',
+  messages: 0,
+  chars: 0,
+  restored: false,
+  transcriptMessages: 0,
+  attachmentTurns: 0,
+  unavailableAttachments: 0,
+};
 
 interface AttachmentBuffer {
   readonly id: string;
@@ -99,6 +126,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessionSource: vscode.CancellationTokenSource | undefined;
   private sessionTimer: NodeJS.Timeout | undefined;
   private sessionsLoaded = false;
+  private historySourceId: string | undefined;
+  private history: HistoryState = EMPTY_HISTORY;
+  private restoreWarnings: string[] = [];
   private readonly sessionSubscription: { dispose(): void };
 
   constructor(private readonly deps: ChatViewDependencies) {
@@ -240,14 +270,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.attachments = [];
     this.pendingDraft = undefined;
     this.activeSessionId = undefined;
-    const conversation = this.deps.conversations.create();
+    this.historySourceId = undefined;
+    this.history = EMPTY_HISTORY;
+    this.restoreWarnings = [];
+
+    // Reuse an untouched conversation instead of stacking empty ones, so a
+    // restored conversation can never be re-attached to a "new" chat.
+    const reusable =
+      this.conversation !== undefined &&
+      this.conversation.messages.length === 0 &&
+      this.deps.conversations.get(this.conversation.id)?.messages.length === 0
+        ? this.conversation
+        : undefined;
+    const conversation = reusable ?? this.deps.conversations.create();
     this.conversation = await this.deps.conversations.save(conversation);
+    this.historySourceId = this.conversation.id;
+    this.history = { ...EMPTY_HISTORY, conversationId: this.conversation.id };
+
     this.post({ type: 'busy', busy: false });
     this.post({ type: 'attachments', attachments: [] });
     this.post({ type: 'clear' });
+    this.postHistory();
     this.postConversations();
     this.postSessions();
     void this.refreshStatus();
+    this.deps.logger.info(
+      `new chat started conversation=${this.conversation.id.slice(0, 24)} reused=${reusable !== undefined}`,
+    );
   }
 
   dispose(): void {
@@ -295,29 +344,227 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (existing !== undefined) {
       this.conversation = existing;
       this.storedMessages = [...existing.messages];
-      this.session.load(
-        existing.messages.map((message) => ({ role: message.role, content: message.text })),
-      );
+      this.refreshHistoryState(existing, 'reload');
       return;
     }
     const created = this.deps.conversations.create();
     this.conversation = await this.deps.conversations.save(created);
     this.storedMessages = [];
     this.session.clear();
+    this.historySourceId = this.conversation.id;
+    this.history = { ...EMPTY_HISTORY, conversationId: this.conversation.id };
+    this.restoreWarnings = [];
   }
 
-  private transcript(): { role: 'user' | 'assistant'; text: string; attachments: readonly string[] }[] {
-    return this.storedMessages.map((message) => ({
-      role: message.role,
-      text: message.text,
-      attachments: message.attachments,
-    }));
+  /**
+   * Rebuilds the provider-bound history from the durable transcript so the UI
+   * can report exactly what the next request will contain. `load` replaces the
+   * session wholesale, which makes repeated restoration idempotent.
+   */
+  private refreshHistoryState(
+    conversation: Conversation,
+    source: 'reload' | 'switch' | 'send' | 'budget',
+  ): void {
+    const rebuilt = providerHistoryMessages(conversation.messages);
+    this.session.load(rebuilt);
+    this.historySourceId = conversation.id;
+
+    const displays: AttachmentDisplay[] = [];
+    let attachmentTurns = 0;
+    for (const message of conversation.messages) {
+      if (message.role !== 'user') {
+        continue;
+      }
+      const stored = message.attachmentContext ?? [];
+      const labels = stored.length > 0 ? [] : message.attachments;
+      if (stored.length > 0 || labels.length > 0) {
+        attachmentTurns += 1;
+      }
+      displays.push(...displaysForStoredAttachments(stored, labels));
+    }
+
+    const unavailable = displays.filter(
+      (display) => display.status === 'unavailable' || display.status === 'legacy',
+    ).length;
+
+    this.history = {
+      conversationId: conversation.id,
+      messages: this.session.snapshot().length,
+      chars: this.session.charCount,
+      restored: rebuilt.length > 0,
+      transcriptMessages: conversation.messages.length,
+      attachmentTurns,
+      unavailableAttachments: unavailable,
+    };
+    this.restoreWarnings = attachmentRestoreWarnings(displays);
+
+    this.deps.logger.info(
+      `conversation history ready source=${source} transcriptMessages=${conversation.messages.length} providerMessages=${this.history.messages} providerChars=${this.history.chars} attachmentTurns=${attachmentTurns} unavailableAttachments=${unavailable}`,
+    );
+
+    if (source === 'reload' || source === 'switch') {
+      void this.auditAttachmentFreshness(conversation);
+    }
+  }
+
+  /**
+   * Read-only comparison between the attachment context a restored conversation
+   * captured and the files on disk today. It never substitutes current file
+   * contents for the captured context; it only reports the difference so the
+   * user knows the replay is sending the original snapshot.
+   */
+  private async auditAttachmentFreshness(conversation: Conversation): Promise<void> {
+    const root = this.workspaceRoot();
+    if (root === undefined) {
+      return;
+    }
+
+    const comparable: StoredAttachment[] = [];
+    for (const message of conversation.messages) {
+      if (message.role !== 'user') {
+        continue;
+      }
+      for (const attachment of message.attachmentContext ?? []) {
+        if (attachment.content.length === 0 || attachment.isSelection || attachment.redactions > 0) {
+          continue;
+        }
+        comparable.push(attachment);
+      }
+    }
+    if (comparable.length === 0) {
+      return;
+    }
+
+    const audited = comparable.slice(-FRESHNESS_AUDIT_LIMIT);
+    const { maxFileSizeBytes } = this.deps.settings.getContextSettings();
+    let unchanged = 0;
+    let modified = 0;
+    let missing = 0;
+    let skipped = comparable.length - audited.length;
+
+    for (const attachment of audited) {
+      const uri = this.resolveStoredPath(root, attachment.path);
+      if (uri === undefined) {
+        missing += 1;
+        continue;
+      }
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (typeof stat.size === 'number' && stat.size > maxFileSizeBytes) {
+          skipped += 1;
+          continue;
+        }
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const verdict = freshnessOf(attachment, Buffer.from(bytes).toString('utf8'));
+        if (verdict === 'modified') {
+          modified += 1;
+        } else {
+          unchanged += 1;
+        }
+      } catch {
+        missing += 1;
+      }
+    }
+
+    this.deps.logger.info(
+      `attachment freshness audit conversation=${conversation.id.slice(0, 24)} checked=${audited.length} unchanged=${unchanged} modified=${modified} missing=${missing} skipped=${skipped}`,
+    );
+    if (modified === 0 && missing === 0) {
+      return;
+    }
+    this.post({
+      type: 'notice',
+      level: 'warn',
+      message:
+        `${modified + missing} historical attachment(s) in this conversation no longer match the file on disk` +
+        `${modified > 0 ? ` (${modified} changed, ${missing} unavailable)` : ''}.` +
+        ' Restored requests replay the context captured at the time of each message; the current file contents are not substituted in.',
+    });
+  }
+
+  /** Resolves a stored workspace-relative path, refusing anything that escapes the root. */
+  private resolveStoredPath(root: vscode.WorkspaceFolder, storedPath: string): vscode.Uri | undefined {
+    const normalized = normalizeContextPath(storedPath);
+    if (
+      normalized.length === 0 ||
+      normalized.startsWith('/') ||
+      /^[a-zA-Z]:[\\/]/.test(normalized) ||
+      normalized.split('/').some((segment) => segment === '..' || segment.length === 0)
+    ) {
+      return undefined;
+    }
+    return vscode.Uri.joinPath(root.uri, ...normalized.split('/'));
+  }
+
+  private postHistory(): void {
+    this.post({ type: 'history', history: this.history, warnings: this.restoreWarnings });
+  }
+
+  /** Keeps the reported provider-history counters in sync with the live session. */
+  private refreshHistoryCounts(): void {
+    if (this.conversation === undefined) {
+      return;
+    }
+    this.history = {
+      ...this.history,
+      conversationId: this.conversation.id,
+      messages: this.session.snapshot().length,
+      chars: this.session.charCount,
+      restored: this.session.snapshot().length > 0,
+      transcriptMessages: this.storedMessages.length,
+    };
+  }
+
+  /**
+   * Keeps the provider session aligned with the durable transcript. Loading is
+   * keyed by conversation id, so a re-shown webview can never replay the same
+   * turns twice.
+   */
+  private syncHistoryBeforeSend(): void {
+    if (this.conversation === undefined) {
+      return;
+    }
+    if (this.historySourceId === this.conversation.id) {
+      return;
+    }
+    this.refreshHistoryState({ ...this.conversation, messages: this.storedMessages }, 'send');
+  }
+
+  private transcript(): TranscriptMessage[] {
+    return this.storedMessages.map((message) => {
+      const stored = message.attachmentContext ?? [];
+      return {
+        role: message.role,
+        text: message.text,
+        attachments: message.attachments,
+        attachmentDetails:
+          message.role === 'user'
+            ? displaysForStoredAttachments(
+                stored,
+                stored.length === 0 ? message.attachments : [],
+              )
+            : [],
+        localOnly: message.localOnly === true,
+      };
+    });
+  }
+
+  /**
+   * Conversations offered in the history dropdown. Empty records are excluded so
+   * a New Chat placeholder can never be mistaken for the "New chat" action row,
+   * except the one currently open, which is shown as the active empty chat.
+   */
+  private historyEntries(): ConversationMeta[] {
+    const activeId = this.conversation?.id;
+    return this.deps.conversations
+      .list()
+      .filter((entry) => entry.messageCount > 0 || entry.id === activeId);
   }
 
   private postConversations(): void {
     this.post({
       type: 'conversations',
-      conversations: this.deps.conversations.list(),
+      conversations: this.historyEntries(),
       activeConversationId: this.conversation?.id ?? '',
     });
   }
@@ -326,24 +573,58 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.conversation === undefined) {
       return;
     }
-    this.conversation = await this.deps.conversations.save({
-      ...this.conversation,
-      messages: this.storedMessages,
-    });
+    const bounded = enforceAttachmentBudget(this.storedMessages);
+    if (bounded.releasedAttachments > 0) {
+      this.storedMessages = bounded.messages;
+      this.deps.logger.warn(
+        `attachment context released attachments=${bounded.releasedAttachments} chars=${bounded.releasedChars}`,
+      );
+      this.refreshHistoryState(
+        { ...this.conversation, messages: this.storedMessages },
+        'budget',
+      );
+      this.notifyWarning(
+        `${bounded.releasedAttachments} older attachment context(s) were released from storage to keep this conversation within its budget. Their file names remain in the transcript, but their captured contents can no longer be resent.`,
+      );
+    }
+    try {
+      this.conversation = await this.deps.conversations.save({
+        ...this.conversation,
+        messages: this.storedMessages,
+      });
+    } catch (error) {
+      this.deps.logger.error('conversation persist failed', error);
+      this.notifyWarning(
+        'The conversation could not be saved to workspace state. It stays available in this window.',
+      );
+    }
     this.postConversations();
   }
 
-  private async recordUser(text: string, attachments: readonly string[]): Promise<void> {
+  private async recordUser(
+    text: string,
+    attachments: readonly string[],
+    question?: string,
+    attachmentContext?: readonly StoredAttachment[],
+  ): Promise<void> {
     this.storedMessages.push({
       role: 'user',
       text,
       attachments,
       createdAt: new Date().toISOString(),
+      ...(question === undefined || question === text ? {} : { question }),
+      ...(attachmentContext === undefined || attachmentContext.length === 0
+        ? {}
+        : { attachmentContext }),
     });
     await this.persistConversation();
   }
 
-  private async recordAssistant(text: string, addToSession = true): Promise<void> {
+  private async recordAssistant(
+    text: string,
+    addToSession = true,
+    localOnly = false,
+  ): Promise<void> {
     if (text.trim().length === 0) {
       return;
     }
@@ -355,8 +636,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       text,
       attachments: [],
       createdAt: new Date().toISOString(),
+      ...(localOnly ? { localOnly: true } : {}),
     });
     await this.persistConversation();
+    if (addToSession) {
+      this.refreshHistoryCounts();
+      this.postHistory();
+    }
   }
 
   private async switchConversation(id: string): Promise<void> {
@@ -375,9 +661,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.busy = false;
     this.conversation = conversation;
     this.storedMessages = [...conversation.messages];
-    this.session.load(
-      conversation.messages.map((message) => ({ role: message.role, content: message.text })),
-    );
+    this.refreshHistoryState(conversation, 'switch');
     this.attachments = [];
     this.pendingDraft = undefined;
     await this.deps.conversations.setActive(id);
@@ -388,13 +672,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       id: conversation.id,
       title: conversation.title,
       transcript: this.transcript(),
+      history: this.history,
     });
+    this.postHistory();
+    for (const warning of this.restoreWarnings) {
+      this.post({ type: 'notice', level: 'warn', message: warning });
+    }
     this.postConversations();
+  }
+
+  /** Empties the active conversation only, after an explicit confirmation. */
+  private async clearCurrentConversation(): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish before clearing a conversation.');
+      return;
+    }
+    const conversation = this.conversation;
+    if (conversation === undefined || this.storedMessages.length === 0) {
+      this.notifyWarning('This conversation is already empty.');
+      return;
+    }
+    if (!(await this.confirmDestructive(
+      `Clear this conversation? Its ${this.storedMessages.length} message(s) are removed. Other conversations are not affected.`,
+    ))) {
+      return;
+    }
+
+    this.requestSeq += 1;
+    this.cancelActive();
+    this.busy = false;
+    const cleared = await this.deps.conversations.clear(conversation.id);
+    this.conversation = cleared ?? { ...conversation, messages: [] };
+    this.storedMessages = [...this.conversation.messages];
+    this.session.clear();
+    this.historySourceId = this.conversation.id;
+    this.history = { ...EMPTY_HISTORY, conversationId: this.conversation.id };
+    this.restoreWarnings = [];
+    this.attachments = [];
+    this.pendingDraft = undefined;
+    this.post({ type: 'clear' });
+    this.post({ type: 'attachments', attachments: [] });
+    this.post({ type: 'busy', busy: false });
+    this.postHistory();
+    this.postConversations();
+    this.deps.logger.info(
+      `conversation cleared id=${conversation.id.slice(0, 24)} remainingConversations=${this.deps.conversations.list().length}`,
+    );
+  }
+
+  /**
+   * Opens the conversation selected in the history dropdown. Without a selection
+   * it falls back to the most recently updated conversation that still has
+   * messages, so the action can never land on an empty New Chat placeholder.
+   */
+  private async restorePreviousConversation(id?: string): Promise<void> {
+    if (id !== undefined && id === this.conversation?.id) {
+      this.notifyInfo('That conversation is already open.');
+      return;
+    }
+    const target =
+      id !== undefined
+        ? this.deps.conversations.get(id)
+        : this.deps.conversations.mostRecent(this.conversation?.id);
+    if (target === undefined) {
+      this.notifyWarning(
+        id !== undefined
+          ? 'That conversation no longer exists.'
+          : 'No other stored conversation is available to restore.',
+      );
+      this.postConversations();
+      return;
+    }
+    if (target.messages.length === 0) {
+      this.notifyWarning('That conversation is empty, so there is nothing to restore.');
+      return;
+    }
+    await this.switchConversation(target.id);
+  }
+
+  private async confirmDestructive(message: string): Promise<boolean> {
+    const choice = await vscode.window.showWarningMessage(
+      `QuantsMind: ${message}`,
+      { modal: true },
+      'Yes, do it',
+    );
+    return choice === 'Yes, do it';
   }
 
   private async deleteConversation(id: string): Promise<void> {
     if (this.busy) {
       this.notifyWarning('Wait for the current request to finish before deleting a conversation.');
+      return;
+    }
+    if (!(await this.confirmDestructive('Delete this conversation permanently? This cannot be undone.'))) {
       return;
     }
     const wasActive = this.conversation?.id === id;
@@ -410,7 +780,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         id: active?.id ?? '',
         title: active?.title ?? 'New chat',
         transcript: this.transcript(),
+        history: this.history,
       });
+      this.postHistory();
     }
     this.postConversations();
   }
@@ -420,6 +792,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.storedMessages = [];
     this.session.clear();
     this.attachments = [];
+    this.historySourceId = undefined;
+    this.history = EMPTY_HISTORY;
+    this.restoreWarnings = [];
   }
 
   private activeConversation(): Conversation | undefined {
@@ -435,7 +810,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         fileCount: summary.fileCount,
         truncated: false,
       });
-      await this.recordAssistant(`Workspace summary (local index; nothing was sent):\n\n${summary.text}`, false);
+      await this.recordAssistant(
+        `Workspace summary (local index; nothing was sent):\n\n${summary.text}`,
+        false,
+        true,
+      );
     } catch (error) {
       this.deps.logger.error('workspace summary failed', error);
       this.post({
@@ -541,6 +920,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private notifyInfo(message: string): void {
+    if (this.ready) {
+      this.post({ type: 'notice', level: 'info', message });
+    } else {
+      void vscode.window.showInformationMessage(`QuantsMind: ${message}`);
+    }
+  }
+
   private post(message: HostToWebviewMessage): void {
     const view = this.view;
     if (view === undefined || !this.ready) {
@@ -603,7 +990,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       case 'newChat':
-        this.startNewChat();
+        await this.startNewChat();
         break;
       case 'attachSelection': {
         const result = await this.attachFromEditor('selection');
@@ -744,6 +1131,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'newConversation':
         await this.startNewChat();
         break;
+      case 'clearConversation':
+        await this.clearCurrentConversation();
+        break;
+      case 'restorePreviousConversation':
+        await this.restorePreviousConversation(message.id);
+        break;
       case 'switchConversation':
         await this.switchConversation(message.id);
         break;
@@ -779,7 +1172,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         attachments: this.attachments.map((attachment) => this.toSummary(attachment)),
         maxPromptChars: LIMITS.maxPromptChars,
         version: this.deps.version,
-        conversations: this.deps.conversations.list(),
+        conversations: this.historyEntries(),
         activeConversationId: this.conversation?.id ?? '',
         transcript: this.transcript(),
         validationCommands: this.deps.settings.getCommandSettings().allowlist,
@@ -788,7 +1181,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           .list()
           .map((view) => this.summarizeSession(view)),
         activeSessionId: this.activeSessionId,
+        history: this.history,
       });
+      for (const warning of this.restoreWarnings) {
+        this.post({ type: 'notice', level: 'warn', message: warning });
+      }
       if (this.activeSessionId !== undefined) {
         const view = this.deps.agentRuntime.controller.view(this.activeSessionId);
         if (view !== undefined) {
@@ -1396,6 +1793,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    await this.ensureConversation();
+    this.syncHistoryBeforeSend();
+
     const messages = buildMessages({
       mode,
       question: prompt,
@@ -1411,10 +1811,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? `${item.path}:${item.startLine}-${item.endLine ?? item.startLine}`
         : item.path,
     );
-    await this.ensureConversation();
-    await this.recordUser(displayPrompt, attachmentLabels);
+    const captured = captureAttachments(built.items, new Date().toISOString());
+    await this.recordUser(displayPrompt, attachmentLabels, prompt, captured.captured);
+    if (captured.dropped.length > 0) {
+      this.notifyWarning(droppedContentNotice(captured.dropped));
+    }
 
+    const breakdown = measureRequest(messages, {
+      promptChars: prompt.length,
+      attachmentItems: built.items.length,
+      attachmentChars: built.items.reduce((sum, item) => sum + item.content.length, 0),
+    });
     const requestId = ++this.requestSeq;
+    this.deps.logger.info(
+      `request context id=${requestId} provider=${status.providerType} model=${status.model} mode=${mode} stream=${this.deps.settings.getProviderSettings().stream ? 'on' : 'off'} ${formatRequestBreakdown(breakdown)} capturedAttachments=${captured.captured.length} capturedChars=${captured.chars} dropped=${captured.dropped.length}`,
+    );
+    this.post({
+      type: 'requestContext',
+      id: `request-${requestId}`,
+      breakdown,
+      attachments: displaysForStoredAttachments(captured.captured, []),
+    });
+
     const assistantId = `assistant-${requestId}`;
     this.attachments = [];
     this.postAttachments();

@@ -14,6 +14,10 @@
     newChat: document.getElementById('new-chat'),
     deleteConversation: document.getElementById('delete-conversation'),
     conversationSelect: document.getElementById('conversation-select'),
+    historyStatus: document.getElementById('history-status'),
+    clearConversationButton: document.getElementById('clear-conversation'),
+    restoreConversationButton: document.getElementById('restore-conversation'),
+    contextStrip: document.getElementById('context-strip'),
     statusPill: document.getElementById('provider-status'),
     statusDot: document.getElementById('status-dot'),
     statusText: document.getElementById('status-text'),
@@ -41,6 +45,8 @@
     sessions: [],
     activeSessionId: '',
     session: null,
+    history: null,
+    request: null,
     changeSelections: {},
     repairSelections: {},
   };
@@ -183,7 +189,7 @@
     els.mode.disabled = busy;
     els.sessionSelect.disabled = busy;
     const buttons = document.querySelectorAll(
-      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="clear-attachments"]',
+      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="clear-attachments"], [data-action="clear-conversation"], [data-action="restore-conversation"]',
     );
     buttons.forEach(function (button) {
       button.disabled = busy;
@@ -250,19 +256,110 @@
     list.forEach(function (conversation) {
       const option = document.createElement('option');
       option.value = conversation.id;
-      const count = conversation.messageCount > 0 ? ' (' + conversation.messageCount + ')' : '';
-      option.textContent = conversation.title + count;
+      option.textContent =
+        conversation.messageCount > 0
+          ? conversation.title + ' (' + conversation.messageCount + ')'
+          : 'New chat — current, empty';
       if (conversation.id === state.activeConversationId) {
         matched = true;
-        option.selected = true;
       }
       els.conversationSelect.append(option);
     });
 
-    if (!matched) {
-      fresh.selected = true;
-    }
+    // Assigning the value after the rebuild avoids relying on implicit
+    // first-option selection when no option carries the selected flag.
+    els.conversationSelect.value = matched ? state.activeConversationId : '';
     els.deleteConversation.hidden = !state.activeConversationId;
+    if (els.restoreConversationButton) {
+      const others = list.filter(function (conversation) {
+        return conversation.id !== state.activeConversationId && conversation.messageCount > 0;
+      }).length;
+      els.restoreConversationButton.disabled = others === 0;
+      els.restoreConversationButton.title =
+        others === 0
+          ? 'No other stored conversation is available yet'
+          : 'Open the conversation selected in the history list, or the most recently used one (' +
+            others +
+            ' available)';
+    }
+  }
+
+  function renderHistory(warnings) {
+    const history = state.history;
+    if (!els.historyStatus) {
+      return;
+    }
+    const list = Array.isArray(warnings) ? warnings : [];
+
+    if (!history || history.conversationId === '') {
+      els.historyStatus.textContent = 'History: not loaded';
+      els.historyStatus.dataset.state = '';
+      els.historyStatus.title = 'QuantsMind has not restored a conversation yet.';
+      if (els.clearConversationButton) {
+        els.clearConversationButton.hidden = true;
+      }
+      return;
+    }
+
+    const previous = history.messages;
+    if (previous === 0 || history.restored !== true) {
+      els.historyStatus.textContent = 'History: clean · starts with your next message';
+      els.historyStatus.dataset.state = 'clean';
+      els.historyStatus.title =
+        'Nothing is replayed. The next request contains only the system instructions and your current message.';
+    } else {
+      const label =
+        'History: ' +
+        previous +
+        ' previous message' +
+        (previous === 1 ? '' : 's') +
+        ' · ' +
+        formatNumber(history.chars) +
+        ' ch' +
+        (history.attachmentTurns > 0
+          ? ' · ' + history.attachmentTurns + ' with attachments'
+          : '') +
+        (history.unavailableAttachments > 0
+          ? ' · ' + history.unavailableAttachments + ' attachment context unavailable'
+          : '');
+      els.historyStatus.textContent = label;
+      els.historyStatus.dataset.state =
+        history.unavailableAttachments > 0 || list.length > 0 ? 'warn' : 'restored';
+      els.historyStatus.title =
+        'These messages are replayed to the provider with every new request.' +
+        (list.length > 0 ? '\n' + list.join('\n') : '');
+    }
+
+    if (els.clearConversationButton) {
+      els.clearConversationButton.hidden = !(history.transcriptMessages > 0);
+    }
+  }
+
+  function renderRequestContext(breakdown) {
+    if (!els.contextStrip || !breakdown) {
+      return;
+    }
+    els.contextStrip.hidden = false;
+    els.contextStrip.textContent =
+      'Sent: ' +
+      breakdown.messages +
+      ' msgs · system ' +
+      formatNumber(breakdown.systemChars) +
+      ' ch · history ' +
+      breakdown.historyMessages +
+      ' msgs ' +
+      formatNumber(breakdown.historyChars) +
+      ' ch · prompt ' +
+      formatNumber(breakdown.promptChars) +
+      ' ch · attachments ' +
+      breakdown.attachmentItems +
+      ' (' +
+      formatNumber(breakdown.attachmentChars) +
+      ' ch) · total ' +
+      formatNumber(breakdown.totalChars) +
+      ' ch';
+    els.contextStrip.title =
+      'Exactly what the last request contained. Detailed diagnostics are in the QuantsMind output log.';
   }
 
   function updateModeUi() {
@@ -351,6 +448,42 @@
     container.append(wrapper);
   }
 
+  function appendStatusChips(container, details) {
+    if (!details || details.length === 0) {
+      return;
+    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-attachments';
+
+    details.forEach(function (detail) {
+      const chip = document.createElement('span');
+      chip.className = 'chip static ctx-' + (detail.status || 'legacy');
+      const label = document.createElement('span');
+      label.className = 'chip-label';
+      label.textContent = detail.path || 'attachment';
+      const meta = document.createElement('span');
+      meta.className = 'chip-meta';
+      meta.textContent =
+        detail.status === 'captured'
+          ? formatNumber(detail.chars) + ' ch captured'
+          : detail.status === 'unavailable'
+            ? 'context unavailable'
+            : 'path only (older version)';
+      chip.title =
+        detail.status === 'captured'
+          ? 'This turn replays the context captured when the request was sent (' +
+            formatNumber(detail.chars) +
+            ' chars).'
+          : detail.status === 'unavailable'
+            ? 'The captured context for this file is no longer stored, so it is not replayed. The file name remains in the transcript.'
+            : 'This conversation was stored by an older version that kept only the file name, so its captured context cannot be replayed.';
+      chip.append(label, meta);
+      wrapper.append(chip);
+    });
+
+    container.append(wrapper);
+  }
+
   function appendLabelChips(container, labels) {
     if (!labels || labels.length === 0) {
       return;
@@ -369,7 +502,7 @@
     container.append(wrapper);
   }
 
-  function appendUserMessage(text, attachments, labels) {
+  function appendUserMessage(text, attachments, labels, details) {
     const article = document.createElement('article');
     article.className = 'message user';
 
@@ -383,7 +516,11 @@
 
     article.append(label, bubble);
     appendAttachmentChips(article, attachments);
-    appendLabelChips(article, labels);
+    if (details && details.length > 0) {
+      appendStatusChips(article, details);
+    } else {
+      appendLabelChips(article, labels);
+    }
     els.messages.append(article);
     setEmpty(false);
     scrollToBottom(true);
@@ -1148,9 +1285,17 @@
     var items = Array.isArray(transcript) ? transcript : [];
     items.forEach(function (message) {
       if (message.role === 'user') {
-        appendUserMessage(message.text || '', [], message.attachments || []);
+        appendUserMessage(
+          message.text || '',
+          [],
+          message.attachments || [],
+          message.attachmentDetails || [],
+        );
       } else if (message.role === 'assistant') {
-        appendAssistantStatic(message.text || '');
+        appendAssistantStatic(
+          message.text || '',
+          message.localOnly === true ? 'QuantsMind · local only' : undefined,
+        );
       }
     });
     if (state.session) {
@@ -1168,6 +1313,8 @@
     state.busy = false;
     state.session = null;
     state.activeSessionId = '';
+    state.request = null;
+    state.history = null;
     state.changeSelections = {};
     state.repairSelections = {};
     els.messages.querySelectorAll('.message').forEach(function (node) {
@@ -1179,6 +1326,11 @@
     updateModeUi();
     renderAttachmentBar();
     renderSessionSelect();
+    renderHistory();
+    if (els.contextStrip) {
+      els.contextStrip.hidden = true;
+      els.contextStrip.textContent = '';
+    }
     setBusy(false);
     setEmpty(true);
   }
@@ -1246,6 +1398,8 @@
         state.sessions = Array.isArray(message.sessions) ? message.sessions : [];
         state.activeSessionId = message.activeSessionId || '';
         state.session = null;
+        state.history = message.history || null;
+        state.request = null;
         if (message.version) {
           document.title = 'QuantsMind AI Coder ' + message.version;
           if (els.version) {
@@ -1255,6 +1409,11 @@
         renderStatus();
         renderWorkspace();
         renderConversationSelect();
+        renderHistory();
+        if (els.contextStrip) {
+          els.contextStrip.hidden = true;
+          els.contextStrip.textContent = '';
+        }
         renderSessionSelect();
         renderAttachmentBar();
         updateModeUi();
@@ -1267,6 +1426,16 @@
       case 'status': {
         state.status = message.status;
         renderStatus();
+        break;
+      }
+      case 'history': {
+        state.history = message.history || null;
+        renderHistory(message.warnings || []);
+        break;
+      }
+      case 'requestContext': {
+        state.request = message.breakdown || null;
+        renderRequestContext(message.breakdown || null);
         break;
       }
       case 'attachments': {
@@ -1355,7 +1524,12 @@
       }
       case 'conversation': {
         state.activeConversationId = message.id || '';
+        if (message.history) {
+          state.history = message.history;
+        }
+        state.request = null;
         renderConversationSelect();
+        renderHistory();
         renderTranscript(message.transcript || []);
         break;
       }
@@ -1661,6 +1835,21 @@
       case 'clear-attachments':
         post({ type: 'clearAttachments' });
         break;
+      case 'clear-conversation':
+        post({ type: 'clearConversation' });
+        break;
+      case 'restore-conversation': {
+        var selected = els.conversationSelect.value;
+        var entry = (state.conversations || []).find(function (conversation) {
+          return conversation.id === selected;
+        });
+        if (entry && entry.messageCount > 0) {
+          post({ type: 'restorePreviousConversation', id: selected });
+        } else {
+          post({ type: 'restorePreviousConversation' });
+        }
+        break;
+      }
       case 'explain-selection':
         post({ type: 'explainSelection' });
         break;
@@ -1681,6 +1870,7 @@
   renderStatus();
   renderWorkspace();
   renderConversationSelect();
+  renderHistory();
   renderAttachmentBar();
   updateModeUi();
   setBusy(false);

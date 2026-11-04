@@ -5,7 +5,31 @@ import type {
   CompletionReport,
 } from '../agent/models';
 import type { ProviderStatus } from '../providers/completionService';
+import type { AttachmentDisplay } from './attachmentContext';
 import { isChatMode, type ChatMode } from './prompts';
+
+/** Sizes of the parts of a request, measured from the messages actually sent. */
+export interface RequestBreakdown {
+  readonly messages: number;
+  readonly systemChars: number;
+  readonly historyMessages: number;
+  readonly historyChars: number;
+  readonly promptChars: number;
+  readonly attachmentItems: number;
+  readonly attachmentChars: number;
+  readonly totalChars: number;
+}
+
+/** What the provider-bound session actually holds for the active conversation. */
+export interface HistoryState {
+  readonly conversationId: string;
+  readonly messages: number;
+  readonly chars: number;
+  readonly restored: boolean;
+  readonly transcriptMessages: number;
+  readonly attachmentTurns: number;
+  readonly unavailableAttachments: number;
+}
 
 export interface ConversationSummary {
   readonly id: string;
@@ -31,6 +55,8 @@ export interface TranscriptMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
   readonly attachments: readonly string[];
+  readonly attachmentDetails?: readonly AttachmentDisplay[];
+  readonly localOnly?: boolean;
 }
 
 export interface AttachmentSummary {
@@ -90,6 +116,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'undoSession'; readonly sessionId: string }
   | { readonly type: 'refreshSessions' }
   | { readonly type: 'newConversation' }
+  | { readonly type: 'clearConversation' }
+  | { readonly type: 'restorePreviousConversation'; readonly id?: string }
   | { readonly type: 'switchConversation'; readonly id: string }
   | { readonly type: 'deleteConversation'; readonly id: string }
   | { readonly type: 'summarizeWorkspace' }
@@ -109,8 +137,20 @@ export type HostToWebviewMessage =
       readonly workspaceName?: string;
       readonly sessions: readonly SessionSummary[];
       readonly activeSessionId?: string;
+      readonly history: HistoryState;
     }
   | { readonly type: 'status'; readonly status: ProviderStatus }
+  | {
+      readonly type: 'history';
+      readonly history: HistoryState;
+      readonly warnings: readonly string[];
+    }
+  | {
+      readonly type: 'requestContext';
+      readonly id: string;
+      readonly breakdown: RequestBreakdown;
+      readonly attachments: readonly AttachmentDisplay[];
+    }
   | { readonly type: 'attachments'; readonly attachments: readonly AttachmentSummary[] }
   | {
       readonly type: 'draft';
@@ -155,6 +195,7 @@ export type HostToWebviewMessage =
       readonly id: string;
       readonly title: string;
       readonly transcript: readonly TranscriptMessage[];
+      readonly history?: HistoryState;
     }
   | {
       readonly type: 'sessions';
@@ -228,6 +269,7 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
     case 'refreshStatus':
     case 'refreshSessions':
     case 'newConversation':
+    case 'clearConversation':
     case 'summarizeWorkspace':
       return { type: record.type };
     case 'startSession':
@@ -272,6 +314,11 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
       const ids = record.ids.filter(isId).slice(0, 100);
       return { type: record.type, sessionId: record.sessionId, ids };
     }
+    case 'restorePreviousConversation':
+      if (record.id === undefined) {
+        return { type: record.type };
+      }
+      return isId(record.id) ? { type: record.type, id: record.id } : undefined;
     case 'switchConversation':
     case 'deleteConversation':
       if (!isId(record.id)) {

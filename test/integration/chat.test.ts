@@ -9,6 +9,7 @@ import { ChangeService } from '../../src/changes/changeService';
 import { ChangeHistoryStore } from '../../src/changes/history';
 import { ChatViewProvider } from '../../src/chat/chatViewProvider';
 import { ConversationStore } from '../../src/chat/persistence';
+import type { Conversation, StoredMessage } from '../../src/chat/persistence';
 import type { HostToWebviewMessage } from '../../src/chat/protocol';
 import type { ResolvedProviderSettings } from '../../src/config/resolve';
 import { SettingsService } from '../../src/config/settings';
@@ -132,11 +133,16 @@ class MemoryMemento {
   async update(key: string, value: unknown): Promise<void> {
     this.values.set(key, value);
   }
+
+  seed(key: string, value: unknown): void {
+    this.values.set(key, value);
+  }
 }
 
 function createHarness(
   settingsOverrides: Partial<ResolvedProviderSettings>,
   withKey = true,
+  state?: MemoryMemento,
 ): { provider: ChatViewProvider; webview: FakeWebview; sink: MemoryLogSink } {
   const storage = new MemorySecretStorage();
   if (withKey) {
@@ -148,7 +154,7 @@ function createHarness(
   const settings = createSettings({ model: 'test-model', ...settingsOverrides });
   const completion = new CompletionService(secrets, settings, logger);
   const contextService = new ContextService(new SettingsService());
-  const memento = new MemoryMemento();
+  const memento = state ?? new MemoryMemento();
   const workspaceIndex = new WorkspaceIndexService(settings, logger);
   const changeService = new ChangeService(
     settings,
@@ -172,7 +178,7 @@ function createHarness(
     secrets,
     settings,
     logger,
-    version: '0.3.0',
+    version: '0.3.4',
     conversations: new ConversationStore(memento),
     workspaceIndex,
     changeService,
@@ -235,6 +241,49 @@ async function withServer(
   }
 }
 
+function storedMessage(role: 'user' | 'assistant', text: string): StoredMessage {
+  return {
+    role,
+    text,
+    attachments: [],
+    createdAt: '2026-11-01T00:00:00.000Z',
+  };
+}
+
+function conversationWith(id: string, texts: string[]): Conversation {
+  const now = '2026-11-01T00:00:00.000Z';
+  return {
+    id,
+    title: id,
+    createdAt: now,
+    updatedAt: now,
+    messages: texts.map((text, index) =>
+      storedMessage(index % 2 === 0 ? 'user' : 'assistant', text),
+    ),
+  };
+}
+
+async function seedConversation(
+  state: MemoryMemento,
+  id: string,
+  turns: number,
+  prefix: string,
+): Promise<void> {
+  const store = new ConversationStore(state);
+  const messages: StoredMessage[] = [];
+  for (let index = 0; index < turns; index += 1) {
+    messages.push(storedMessage(index % 2 === 0 ? 'user' : 'assistant', `${prefix} ${index + 1}`));
+  }
+  await store.save(conversationWith(id, messages.map((message) => message.text)));
+}
+
+/** The attachment block a provider request carried, exactly as it was serialized. */
+function extractContext(body: string): string {
+  const start = body.indexOf('<attached_context>');
+  const end = body.indexOf('</attached_context>');
+  return start >= 0 && end > start ? body.slice(start, end) : '';
+}
+
 suite('chat webview integration', () => {
   test('renders a locked-down webview and announces its initial state', async () => {
     const { provider, webview } = createHarness({ baseUrl: 'http://127.0.0.1:1/v1' });
@@ -248,7 +297,7 @@ suite('chat webview integration', () => {
       await markReady(webview);
       const init = webview.last('init');
       expect(init).to.not.equal(undefined);
-      expect(init?.version).to.equal('0.3.0');
+      expect(init?.version).to.equal('0.3.4');
       expect(init?.attachments).to.deep.equal([]);
       expect(init?.maxPromptChars).to.equal(20000);
       expect(init?.status.providerType).to.equal('openai-compatible');
@@ -461,6 +510,423 @@ suite('chat webview integration', () => {
     } finally {
       provider.dispose();
     }
+  });
+
+  test('starts clean after New Chat and never replays a restored conversation', async () => {
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'READY' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const state = new MemoryMemento();
+        const first = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+        let second: { provider: ChatViewProvider; webview: FakeWebview } | undefined;
+        try {
+          await markReady(first.webview);
+          first.webview.emit({ type: 'send', prompt: 'Turn that should not follow', mode: 'ask' });
+          await waitFor(() => first.webview.has('assistantEnd'));
+          first.provider.dispose();
+
+          second = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+          await markReady(second.webview);
+
+          const restored = second.webview.last('init');
+          expect(restored?.history.restored).to.equal(true);
+          expect(restored?.history.messages).to.equal(2);
+          expect(restored?.transcript).to.have.lengthOf(2);
+
+          second.webview.emit({ type: 'newConversation' });
+          await waitFor(() => {
+            const history = second?.webview.last('history');
+            return history !== undefined && history.history.messages === 0;
+          });
+
+          const clean = second.webview.last('history');
+          expect(clean?.history.restored).to.equal(false);
+          expect(clean?.history.transcriptMessages).to.equal(0);
+          expect(second.webview.last('clear')).to.not.equal(undefined);
+
+          second.webview.emit({ type: 'send', prompt: 'Reply with exactly: READY', mode: 'ask' });
+          await waitFor(() => server.requests.length === 2);
+
+          const body = JSON.parse(server.requests[1].body) as {
+            messages: { role: string; content: string }[];
+          };
+          expect(body.messages).to.have.lengthOf(2);
+          expect(body.messages[0].role).to.equal('system');
+          expect(body.messages[1]).to.deep.equal({
+            role: 'user',
+            content: 'Reply with exactly: READY',
+          });
+          expect(server.requests[1].body).to.not.contain('Turn that should not follow');
+        } finally {
+          first.provider.dispose();
+          second?.provider.dispose();
+        }
+      },
+    );
+  });
+
+  test('restores a long conversation in order with the new prompt last', async () => {
+    const state = new MemoryMemento();
+    await seedConversation(state, 'restored-17', 17, 'Historical turn');
+
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'READY' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const { provider, webview, sink } = createHarness(
+          { baseUrl: server.baseUrl, stream: true },
+          true,
+          state,
+        );
+        try {
+          await markReady(webview);
+
+          const init = webview.last('init');
+          expect(init?.history.conversationId).to.equal('restored-17');
+          expect(init?.history.restored).to.equal(true);
+          expect(init?.history.messages).to.equal(17);
+          expect(init?.transcript).to.have.lengthOf(17);
+
+          webview.emit({ type: 'send', prompt: 'Reply with exactly: READY', mode: 'ask' });
+          await waitFor(() => server.requests.length === 1);
+
+          const body = JSON.parse(server.requests[0].body) as {
+            messages: { role: string; content: string }[];
+          };
+          expect(body.messages).to.have.lengthOf(19);
+          expect(body.messages.filter((message) => message.role === 'system')).to.have.lengthOf(1);
+          expect(body.messages[1].content).to.equal('Historical turn 1');
+          expect(body.messages[17].content).to.equal('Historical turn 17');
+          expect(body.messages[18]).to.deep.equal({
+            role: 'user',
+            content: 'Reply with exactly: READY',
+          });
+          expect(new Set(body.messages.slice(1, 18).map((message) => message.content)).size).to.equal(17);
+
+          const breakdown = webview.last('requestContext')?.breakdown;
+          expect(breakdown?.messages).to.equal(19);
+          expect(breakdown?.historyMessages).to.equal(17);
+          expect(breakdown?.promptChars).to.equal('Reply with exactly: READY'.length);
+          expect(breakdown?.systemChars).to.be.greaterThan(0);
+
+          expect(sink.text).to.contain('conversation history ready source=reload');
+          expect(sink.text).to.contain('request context');
+          expect(sink.text).to.not.contain(TEST_KEY);
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
+  test('replays the captured attachment context after a simulated reload', async () => {
+    const fileUri = vscode.Uri.joinPath(
+      vscode.workspace.workspaceFolders![0].uri,
+      'src',
+      'example.ts',
+    );
+    const document = await vscode.workspace.openTextDocument(fileUri);
+    await vscode.window.showTextDocument(document);
+    const state = new MemoryMemento();
+
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'It defines a greeting helper.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const first = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+        let second: ChatViewProvider | undefined;
+        try {
+          await markReady(first.webview);
+          first.webview.emit({ type: 'attachActiveFile' });
+          await waitFor(() => (first.webview.last('attachments')?.attachments.length ?? 0) === 1);
+
+          first.webview.emit({ type: 'send', prompt: 'Explain this file.', mode: 'explain' });
+          await waitFor(() => first.webview.has('assistantEnd'));
+
+          const original = server.requests[0].body;
+          expect(original).to.contain('<attached_context>');
+          expect(original).to.not.contain(DEMO_KEY);
+
+          const stored = new ConversationStore(state).get(
+            first.webview.last('init')?.activeConversationId ?? '',
+          );
+          const capturedContext = stored?.messages.find((message) => message.role === 'user')
+            ?.attachmentContext;
+          expect(capturedContext?.map((item) => item.path)).to.deep.equal(['src/example.ts']);
+          expect(capturedContext?.[0].content.length).to.be.greaterThan(0);
+
+          const capturedChars = first.webview.last('requestContext')?.breakdown.attachmentChars ?? 0;
+          expect(capturedChars).to.be.greaterThan(0);
+
+          first.provider.dispose();
+          const harness = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+          second = harness.provider;
+          await markReady(harness.webview);
+
+          const restored = harness.webview.last('init');
+          expect(restored?.history.attachmentTurns).to.equal(1);
+          expect(restored?.history.unavailableAttachments).to.equal(0);
+          const details = restored?.transcript.find((message) => message.role === 'user')
+            ?.attachmentDetails;
+          expect(details?.map((detail) => detail.status)).to.deep.equal(['captured']);
+
+          harness.webview.emit({ type: 'send', prompt: 'And the second part?', mode: 'ask' });
+          await waitFor(() => server.requests.length === 2);
+
+          const replay = server.requests[1].body;
+          expect(extractContext(replay)).to.equal(extractContext(original));
+          const replayMessages = JSON.parse(replay) as {
+            messages: { role: string; content: string }[];
+          };
+          const currentTurn = replayMessages.messages[replayMessages.messages.length - 1];
+          expect(currentTurn).to.deep.equal({ role: 'user', content: 'And the second part?' });
+          const replayedTurn = replayMessages.messages.find((message) =>
+            message.content.includes('<attached_context>'),
+          );
+          expect(replayedTurn?.content).to.contain('User request:\nExplain this file.');
+          expect(replay).to.not.contain(DEMO_KEY);
+        } finally {
+          first.provider.dispose();
+          second?.dispose();
+        }
+      },
+    );
+  });
+
+  test('warns when a historical attachment no longer matches the file on disk', async () => {
+    const targetUri = vscode.Uri.joinPath(
+      vscode.workspace.workspaceFolders![0].uri,
+      'ctx-probe-freshness.ts',
+    );
+    const probe = 'export const probeValue = 42;\n';
+    await vscode.workspace.fs.writeFile(targetUri, Buffer.from(probe, 'utf8'));
+
+    const state = new MemoryMemento();
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'A constant.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const document = await vscode.workspace.openTextDocument(targetUri);
+        await vscode.window.showTextDocument(document);
+        const first = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+        let second: ChatViewProvider | undefined;
+        try {
+          await markReady(first.webview);
+          first.webview.emit({ type: 'attachActiveFile' });
+          await waitFor(() => (first.webview.last('attachments')?.attachments.length ?? 0) === 1);
+          first.webview.emit({ type: 'send', prompt: 'What is this?', mode: 'ask' });
+          await waitFor(() => first.webview.has('assistantEnd'));
+          first.provider.dispose();
+
+          await vscode.workspace.fs.writeFile(targetUri, Buffer.from('export const probeValue = 7;\n', 'utf8'));
+
+          const harness = createHarness({ baseUrl: server.baseUrl, stream: true }, true, state);
+          second = harness.provider;
+          await markReady(harness.webview);
+          await waitFor(() =>
+            harness.webview.posted.some(
+              (message) =>
+                message.type === 'notice' &&
+                (message as Extract<HostToWebviewMessage, { type: 'notice' }>).message.includes(
+                  'no longer match the file on disk',
+                ),
+            ),
+          );
+
+          expect(harness.sink.text).to.contain('attachment freshness audit');
+          expect(harness.sink.text).to.contain('modified=1');
+
+          harness.webview.emit({ type: 'send', prompt: 'And now?', mode: 'ask' });
+          await waitFor(() => server.requests.length === 2);
+          expect(server.requests[1].body).to.contain('export const probeValue = 42;');
+          expect(server.requests[1].body).to.not.contain('export const probeValue = 7;');
+        } finally {
+          first.provider.dispose();
+          second?.dispose();
+          await vscode.workspace.fs.writeFile(targetUri, Buffer.from(probe, 'utf8'));
+          await vscode.workspace.fs.delete(targetUri).then(
+            () => undefined,
+            () => undefined,
+          );
+        }
+      },
+    );
+  });
+
+  test('keeps conversations isolated when switching between them', async () => {
+    const state = new MemoryMemento();
+    const store = new ConversationStore(state);
+    await store.save(conversationWith('conv-a', ['Alpha question', 'Alpha answer']));
+    await store.save(conversationWith('conv-b', ['Beta question', 'Beta answer', 'Third', 'Fourth']));
+
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'Noted.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const { provider, webview } = createHarness(
+          { baseUrl: server.baseUrl, stream: true },
+          true,
+          state,
+        );
+        try {
+          await markReady(webview);
+          expect(webview.last('init')?.history.conversationId).to.equal('conv-b');
+          expect(webview.last('init')?.history.messages).to.equal(4);
+
+          webview.emit({ type: 'switchConversation', id: 'conv-a' });
+          await waitFor(() => webview.last('history')?.history.conversationId === 'conv-a');
+          expect(webview.last('history')?.history.messages).to.equal(2);
+
+          webview.emit({ type: 'send', prompt: 'Alpha follow-up', mode: 'ask' });
+          await waitFor(() => server.requests.length === 1);
+          const alpha = JSON.parse(server.requests[0].body) as {
+            messages: { content: string }[];
+          };
+          expect(alpha.messages).to.have.lengthOf(4);
+          expect(alpha.messages[1].content).to.equal('Alpha question');
+          expect(alpha.messages[2].content).to.equal('Alpha answer');
+          expect(alpha.messages[3].content).to.equal('Alpha follow-up');
+          const alphaBody = server.requests[0].body;
+          expect(alphaBody).to.not.contain('Beta question');
+          expect(alphaBody).to.not.contain('Third');
+
+          webview.emit({ type: 'switchConversation', id: 'conv-b' });
+          await waitFor(() => webview.last('history')?.history.conversationId === 'conv-b');
+          webview.emit({ type: 'send', prompt: 'Beta follow-up', mode: 'ask' });
+          await waitFor(() => server.requests.length === 2);
+
+          const beta = JSON.parse(server.requests[1].body) as { messages: { content: string }[] };
+          expect(beta.messages).to.have.lengthOf(6);
+          expect(beta.messages[1].content).to.equal('Beta question');
+          expect(beta.messages[5].content).to.equal('Beta follow-up');
+          expect(server.requests[1].body).to.not.contain('Alpha question');
+          expect(server.requests[1].body).to.not.contain('Alpha follow-up');
+
+          const storedA = new ConversationStore(state).get('conv-a');
+          expect(storedA?.messages.filter((message) => message.role === 'user')).to.have.lengthOf(2);
+          const storedB = new ConversationStore(state).get('conv-b');
+          expect(storedB?.messages.filter((message) => message.role === 'user')).to.have.lengthOf(3);
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
+  test('never offers an empty conversation in history and restores the selected one', async () => {
+    const state = new MemoryMemento();
+    const store = new ConversationStore(state);
+    await store.save(conversationWith('history-a', ['Alpha', 'Alpha answer']));
+    await store.save(conversationWith('history-b', ['Beta', 'Beta answer', 'Gamma', 'Gamma answer']));
+
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { choices: [{ delta: { content: 'Noted.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const { provider, webview } = createHarness(
+          { baseUrl: server.baseUrl, stream: true },
+          true,
+          state,
+        );
+        try {
+          await markReady(webview);
+          expect(webview.last('init')?.conversations.map((entry) => entry.id)).to.deep.equal([
+            'history-b',
+            'history-a',
+          ]);
+
+          webview.emit({ type: 'newConversation' });
+          await waitFor(() => webview.has('clear'));
+          const afterNew = webview.last('conversations');
+          const blankId = afterNew?.activeConversationId ?? '';
+          expect(blankId).to.not.equal('history-a');
+          expect(blankId).to.not.equal('history-b');
+          expect(afterNew?.conversations.find((entry) => entry.id === blankId)?.messageCount).to.equal(
+            0,
+          );
+          expect(afterNew?.conversations.filter((entry) => entry.messageCount === 0)).to.have.lengthOf(
+            1,
+          );
+          expect(
+            afterNew?.conversations
+              .filter((entry) => entry.id !== blankId)
+              .map((entry) => entry.id),
+          ).to.deep.equal(['history-b', 'history-a']);
+
+          webview.emit({ type: 'restorePreviousConversation', id: 'history-a' });
+          await waitFor(() => webview.last('history')?.history.conversationId === 'history-a');
+          expect(webview.last('conversation')?.transcript).to.have.lengthOf(2);
+          expect(webview.last('conversations')?.activeConversationId).to.equal('history-a');
+          expect(
+            webview.last('conversations')?.conversations.some((entry) => entry.id === blankId),
+          ).to.equal(false);
+
+          webview.emit({ type: 'newConversation' });
+          await waitFor(() => webview.count('clear') === 2);
+          const blankAgain = webview.last('conversations')?.activeConversationId ?? '';
+          expect(blankAgain).to.not.equal(blankId);
+
+          webview.emit({ type: 'restorePreviousConversation' });
+          await waitFor(() => webview.last('history')?.history.conversationId === 'history-b');
+          expect(webview.last('history')?.history.messages).to.equal(4);
+          expect(webview.last('conversations')?.activeConversationId).to.equal('history-b');
+          expect(
+            webview.last('conversations')?.conversations.some((entry) => entry.messageCount === 0),
+          ).to.equal(false);
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
+  test('reports provider failures without exposing credentials or request content', async () => {
+    await withServer(
+      (_incoming, response) =>
+        sendJson(response, 429, { error: { message: `rate limited key ${TEST_KEY}` } }),
+      async (server) => {
+        const { provider, webview, sink } = createHarness({
+          baseUrl: server.baseUrl,
+          stream: true,
+        });
+        try {
+          await markReady(webview);
+          webview.emit({
+            type: 'send',
+            prompt: 'Secret wording that must not be logged',
+            mode: 'ask',
+          });
+          await waitFor(() => webview.has('error'));
+
+          expect(sink.text).to.contain('request context');
+          expect(sink.text).to.contain('completion failed code=');
+          expect(sink.text).to.not.contain(TEST_KEY);
+          expect(sink.text).to.not.contain('must not be logged');
+          expect(webview.last('error')?.message).to.not.contain(TEST_KEY);
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
   });
 
   test('plans, approves, writes, validates state, and undoes a workspace change end to end', async () => {

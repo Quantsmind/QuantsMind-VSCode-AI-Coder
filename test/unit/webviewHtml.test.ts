@@ -1,7 +1,13 @@
 import { expect } from 'chai';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderChatHtml } from '../../src/chat/webviewHtml';
 
 const NONCE = 'abc123nonce';
+
+function script(): string {
+  return readFileSync(join(__dirname, '..', '..', '..', 'media', 'chat.js'), 'utf8');
+}
 
 function render(): string {
   return renderChatHtml({
@@ -51,6 +57,41 @@ suite('webview HTML', () => {
     expect(html).to.contain('id="delete-conversation"');
     expect(html).to.contain('data-action="summarize-workspace"');
     expect(html).to.contain('data-action="attach-relevant"');
+  });
+
+  test('shows history status, request context and conversation-management controls', () => {
+    const html = render();
+    expect(html).to.contain('id="history-status"');
+    expect(html).to.contain('id="context-strip"');
+    expect(html).to.contain('id="clear-conversation"');
+    expect(html).to.contain('data-action="clear-conversation"');
+    expect(html).to.contain('data-action="restore-conversation"');
+    expect(html).to.contain('id="new-chat"');
+  });
+
+  test('every element the webview script looks up exists in the rendered HTML', () => {
+    const html = render();
+    const ids = [...script().matchAll(/getElementById\('([^']+)'\)/g)].map((match) => match[1]);
+    expect(ids.length).to.be.greaterThan(15);
+
+    const missing = [...new Set(ids)].filter((id) => !html.includes(`id="${id}"`));
+    expect(missing).to.deep.equal([]);
+  });
+
+  test('handles every host message the extension can post about history and context', () => {
+    const source = script();
+    for (const type of ['history', 'requestContext', 'init', 'conversation', 'clear']) {
+      expect(source).to.contain(`case '${type}'`);
+    }
+    expect(source).to.contain("post({ type: 'clearConversation' })");
+    expect(source).to.contain("post({ type: 'restorePreviousConversation' })");
+  });
+
+  test('restores the selected conversation and labels the empty current chat', () => {
+    const source = script();
+    expect(source).to.contain("post({ type: 'restorePreviousConversation', id: selected })");
+    expect(source).to.contain("'New chat — current, empty'");
+    expect(source).to.contain('els.conversationSelect.value = matched ? state.activeConversationId');
   });
 
   test('escapes asset attributes to prevent markup injection', () => {
