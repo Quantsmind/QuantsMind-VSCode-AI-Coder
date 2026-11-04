@@ -5,6 +5,45 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-11-04
+
+### Added
+
+- Conversation history visibility: the chat sidebar now shows whether history was
+  restored, how many previous messages the provider will receive, and a per-request
+  breakdown that separates system instructions, replayed history, the current prompt
+  and attached-file context.
+- Attachment context persistence: the context actually supplied to the provider is
+  captured with each user turn (schema v2, bounded, already redacted) and replayed
+  verbatim when the conversation is restored, instead of only storing file names.
+- Read-only freshness audit for restored attachments: captured context is compared
+  with the file on disk and any difference is reported. Disk content is never
+  substituted for the original captured context.
+- `Clear` and `Restore` conversation actions; destructive conversation operations now
+  require an explicit native confirmation.
+- Sanitized provider-request diagnostics in the Output channel: provider id, model,
+  message counts, size of each request part, streaming state, duration, finish reason
+  and failure category. No prompt text, file content, keys or headers are logged.
+
+### Changed
+
+- Conversation records carry a schema marker; older (pre-0.3.4) conversations are read,
+  ordered and upgraded in place without data loss. Unreadable records are salvaged
+  before the list is rewritten.
+- Local-only assistant output (workspace summaries) is marked as never sent and is
+  excluded from provider history.
+
+### Fixed
+
+- `Restore` now opens the conversation selected in the history dropdown instead of
+  the most recently updated record; without a selection it falls back to the newest
+  conversation that still has messages, so it can no longer land on an empty chat.
+- Empty conversations are no longer offered as history entries. The dropdown keeps the
+  conversation currently open and labels it `New chat — current, empty`, so a New Chat
+  placeholder can no longer be mistaken for the `New chat` action row.
+- Saving a conversation with no messages keeps its previous `updatedAt`, so clearing a
+  conversation or re-saving a placeholder no longer moves it to the top of the history.
+
 ## [0.3.2] - 2026-11-03
 
 ### Added
