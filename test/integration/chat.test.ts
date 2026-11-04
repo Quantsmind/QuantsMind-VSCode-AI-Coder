@@ -832,6 +832,7 @@ suite('chat webview integration', () => {
           await waitFor(() => webview.last('history')?.history.conversationId === 'conv-a');
           expect(webview.last('history')?.history.messages).to.equal(2);
 
+          const alphaBusyPosts = webview.count('busy');
           webview.emit({ type: 'send', prompt: 'Alpha follow-up', mode: 'ask' });
           await waitFor(() => server.requests.length === 1);
           const alpha = JSON.parse(server.requests[0].body) as {
@@ -845,10 +846,20 @@ suite('chat webview integration', () => {
           expect(alphaBody).to.not.contain('Beta question');
           expect(alphaBody).to.not.contain('Third');
 
+          // A switch while a request is still streaming is refused by design, so the
+          // completion has to settle before the conversation may change.
+          await waitFor(
+            () => webview.count('busy') > alphaBusyPosts && webview.last('busy')?.busy === false,
+          );
+
           webview.emit({ type: 'switchConversation', id: 'conv-b' });
           await waitFor(() => webview.last('history')?.history.conversationId === 'conv-b');
+          const betaBusyPosts = webview.count('busy');
           webview.emit({ type: 'send', prompt: 'Beta follow-up', mode: 'ask' });
           await waitFor(() => server.requests.length === 2);
+          await waitFor(
+            () => webview.count('busy') > betaBusyPosts && webview.last('busy')?.busy === false,
+          );
 
           const beta = JSON.parse(server.requests[1].body) as { messages: { content: string }[] };
           expect(beta.messages).to.have.lengthOf(6);
