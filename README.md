@@ -157,8 +157,13 @@ For a local server on port `11434`:
 ```
 
 Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `::1`. Remote
-endpoints must use HTTPS. You can disable loopback HTTP entirely with
-`quantsmind.provider.allowInsecureLocalhost`.
+endpoints must use HTTPS. Loopback HTTP is permitted out of the box so a local
+runtime works with no configuration; set
+`quantsmind.provider.allowInsecureLocalhost` to `false` to require HTTPS
+everywhere. Loopback traffic is unencrypted and any process on your machine can
+answer the port, so every request that uses it writes one warn-level line to the
+**QuantsMind** Output channel. See
+[Provider configuration](docs/PROVIDER_CONFIGURATION.md#plain-http-to-a-local-provider).
 
 ## Run an agent session
 

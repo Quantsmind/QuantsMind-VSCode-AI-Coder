@@ -152,6 +152,9 @@ Problems found while surveying the repo, all verifiable today:
 
 ### Phase 4 — Product completeness gaps that a public listing would expose
 **Owner: Agent (implementation) + User (scope decisions) · Effort: 2–5 days · [B-only skip for artwork]**
+**STATUS: IN PROGRESS (2026-11-04)** — the `allowInsecureLocalhost` item below is complete; the
+first-run notice, the `LIMITATIONS.md` promotion and the Phase 4 decisions (repository host,
+`virtualWorkspaces`, version number, brand assets) are outstanding.
 
 Current manifest facts that matter for GA, all measured from `package.json`:
 19 commands, 21 settings under `quantsmind.provider.*`, `categories: ["AI","Programming Languages","Other"]`,
@@ -189,6 +192,18 @@ Gaps:
   provider docs; a full onboarding webview is post-GA.
 - **`allowInsecureLocalhost`** is a security-relevant setting; GA needs it documented with its
   threat model, default-off confirmed, and a warn-level log line whenever it is actually used.
+  **DONE (2026-11-04)** — and the premise was wrong: it ships `"default": true`, so "default-off
+  confirmed" is replaced by "default-on, stated as such" (finding F3). `completionService.complete`
+  now writes one warn-level `insecure transport provider=… host=… scheme=http allowInsecureLocalhost=…`
+  line before every request that actually resolves to an `http:` endpoint — host and setting only, no
+  key, prompt or header; HTTPS and rejected remote-HTTP endpoints log nothing. Covered by a unit test
+  that asserts two insecure requests produce exactly two lines and an HTTPS request produces none, and
+  verified non-vacuous by disabling the production line (test fails `0 !== 2`). Threat model written
+  into `docs/PROVIDER_CONFIGURATION.md` (§ *Plain HTTP to a local provider*), the trust-boundary table
+  and a new § *Transport to the provider* in `docs/APPROVAL_AND_SECURITY.md`, the manifest setting
+  description, a "this warning is expected" entry in `docs/TROUBLESHOOTING.md`, and the README. Current counts on this tree: **381 unit + 36 integration passing**, lint
+  clean, `verify:deps` / `verify:release` clean, VSIX checks passed.
+  Remaining: F1 (Restricted Mode still allows workspace reads) is a decision, not a doc fix.
 - **Exit gate:** README, docs, and manifest consistent with the shipped behaviour; nothing the
   Marketplace would reject.
 

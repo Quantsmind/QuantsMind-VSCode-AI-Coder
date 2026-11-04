@@ -308,7 +308,7 @@
           "default": true,
           "scope": "application",
           "order": 8,
-          "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected."
+          "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected. Loopback traffic is unencrypted and any local process can answer the port, so each such request is logged at warn level in the QuantsMind output channel. Set to `false` to require HTTPS everywhere."
         },
         "quantsmind.context.excludeGlobs": {
           "type": "array",

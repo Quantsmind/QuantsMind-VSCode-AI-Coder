@@ -59,7 +59,29 @@ These rules are enforced in
 | Model to tools | Typed tool router with no default write or execute handler; model output cannot invoke it |
 | Webview to host | Strict message protocol, bounded ids, nonce-based CSP, no remote assets |
 | Host to logs | Credential and token redaction on every line |
+| Host to provider | HTTPS, or loopback HTTP only while `allowInsecureLocalhost` is enabled and always logged at warn level |
 | Restored sessions | Schema validation, migration, and hash revalidation before resume |
+
+## Transport to the provider
+
+Remote endpoints must use HTTPS — plain HTTP to a non-loopback host is rejected
+by the endpoint validator and no setting opens it. Loopback HTTP is permitted by
+default so local runtimes work out of the box, which means a request over it is
+clear text on this machine:
+
+- any local process that answers the configured port receives the prompt and the
+  `Authorization` header, so the default is safe for a runtime you started, not
+  for an arbitrary port number;
+- a loopback host is treated as not requiring a credential, so a request proceeds
+  unauthenticated;
+- workspace trust does not participate — the transport comes from
+  application-scoped settings, so a restricted workspace still uses it.
+
+Set `quantsmind.provider.allowInsecureLocalhost` to `false` to require HTTPS for
+loopback too. Every request that actually goes over plain HTTP writes one
+warn-level line naming the host and the setting, so the choice is auditable in
+the `QuantsMind` Output channel rather than being an invisible default. See
+[Provider configuration](PROVIDER_CONFIGURATION.md#plain-http-to-a-local-provider).
 
 ## Untrusted content
 

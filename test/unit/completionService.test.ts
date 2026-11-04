@@ -162,6 +162,44 @@ suite('completion service requests', () => {
     }
   });
 
+  test('warns whenever a request actually goes over plain HTTP', async () => {
+    const server = await startMockServer((_incoming, response) =>
+      sendJson(response, 200, { choices: [{ message: { content: 'local' } }] }),
+    );
+
+    try {
+      const sink = new MemoryLogSink();
+      const storage = new MemorySecretStorage();
+      storage.values.set('quantsmind.provider.openaiCompatible.apiKey', TEST_SECRET);
+      const service = new CompletionService(
+        new SecretStore(storage),
+        createSettings({ baseUrl: server.baseUrl, stream: false }),
+        new Logger(sink),
+      );
+
+      await service.complete(messages);
+      await service.complete(messages);
+
+      const warnings = sink.lines.filter((line) => line.includes('[warn] insecure transport'));
+      expect(warnings).to.have.length(2);
+      expect(warnings[0]).to.contain('scheme=http');
+      expect(warnings[0]).to.contain('allowInsecureLocalhost=true');
+      expect(sink.text).to.not.contain(TEST_SECRET);
+      expect(sink.text).to.not.match(/Bearer\s/);
+
+      const httpsSink = new MemoryLogSink();
+      const httpsService = new CompletionService(
+        new SecretStore(new MemorySecretStorage()),
+        createSettings({ stream: false }),
+        new Logger(httpsSink),
+      );
+      await httpsService.complete(messages).catch(() => undefined);
+      expect(httpsSink.text).to.not.contain('insecure transport');
+    } finally {
+      await server.close();
+    }
+  });
+
   test('normalizes provider failures and records a safe log entry', async () => {
     const server = await startMockServer((_incoming, response) =>
       sendJson(response, 500, { error: { message: `upstream failed ${TEST_SECRET}` } }),

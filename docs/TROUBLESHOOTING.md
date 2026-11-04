@@ -30,6 +30,16 @@ Remote endpoints must use HTTPS. For a local server, use `localhost`,
 `127.0.0.1`, or `::1`, and keep
 `quantsmind.provider.allowInsecureLocalhost` enabled.
 
+**`insecure transport …` warnings in the Output channel**
+Expected, not a defect. One warn-level line is written for every request that
+actually goes to a plain-HTTP endpoint, so a session against a local runtime
+produces one per message. The line names the host and the setting value only —
+never a key, prompt or header. Silence it by setting
+`quantsmind.provider.allowInsecureLocalhost` to `false` and running the local
+runtime behind HTTPS, or ignore it if you accept the loopback trade-off
+described in
+[Provider configuration](PROVIDER_CONFIGURATION.md#plain-http-to-a-local-provider).
+
 **"The provider base URL must not contain query parameters or fragments"**
 Use the API root only, for example `https://api.openai.com/v1`.
 

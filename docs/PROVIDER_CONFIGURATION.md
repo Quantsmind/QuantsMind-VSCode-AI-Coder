@@ -69,6 +69,65 @@ credential is sent; review it before using an unfamiliar workspace.
 The extension appends `/chat/completions` unless the base URL already ends with
 it.
 
+## Plain HTTP to a local provider
+
+`quantsmind.provider.allowInsecureLocalhost` ships enabled, so a local runtime
+such as Ollama or LM Studio works without any configuration. Enabling HTTPS-only
+is one setting change:
+
+```json
+{
+  "quantsmind.provider.allowInsecureLocalhost": false
+}
+```
+
+What the setting does and does not gate:
+
+| Endpoint | Setting `true` (default) | Setting `false` |
+| --- | --- | --- |
+| `https://` remote | allowed | allowed |
+| `http://localhost`, `http://127.0.0.1`, `http://[::1]` | allowed | rejected |
+| `http://` any other host | rejected | rejected |
+
+Remote plain HTTP is never available; the setting cannot widen it.
+
+### Threat model
+
+An `http://` endpoint carries the prompt — which can contain workspace file
+contents — and, when a credential is stored for that provider type, the
+`Authorization` header in clear text. On a loopback address there is no network
+path to sniff, so the realistic exposure is different from remote HTTP:
+
+- **any process on this machine can answer that port.** Loopback is not an
+  access control; a local application that binds `127.0.0.1:11434` before your
+  runtime does receives the prompt and the key. Treat the setting as safe only
+  for a runtime you started yourself.
+- **a bound port is also unauthenticated.** A loopback host is trusted by the
+  status check, so a request goes ahead with no credential if none is stored.
+- **turning on a proxy or forwarding the port** (SSH tunnel, `socat`, container
+  port mapping) puts that clear-text traffic on a real network, where the
+  original loopback reasoning no longer applies.
+- **workspace trust does not help here.** The transport is chosen from
+  application-scoped settings, so a restricted workspace still sends requests
+  over the configured transport.
+
+Set the value to `false` if other users or untrusted software share the machine,
+or run the local runtime behind a TLS-terminating proxy.
+
+### Every insecure request is logged
+
+The trade-off is visible at the time it is taken: each completion that resolves
+to an `http:` endpoint writes a warn-level line to the `QuantsMind` Output
+channel before the request is sent —
+
+```
+insecure transport provider=openai-compatible host=127.0.0.1:11434 scheme=http allowInsecureLocalhost=true — this request and any stored secret reach the loopback host unencrypted
+```
+
+One line per request, so a busy session produces many. HTTPS endpoints and
+rejected remote-HTTP endpoints produce nothing. The line carries the host and
+the setting state only — never the key, the prompt, or any header value.
+
 ## Capabilities
 
 Every provider reports a `ProviderCapabilities` descriptor:

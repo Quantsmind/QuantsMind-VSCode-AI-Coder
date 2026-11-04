@@ -1,7 +1,7 @@
 import type { SettingsService } from '../config/settings';
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
-import { isLoopbackHost, normalizeBaseUrl } from './endpoint';
+import { describeEndpointHost, isLoopbackHost, normalizeBaseUrl } from './endpoint';
 import { ProviderError, isProviderError, normalizeThrownError } from './errors';
 import { createProvider, listProviderTypes, providerDisplayName } from './registry';
 import type { ChatMessage, CompletionOptions, CompletionResult } from './types';
@@ -72,7 +72,17 @@ export class CompletionService {
     const normalized = normalizeBaseUrl(config.baseUrl, {
       allowInsecureLocalhost: config.allowInsecureLocalhost,
     });
-    const loopback = isLoopbackHost(new URL(normalized).hostname);
+    const target = new URL(normalized);
+    const loopback = isLoopbackHost(target.hostname);
+
+    if (target.protocol === 'http:') {
+      // The setting ships enabled so local runtimes work out of the box, so the
+      // trade-off has to be visible in the log every time it is actually taken.
+      this.logger.warn(
+        `insecure transport provider=${config.type} host=${describeEndpointHost(normalized)} scheme=http allowInsecureLocalhost=${config.allowInsecureLocalhost} — this request and any stored secret reach the loopback host unencrypted`,
+      );
+    }
+
     const apiKey = await this.secrets.get();
 
     if (apiKey === undefined && !loopback) {
