@@ -374,6 +374,39 @@ suite('chat webview integration', () => {
     );
   });
 
+  test('logs only sanitized shapes across a full request lifecycle', async () => {
+    await withServer(
+      (_incoming, response) =>
+        sendSse(response, [
+          { model: 'test-model', choices: [{ delta: { content: 'Reply' }, finish_reason: 'stop' }] },
+        ]),
+      async (server) => {
+        const { provider, webview, sink } = createHarness({ baseUrl: server.baseUrl, stream: true });
+        try {
+          await markReady(webview);
+          webview.emit({ type: 'send', prompt: 'Explain the billing module', mode: 'ask' });
+          await waitFor(() => webview.has('assistantEnd'));
+
+          expect(sink.text).to.contain('request context');
+          expect(sink.text).to.contain('completion success');
+
+          const forbidden: readonly RegExp[] = [
+            /sk-[A-Za-z0-9_-]{8,}/,
+            /Bearer\s+\S+/,
+            /authorization\s*[:=]/i,
+            /api[_-]?key\s*[:=]/i,
+          ];
+          for (const pattern of forbidden) {
+            expect(sink.text, `Output log matched ${pattern}`).to.not.match(pattern);
+          }
+          expect(sink.text).to.not.contain('Explain the billing module');
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
   test('attaches the active file only on request, redacts it, and never modifies the workspace', async () => {
     await withServer(
       (_incoming, response) =>

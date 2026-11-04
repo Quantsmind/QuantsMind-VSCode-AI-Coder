@@ -188,28 +188,40 @@ Gaps:
 
 ### Phase 5 — Security & trust sign-off
 **Owner: Agent (audit) + User (decision on any residual risk) · Effort: 1 day**
+**STATUS: AUDIT DONE, SIGN-OFF WITHHELD (2026-11-04)** — see
+[V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md](./reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md).
+Three findings need your decision before this phase can be signed.
 
 - **Dependency surface measured, not assumed:** one runtime dependency (`minimatch@11.0.4`), which is
   what ships in the VSIX — the VSIX check enforces exactly that. `npm audit --audit-level=high`
   currently reports **19 findings (1 low, 17 moderate, 1 high) and the high one is
   `serialize-javascript@6.0.2`, reached only through `mocha`** — a test runner that is never
-  packaged. CI now runs audit as a non-blocking report step; Phase 5 still owes a written triage of
-  the 17 moderate findings so "no runtime exposure" is a documented conclusion rather than an
-  inference.
+  packaged. CI now runs audit as a non-blocking report step; the written triage of the 17 moderate
+  findings is still owed, so "no runtime exposure" is currently an inference from `npm ls`, not a
+  per-finding conclusion.
 - **Credential handling re-verified against a live request:** the SecretStorage row survived both
   0.3.3→0.3.4 and 0.3.4→0.3.4-fix in-place upgrades — proven functionally, because your live
-  OpenRouter call returned exactly `READY`. Remaining gap: the request-time log lines have never been
-  inspected by me (Phase 2, last-but-one row).
-- **Redaction test at request time, not just activation:** assert no `sk-…`, no `Bearer …`, no
-  `apiKey=` in a capture that *includes* a real completion. Pattern scan exists and gave 0 hits
-  across activation + history reload; widen it to a request.
-- **Workspace trust in restricted mode (9b)** — currently unobserved. `untrustedWorkspaces.supported:
-  true` is a promise: an untrusted folder must not let the extension read workspace files, run
-  terminal commands, or auto-apply edits. This needs a live observation, not a manifest diff.
+  OpenRouter call returned exactly `READY`. Remaining gap: the *live* request-time Output lines have
+  still never been read by me (Phase 2 row).
+- **Redaction test at request time — DONE.** The earlier coverage only asserted that one named
+  fixture key was absent. A new integration test scans the whole captured Output channel of a real
+  mock-provider request for `/sk-…{8,}/`, `/Bearer\s+\S+/`, `/authorization[:=]/i`, `/api[_-]?key[:=]/i`
+  and for the prompt text itself, and confirms `request context …` and `completion success …` were
+  both emitted. Integration suite: 36 passing.
+- **Workspace trust — code audit done, live observation outstanding (9b), and the audit changed the
+  claim.** Measured: 8 `isTrusted` references across 5 files, gating agent sessions, apply/undo and
+  validation commands. **But `src/context` and `src/workspace` contain zero trust references**, so
+  in Restricted Mode chat can still read workspace files and put their contents in an outbound
+  provider request (F1). `untrustedWorkspaces.supported: true` therefore does *not* mean "nothing
+  leaves the machine" — either gate the reads or state the exception. Also: F2, `normalizeBaseUrl`
+  defaults to *allowing* insecure loopback when a caller omits the option (all four current call
+  sites pass it explicitly, so nothing is exposed today); F3, `allowInsecureLocalhost` ships with
+  `"default": true`, so the earlier draft's "default-off confirmed" was wrong and is corrected.
 - **Apply/undo and command-execution paths:** reviewed in earlier campaigns (v0.3.1 security
   remediation, v0.3.0 hardening). Re-run the existing suites, do not re-derive them.
 - **Exit gate:** signed security checklist; every `quantsmind.provider.*` key's effect described in
-  `docs/PROVIDER_CONFIGURATION.md` / `APPROVAL_AND_SECURITY.md`.
+  `docs/PROVIDER_CONFIGURATION.md` / `APPROVAL_AND_SECURITY.md`. **Not met** — F1/F3 decisions,
+  the moderate-finding triage and live 9b/9c are outstanding.
 
 ### Phase 6 — Support & operations
 **Owner: Agent (docs) + User (channel) · Effort: 0.5 day · [B-only skip: public channel]**
@@ -282,7 +294,7 @@ creates exactly the ambiguity that made this session's version bookkeeping hard.
 | **Work is committed but exists only on this machine** (`release/v0.4.0` has no remote counterpart) | A disk failure still loses the release candidate | Push the branch once authorised; that is the whole of Phase 1's remaining half |
 | **The build on this machine (`58bf8e39…`) is not the build on the branch (`677a7ec4…`)** — Phase 3 changed shipped behaviour (delete promotion, User-Agent) | Manual tests run against code that no longer matches the branch, so their results would not qualify the RC | Re-install the branch-built VSIX before Phase 2/7 observations; the older artefact is preserved at `…\v034-20261104T115340\quantsmind-vscode-ai-coder-0.3.4-historyfix.vsix` |
 | **Environment stalls in the integration host** (observed once: 2 timeouts + "host unresponsive", 1m vs 28s, passing standalone and on re-run) | CI flakiness will be blamed on the product | Per-OS reruns in CI with visible retry counts, not silent retries |
-| **`untrustedWorkspaces: true` unverified in live restricted mode** | A security promise the product may not keep | Phase 5 gate; do not publish until 9b is observed |
+| **`untrustedWorkspaces: true` is broader than the code enforces** — destructive paths are gated, but `src/context` and `src/workspace` have no trust check, so Restricted Mode can still read workspace files and send them to the provider (audit finding F1) | A security reviewer reads the manifest as "nothing leaves the machine in Restricted Mode" and would be wrong | Decide before publish: gate the reads, or document the exception in `APPROVAL_AND_SECURITY.md` + README; live Test 9b still has to be observed either way |
 | **Marketplace exposure of a repo that has never been public-checked** | Leaks internal paths/names if the repo goes public as-is | Review repo contents before creating the public listing |
 
 ## 5. Authorizations I need from you
