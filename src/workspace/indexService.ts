@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { SettingsService } from '../config/settings';
 import { buildContext, isPathExcluded, type RedactedContextItem } from '../context/filters';
 import type { Logger } from '../security/logger';
@@ -69,6 +71,7 @@ function languageIdForPath(path: string): string | undefined {
 export class WorkspaceIndexService {
   private entries: WorkspaceEntry[] | undefined;
   private rootName = 'workspace';
+  private rootKey = '';
 
   constructor(
     private readonly settings: SettingsService,
@@ -79,8 +82,44 @@ export class WorkspaceIndexService {
     this.entries = undefined;
   }
 
+  private scoreRoot(folder: vscode.WorkspaceFolder): number {
+    const fsPath = folder.uri.fsPath;
+    let score = 0;
+    try {
+            if (fs.existsSync(path.join(fsPath, 'package.json'))) score += 5;
+      if (fs.existsSync(path.join(fsPath, 'src'))) score += 3;
+      if (fs.existsSync(path.join(fsPath, 'docs'))) score += 2;
+      if (fs.existsSync(path.join(fsPath, '.git'))) score += 2;
+      if (fs.existsSync(path.join(fsPath, 'README.md'))) score += 1;
+    } catch {
+      // Ignore filesystem scoring errors.
+    }
+    return score;
+  }
+
   private getRoot(): vscode.WorkspaceFolder | undefined {
-    return vscode.workspace.workspaceFolders?.[0];
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return undefined;
+    }
+    if (folders.length === 1) {
+      return folders[0];
+    }
+    let best = folders[0];
+    let bestScore = this.scoreRoot(best);
+    for (let index = 1; index < folders.length; index += 1) {
+      const candidate = folders[index];
+      const score = this.scoreRoot(candidate);
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  listRoots(): readonly vscode.WorkspaceFolder[] {
+    return vscode.workspace.workspaceFolders ?? [];
   }
 
   private async readOptional(path: string): Promise<string | undefined> {
@@ -119,9 +158,6 @@ export class WorkspaceIndexService {
 
     const entries: WorkspaceEntry[] = [];
     for (const uri of uris) {
-      if (uri.scheme !== 'file') {
-        continue;
-      }
       const path = normalizeWorkspacePath(vscode.workspace.asRelativePath(uri, false));
       if (path.length === 0) {
         continue;
@@ -144,6 +180,12 @@ export class WorkspaceIndexService {
   }
 
   async getEntries(): Promise<readonly WorkspaceEntry[]> {
+    const root = this.getRoot();
+    const rootKey = root === undefined ? '' : root.uri.toString();
+    if (this.entries !== undefined && this.rootKey !== rootKey) {
+      this.entries = undefined;
+    }
+    this.rootKey = rootKey;
     if (this.entries === undefined) {
       this.entries = await this.buildIndex();
     }

@@ -16,4 +16,6 @@ export const COMMANDS = Object.freeze({
   startAgentTask: 'quantsmind.startAgentTask',
   showChangeHistory: 'quantsmind.showChangeHistory',
   showVersion: 'quantsmind.showVersion',
+  inspectWorkspace: 'quantsmind.inspectWorkspace',
+  runSelfDiagnostics: 'quantsmind.runSelfDiagnostics',
 });

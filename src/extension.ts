@@ -13,6 +13,7 @@ import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
 import { API_KEY_SECRET_KEY, SecretStore } from './security/secretStore';
 import { WorkspaceIndexService } from './workspace/indexService';
+import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
@@ -24,7 +25,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.2';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.3.3';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -36,6 +37,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   const contextService = new ContextService(settings);
   const conversations = new ConversationStore(context.globalState);
   const workspaceIndex = new WorkspaceIndexService(settings, logger);
+  const selfDiagnostics = new SelfDiagnosticsService({
+    version,
+    completion,
+    settings,
+    secrets,
+    workspaceIndex,
+    logger,
+  });
   const changeHistory = new ChangeHistoryStore(context.globalState);
   const changeService = new ChangeService(
     settings,
@@ -369,7 +378,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     void vscode.window.showInformationMessage(message, { modal: true });
   };
 
+  const inspectWorkspace = async (): Promise<void> => {
+    await chatProvider.summarizeWorkspaceAndReveal();
+  };
+
+  const runSelfDiagnostics = async (): Promise<void> => {
+    try {
+      const path = await selfDiagnostics.runAndSave(context);
+      void vscode.window.showInformationMessage(`QuantsMind: self-diagnostics report written to ${path}`);
+    } catch (error) {
+      logger.error('self-diagnostics failed', error);
+      void vscode.window.showErrorMessage('QuantsMind: self-diagnostics failed. See the log.');
+    }
+  };
+
   register(COMMANDS.showMenu, showMenu);
+  register(COMMANDS.inspectWorkspace, inspectWorkspace);
+  register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
   register(COMMANDS.showVersion, showVersion);
 
   const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
@@ -381,6 +406,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     vscode.workspace.onDidRenameFiles(invalidateIndex),
   );
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      workspaceIndex.invalidate();
+      void refreshAll();
+    }),
+  );
   context.subscriptions.push(
     settings.onDidChange(() => {
       workspaceIndex.invalidate();

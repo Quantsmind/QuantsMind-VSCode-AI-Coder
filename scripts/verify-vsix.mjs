@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { unzipSync } from 'fflate';
 
-const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.3.2.vsix';
+const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-0.3.3.vsix';
 const failures = [];
 
 function ok(message) {
@@ -97,7 +97,7 @@ try {
 
 assert(manifest.name === 'quantsmind-vscode-ai-coder', 'name is quantsmind-vscode-ai-coder');
 assert(manifest.publisher === 'quantsmind', 'publisher is quantsmind');
-assert(manifest.version === '0.3.2', 'version is 0.3.2');
+assert(manifest.version === '0.3.3', 'version is 0.3.3');
 assert(typeof manifest.engines?.vscode === 'string', 'declares an engines.vscode range');
 assert(manifest.main === './out/src/extension.js', 'main points at the compiled entry point');
 assert(manifest.preview === true, 'is marked as preview, not GA');
@@ -106,7 +106,7 @@ assert(manifest.license === 'MIT', 'license is MIT');
 assert(names.includes(`extension/${manifest.main.replace(/^\.\//, '')}`), 'main file exists in archive');
 
 const commands = manifest.contributes?.commands;
-assert(Array.isArray(commands) && commands.length === 17, 'contributes 17 commands');
+assert(Array.isArray(commands) && commands.length === 19, 'contributes 19 commands');
 assert(
   manifest.contributes?.views?.quantsmind?.[0]?.id === 'quantsmind.chatView',
   'contributes the chat webview',
@@ -187,7 +187,7 @@ if (identity === undefined) {
 } else {
   ok('extension.vsixmanifest is present');
   assert(/<Identity[^>]*Publisher="quantsmind"/.test(identity), 'vsix identity publisher is quantsmind');
-  assert(/<Identity[^>]*Version="0\.3\.2"/.test(identity), 'vsix identity version is 0.3.2');
+  assert(/<Identity[^>]*Version="0\.3\.3"/.test(identity), 'vsix identity version is 0.3.2');
 }
 
 if (failures.length > 0) {
