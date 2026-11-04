@@ -117,11 +117,12 @@ or run the local runtime behind a TLS-terminating proxy.
 ### Every insecure request is logged
 
 The trade-off is visible at the time it is taken: each completion that resolves
-to an `http:` endpoint writes a warn-level line to the `QuantsMind` Output
-channel before the request is sent —
+to an `http:` endpoint writes a warn-level line to the `QuantsMind AI Coder`
+Output channel before the request is sent. Every line is timestamp-prefixed, so
+what you see is:
 
 ```
-insecure transport provider=openai-compatible host=127.0.0.1:11434 scheme=http allowInsecureLocalhost=true — this request and any stored secret reach the loopback host unencrypted
+2026-11-04T12:00:00.000Z [warn] insecure transport provider=openai-compatible host=127.0.0.1:11434 scheme=http allowInsecureLocalhost=true — this request and any stored secret reach the loopback host unencrypted
 ```
 
 One line per request, so a busy session produces many. HTTPS endpoints and

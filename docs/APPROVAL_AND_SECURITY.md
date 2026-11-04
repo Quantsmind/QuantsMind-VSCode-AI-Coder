@@ -80,7 +80,7 @@ clear text on this machine:
 Set `quantsmind.provider.allowInsecureLocalhost` to `false` to require HTTPS for
 loopback too. Every request that actually goes over plain HTTP writes one
 warn-level line naming the host and the setting, so the choice is auditable in
-the `QuantsMind` Output channel rather than being an invisible default. See
+the `QuantsMind AI Coder` Output channel rather than being an invisible default. See
 [Provider configuration](PROVIDER_CONFIGURATION.md#plain-http-to-a-local-provider).
 
 ## Untrusted content

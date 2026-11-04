@@ -162,7 +162,7 @@ runtime works with no configuration; set
 `quantsmind.provider.allowInsecureLocalhost` to `false` to require HTTPS
 everywhere. Loopback traffic is unencrypted and any process on your machine can
 answer the port, so every request that uses it writes one warn-level line to the
-**QuantsMind** Output channel. See
+**QuantsMind AI Coder** Output channel. See
 [Provider configuration](docs/PROVIDER_CONFIGURATION.md#plain-http-to-a-local-provider).
 
 ## Run an agent session
