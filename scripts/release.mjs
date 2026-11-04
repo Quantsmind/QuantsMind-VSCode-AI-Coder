@@ -8,7 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { projectRoot, version as currentVersion, vsixFileName } from './project-meta.mjs';
+import { extensionName, projectRoot, version as currentVersion } from './project-meta.mjs';
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -31,7 +31,9 @@ function assertCleanTree() {
   }
 }
 
-assertCleanTree();
+if (!dryRun) {
+  assertCleanTree();
+}
 
 const [major, minor, patch] = currentVersion.split('.').map(Number);
 const nextVersion =
@@ -66,5 +68,5 @@ Next steps (each is a separate, explicit action):
   2. git add package.json package-lock.json CHANGELOG.md
      git commit -m "chore(release): ${nextVersion}"
   3. git tag v${nextVersion}
-  4. node scripts/sha256.mjs ${vsixFileName}
+  4. node scripts/sha256.mjs ${extensionName}-${nextVersion}.vsix
 `);
