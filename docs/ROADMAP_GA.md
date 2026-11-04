@@ -163,6 +163,12 @@ Gaps:
 - **No `icon`, no `screenshot`, no `qna`, no `badges`, no `extensionKind`** — the Marketplace listing
   renders blank and unbranded. Needs brand assets from you; I can build the pages around them but I
   will not invent logo artwork silently.
+- **Repository identity is inconsistent and must be settled before publishing.** `package.json` declares
+  `repository: github.com/ajit-ai/QuantsMind-VSCode-AI-Coder` and the README's *Getting help* link points
+  there, while `git remote` is `github.com/Quantsmind/QuantsMind-VSCode-AI-Coder`. `vsce` uses the
+  manifest field for the Marketplace "Repository" and "Bugs" links, and the `.github/ISSUE_TEMPLATE` only
+  works on the repo it is pushed to. Pick one — the manifest value and the remote must agree before the
+  Phase 8 listing is created, and any pushed branch on the other host is orphaned.
 - **`virtualWorkspaces: false`** while `untrustedWorkspaces: true`: the extension silently refuses in
   remote/SSH and Settings-profile/ghost workspaces. Either state the restriction in the README (cheap)
   or declare support per remote authority (expensive). Decide; do not leave implicit.
