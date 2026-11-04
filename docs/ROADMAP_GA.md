@@ -67,6 +67,9 @@ Effort figures are engineer-day estimates, not measured. "Owner" is who must act
 
 ### Phase 1 — Freeze and commit v0.3.4 / prepare the release branch
 **Owner: User (authorization) · Effort: 0.5 day · Blocks everything else**
+**STATUS: DONE locally (2026-11-04).** Branch `release/v0.4.0` created from `402d163`; 32 entries
+committed as `d0575c2` (v0.3.4 core), `740cfbc` (restore fix + regression tests), `f2ba79a`
+(reports + this roadmap). Working tree clean. **Not pushed** — no remote operation was authorised.
 
 - Move off `feature/v0.3.3` (the branch name now trails three released versions) to
   `release/v0.4.0` — or keep the name and accept the confusion; it is a naming decision, not a
@@ -104,32 +107,48 @@ Exactly the list from `V0.3.4_FINAL_QUALIFICATION_STATUS.md` §5, with what each
 
 ### Phase 3 — Release engineering
 **Owner: Agent · Effort: 1.5–2 days · On the critical path**
+**STATUS: CODE-COMPLETE (2026-11-04)** — commits `8e245b6`, `fcc8a5a`, `501e44e` on `release/v0.4.0`,
+full `npm run verify` green. Decision item 6 and the pushed-CI evidence remain open.
 
 Problems found while surveying the repo, all verifiable today:
 
-1. **Hardcoded release-blocking version strings.** A version bump currently breaks verification:
-   - [scripts/verify-vsix.mjs:100](../scripts/verify-vsix.mjs#L100) — `assert(manifest.version === '0.3.4', 'version is 0.3.4')`
-   - [scripts/verify-vsix.mjs:190](../scripts/verify-vsix.mjs#L190) — regex pinning `Version="0.3.4"` in the C# identity
-   - [scripts/verify-install.mjs:6-7](../scripts/verify-install.mjs#L6) — default VSIX filename and
-     the `expected` `quantsmind.quantsmind-vscode-ai-coder@0.3.4` string
-   - [.vscode-test.packaged.mjs:5](../.vscode-test.packaged.mjs#L5) — packaged-test fixture version
-   Fix: read `version` from `package.json` at runtime; parameterize the identity check.
-2. **No release task.** Add `npm run release` = bump (`package.json` + `package-lock.json` +
-   `CHANGELOG.md` + the compile-time identity marker) → `npm run verify` → `git tag` → report SHA-256.
-   Keep it explicit and manual-trigger only; never run it as part of my routine verification.
-3. **CI does not cover the release chain.** `.github/workflows/ci.yml` runs lint/unit on a
-   Windows/macOS/Linux matrix plus an extension-host job (Linux uses xvfb), and has **no publish or
-   artifact step**. Extend to: full `npm run verify` on all three OSes, upload the built VSIX + its
-   SHA-256 as artifacts, `npm audit --audit-level=high` as a reporting (non-blocking at first) step,
-   and a `release` workflow gated on a tag plus manual `workflow_dispatch`.
-4. **Known defect to fix before GA.** `ConversationStore.delete()` can promote a blank successor as
-   the new active conversation — I deliberately did not touch it during the authorized §9 fix
-   because it was out of scope. It is in scope now: delete → select next non-empty → notify.
-5. **Version-number hygiene.** v0.3.4 shipped on a branch called `feature/v0.3.3`; decide whether the
-   history fix is `0.3.4` (already installed, so rewriting it is worse) or `0.3.5`, and tag whichever
-   is true. Then v0.4.0 GA as the first release produced by the new `npm run release`.
-- **Exit gate:** a dry-run `npm run release -- --bump patch` on a scratch branch completes and the
-  CI artifact SHA matches the local VSIX.
+1. **Hardcoded release-blocking version strings — FIXED.** Seven sites pinned the version, four
+   more than the survey first suggested: the two VSIX checks, the install check's default artefact
+   name and its `expected` id, the packaged-test config, the `package` npm script's `--out` name,
+   the provider `User-Agent`, `src/extension.ts`'s fallback literal, and three test assertions
+   (`api.version`, `init.version`). All now derive from `package.json` at run time.
+   `scripts/verify-release.mjs` is the regression guard: it fails the chain if an artefact filename,
+   an `extensionId@version`, a `<Identity … Version="…">` literal or the current version in a
+   user-agent appears in `scripts/`, `src/`, `media/`, `test/` or the two test configs. Verified
+   non-vacuous — it scans 121 files and exits 1 on an injected violation.
+2. **No release task — FIXED.** `npm run release -- --bump patch|minor|major` bumps `package.json`
+   and `package-lock.json` (root and `packages[""]`), refuses to write on a dirty tree, and prints
+   the follow-up commands. It does **not** commit, tag, push or publish: those stay separate,
+   separately authorised steps. `npm run sha256 <file>` records artefact checksums.
+   `--dry-run` previews the bump and the next artefact name without touching files.
+3. **CI release job was broken, not missing — FIXED.** `.github/workflows/ci.yml` did have an
+   artefact upload, but it pointed at `quantsmind-vscode-ai-coder-0.3.0.vsix`, a name no build has
+   produced since 0.3.0, with `if-no-files-found: error` — so the job could only fail on a current
+   release. It now globs `quantsmind-vscode-ai-coder-*.vsix`, records the SHA-256 into the job
+   summary and a second artifact, runs the literal guard, reports `npm audit --audit-level=high`
+   without blocking, and triggers on `release/**` and `workflow_dispatch` as well. Still no publish
+   step — deliberately, that is Phase 8.
+4. **`ConversationStore.delete()` blank successor — FIXED** in `fcc8a5a`: deleting the active chat
+   now promotes the newest conversation that actually has messages, and falls back to no active id
+   (fresh chat) when none does. Covered by a seeded unit test.
+5. **New defect found and fixed during this phase:** `src/extension.ts` stored its status-bar
+   separators as raw Windows-1252 `0xB7` bytes while the rest of the file is UTF-8. The TypeScript
+   compiler reads UTF-8, so the shipped status bar rendered a replacement character. The file is
+   valid UTF-8 now; no other source file had the problem (tree-wide scan of 0 invalid files).
+6. **Version-number hygiene — OPEN, your decision.** v0.3.4 shipped on a branch called
+   `feature/v0.3.3` and is already installed. Options: keep 0.3.4 as-is (installed build matches the
+   reported version, nothing retagged), or cut `0.3.5` for the Phase 3 changes now on this branch,
+   then GA at `0.4.0`. Recommendation: `0.3.5`, because the delete-path fix and the User-Agent fix
+   change shipped behaviour.
+- **Exit gate: MET** except for the CI-artefact half, which cannot be observed until this branch is
+  pushed. `npm run verify` ran end to end on the Phase 3 tree and exited 0: lint clean, dependency
+  check clean, literal guard clean over 121 files, 380 unit + 35 integration + 4 packaged passing,
+  VSIX checks passed, `Verified installed extension: quantsmind.quantsmind-vscode-ai-coder@0.3.4`.
 
 ### Phase 4 — Product completeness gaps that a public listing would expose
 **Owner: Agent (implementation) + User (scope decisions) · Effort: 2–5 days · [B-only skip for artwork]**
@@ -170,8 +189,13 @@ Gaps:
 ### Phase 5 — Security & trust sign-off
 **Owner: Agent (audit) + User (decision on any residual risk) · Effort: 1 day**
 
-- **Dependency surface is already good:** one runtime dependency, `minimatch@11.0.4`. Keep it that
-  way; add `npm audit` and a `verify:deps` lockfile-integrity assertion to CI (Phase 3).
+- **Dependency surface measured, not assumed:** one runtime dependency (`minimatch@11.0.4`), which is
+  what ships in the VSIX — the VSIX check enforces exactly that. `npm audit --audit-level=high`
+  currently reports **19 findings (1 low, 17 moderate, 1 high) and the high one is
+  `serialize-javascript@6.0.2`, reached only through `mocha`** — a test runner that is never
+  packaged. CI now runs audit as a non-blocking report step; Phase 5 still owes a written triage of
+  the 17 moderate findings so "no runtime exposure" is a documented conclusion rather than an
+  inference.
 - **Credential handling re-verified against a live request:** the SecretStorage row survived both
   0.3.3→0.3.4 and 0.3.4→0.3.4-fix in-place upgrades — proven functionally, because your live
   OpenRouter call returned exactly `READY`. Remaining gap: the request-time log lines have never been
@@ -255,18 +279,20 @@ creates exactly the ambiguity that made this session's version bookkeeping hard.
 | **Logs only persist with `--logsPath`** | Evidence collection fails silently on a normally launched window | Documented in Phase 2; every evidence request names the flag |
 | **Host policy blocks SecretStorage metadata reads** (two attempts denied this session) | Cannot directly measure the credential row | Already resolved functionally by the live `READY` call; do not re-attempt |
 | **Live provider tests cost real credit** | Tests 2/8 and any request-log capture are paid | Batch them into one user session; Test 2 already passed, so only Test 8 remains paid |
-| **31 entries uncommitted, all v0.3.4 work** | A crash or an errant clean destroys the release candidate | Phase 1 is first for exactly this reason |
+| **Work is committed but exists only on this machine** (`release/v0.4.0` has no remote counterpart) | A disk failure still loses the release candidate | Push the branch once authorised; that is the whole of Phase 1's remaining half |
+| **The build on this machine (`58bf8e39…`) is not the build on the branch (`677a7ec4…`)** — Phase 3 changed shipped behaviour (delete promotion, User-Agent) | Manual tests run against code that no longer matches the branch, so their results would not qualify the RC | Re-install the branch-built VSIX before Phase 2/7 observations; the older artefact is preserved at `…\v034-20261104T115340\quantsmind-vscode-ai-coder-0.3.4-historyfix.vsix` |
 | **Environment stalls in the integration host** (observed once: 2 timeouts + "host unresponsive", 1m vs 28s, passing standalone and on re-run) | CI flakiness will be blamed on the product | Per-OS reruns in CI with visible retry counts, not silent retries |
 | **`untrustedWorkspaces: true` unverified in live restricted mode** | A security promise the product may not keep | Phase 5 gate; do not publish until 9b is observed |
 | **Marketplace exposure of a repo that has never been public-checked** | Leaks internal paths/names if the repo goes public as-is | Review repo contents before creating the public listing |
 
 ## 5. Authorizations I need from you
 
-1. **Phase 1:** permission to create `release/v0.4.0`, commit the 31 entries as the described set,
-   and push that branch. (Nothing has been committed or pushed by me this session.)
+1. **Phase 1:** ~~permission to commit~~ — committed locally on `release/v0.4.0`. **Still needed:
+   authorization to push the branch to `origin`.** Nothing has been pushed.
 2. **Phase 3:** permission to modify `scripts/verify-vsix.mjs`, `scripts/verify-install.mjs`,
    `.vscode-test.packaged.mjs`, `.github/workflows/ci.yml`, `package.json` (new `release` script),
-   and to fix `ConversationStore.delete()`.
+   and to fix `ConversationStore.delete()` — **consumed and executed** (also `src/extension.ts`,
+   `src/providers/openaiCompatible.ts` and four test files, for the same reason).
 3. **Phase 4:** brand assets (icon, ≥1 screenshot), the `qna` URL, and the decision on
    `virtualWorkspaces` + `engines.vscode` policy.
 4. **Phase 2/7:** your sessions in the real UI, including one paid streaming call for Test 8.
@@ -286,6 +312,9 @@ because they have no code dependency on it.
 | W4 | Phase 7 instrumentation; fix whatever the RC run surfaces | Cold-install + upgrade/rollback sessions on a clean profile |
 | W5 | Phase 8 publish (only on explicit go-ahead) | Confirm listing, retain backups |
 
-**Immediate next action, independent of Gate 0:** commit the current v0.3.4 work (Phase 1). It is the
-only item that is pure downside to delay — everything else can wait for a decision, but 31 uncommitted
-entries including the shipped fix is the actual risk on the table today.
+**Immediate next actions.** Phase 1's commit half and all of Phase 3 are done locally. What unblocks
+the rest, in order: (a) your authorization to push `release/v0.4.0`; (b) your decision on item 6 of
+Phase 3 — whether the Phase 3 changes ship as `0.3.5` before GA at `0.4.0`; (c) re-installing the
+branch-built VSIX, because the build you are running predates the delete-path and User-Agent fixes
+and any manual observations made against it would not qualify the release candidate; (d) the Phase 2
+UI sessions.
