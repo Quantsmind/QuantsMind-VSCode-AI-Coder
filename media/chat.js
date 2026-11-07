@@ -592,7 +592,63 @@
 
     card.append(title, text);
 
+    let parsed = null;
     if (typeof message.output === 'string' && message.output.trim().length > 0) {
+      try {
+        parsed = JSON.parse(message.output);
+      } catch (error) {
+        parsed = null;
+      }
+    }
+
+    if (parsed && Array.isArray(parsed.files)) {
+      parsed.files.forEach(function (file) {
+        const fileCard = document.createElement('div');
+        fileCard.className = 'assistant-card';
+        fileCard.style.marginTop = '8px';
+
+        const fileTitle = document.createElement('div');
+        fileTitle.className = 'message-meta';
+        fileTitle.textContent = (file.kind || 'change') + ': ' + (file.path || '');
+        fileCard.append(fileTitle);
+
+        if (typeof file.summary === 'string' && file.summary.length > 0) {
+          const summary = document.createElement('p');
+          summary.className = 'error-message';
+          summary.textContent = file.summary;
+          fileCard.append(summary);
+        }
+
+        if (typeof file.diff === 'string' && file.diff.length > 0) {
+          const diff = document.createElement('pre');
+          diff.className = 'message-content';
+          diff.style.whiteSpace = 'pre-wrap';
+          diff.style.maxHeight = '240px';
+          diff.style.overflow = 'auto';
+          const limited = file.diff.length > 8000 ? file.diff.slice(0, 8000) + '\\n...[truncated]' : file.diff;
+          diff.textContent = limited;
+          fileCard.append(diff);
+        }
+
+        card.append(fileCard);
+      });
+    } else if (parsed && typeof parsed.command === 'string') {
+      const command = document.createElement('div');
+      command.className = 'message-meta';
+      command.textContent = 'Command: ' + parsed.command + ' (exit ' + (parsed.exitCode === null ? 'unknown' : parsed.exitCode) + ')';
+      card.append(command);
+
+      if (typeof parsed.output === 'string' && parsed.output.trim().length > 0) {
+        const output = document.createElement('pre');
+        output.className = 'message-content';
+        output.style.whiteSpace = 'pre-wrap';
+        output.style.maxHeight = '240px';
+        output.style.overflow = 'auto';
+        const limited = parsed.output.length > 8000 ? parsed.output.slice(0, 8000) + '\\n...[truncated]' : parsed.output;
+        output.textContent = limited;
+        card.append(output);
+      }
+    } else if (typeof message.output === 'string' && message.output.trim().length > 0) {
       const output = document.createElement('pre');
       output.className = 'message-content';
       output.style.whiteSpace = 'pre-wrap';

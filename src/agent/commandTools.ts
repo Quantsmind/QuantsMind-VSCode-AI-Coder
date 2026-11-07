@@ -1,6 +1,8 @@
 import { evaluateCommand } from '../commands/policy';
 import { runApprovedCommand, type CommandResult } from '../commands/runner';
+import { analyzeValidationFailure } from './diagnostics';
 import type { AgentTool, AgentToolResult } from './codingAgent';
+import type { Diagnostic, ValidationEvidence } from './models';
 
 export interface CommandToolApproval {
   (request: { readonly command: string; readonly cwd: string; readonly risk: string }): Promise<boolean>;
@@ -61,13 +63,41 @@ export class CommandTools {
       secret,
       trusted: this.env.trusted,
     });
+    const diagnostics: readonly Diagnostic[] =
+      result.exitCode === 0 && result.error === undefined
+        ? []
+        : analyzeValidationFailure({
+            id: 'validation-1',
+            taskId: 'coding-agent',
+            command: result.command,
+            startedAt: new Date(Date.now() - result.durationMs).toISOString(),
+            finishedAt: new Date().toISOString(),
+            outcome: 'failed',
+            evidence: {
+              command: result.command,
+              exitCode: result.exitCode,
+              passed: false,
+              timedOut: result.timedOut,
+              cancelled: result.cancelled,
+              truncated: result.truncated,
+              durationMs: result.durationMs,
+              output: result.output,
+              error: result.error,
+            } as ValidationEvidence,
+          });
+    const enriched = { ...result, diagnostics };
     return {
       ok: result.exitCode === 0 && result.error === undefined,
       tool: 'run_command',
-      output: JSON.stringify(result, null, 2),
+      output: JSON.stringify(enriched, null, 2),
       error: result.error,
       durationMs: result.durationMs,
     };
+  }
+
+  async runValidationCommand(command: unknown): Promise<AgentToolResult> {
+    const result = await this.runCommand(command);
+    return { ...result, tool: 'run_validation_command' };
   }
 
   toAgentTools(): readonly AgentTool[] {
@@ -95,7 +125,7 @@ export class CommandTools {
         description: 'Run an allowlisted validation command after explicit approval and return structured validation evidence.',
         parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
         async execute(args) {
-          return self.runCommand(args.command);
+          return self.runValidationCommand(args.command);
         },
       },
     ];
