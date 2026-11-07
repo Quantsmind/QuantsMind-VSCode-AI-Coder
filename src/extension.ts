@@ -10,7 +10,7 @@ import { ContextService } from './context/contextService';
 import { CompletionService } from './providers/completionService';
 import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
-import { API_KEY_SECRET_KEY, SecretStore } from './security/secretStore';
+import { isProviderApiKeySecretKey, SecretStore } from './security/secretStore';
 import { WorkspaceIndexService } from './workspace/indexService';
 
 interface ActiveRuntime {
@@ -23,7 +23,7 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '0.2.0';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : '1.0.0';
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -126,10 +126,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   };
 
   const setApiKey = async (): Promise<void> => {
+    const providerType = settings.getProviderSettings().type;
     const value = await vscode.window.showInputBox({
-      title: 'QuantsMind: Set API Key',
+      title: `QuantsMind: Set API Key (${providerType})`,
       prompt:
-        'Stored in VS Code SecretStorage. It is never written to settings, logs, or workspace files. Leave empty to cancel.',
+        'Stored in VS Code SecretStorage per provider. It is never written to settings, logs, or workspace files. Leave empty to cancel.',
       password: true,
       ignoreFocusOut: true,
       placeHolder: 'Provider API key',
@@ -151,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     }
 
     try {
-      await secrets.set(value);
+      await secrets.forProvider(providerType).set(value);
     } catch (error) {
       logger.error('failed to store API key', error);
       void vscode.window.showErrorMessage(
@@ -167,15 +168,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   };
 
   const clearApiKey = async (): Promise<void> => {
+    const providerType = settings.getProviderSettings().type;
     const answer = await vscode.window.showWarningMessage(
-      'Remove the API key stored by QuantsMind?',
+      `Remove the ${providerType} API key stored by QuantsMind?`,
       { modal: true },
       'Remove',
     );
     if (answer !== 'Remove') {
       return;
     }
-    await secrets.clear();
+    await secrets.forProvider(providerType).clear();
     void vscode.window.showInformationMessage('QuantsMind: API key removed.');
     await refreshAll();
   };
@@ -187,16 +189,99 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     );
   };
 
-  const selectModel = async (): Promise<void> => {
-    const current = settings.getProviderSettings().model;
-    const value = await vscode.window.showInputBox({
-      title: 'QuantsMind: Select Model',
-      prompt: 'Enter the model identifier expected by your OpenAI-compatible provider.',
-      value: current,
-      ignoreFocusOut: true,
-      validateInput: (input) =>
-        input.trim().length > 0 ? undefined : 'A model name is required.',
+  const selectProvider = async (): Promise<void> => {
+    const current = settings.getProviderSettings().type;
+    const profiles = completion.getProfiles();
+    const items = profiles.map((profile) => ({
+      label: profile.displayName,
+      description: profile.id,
+      detail:
+        profile.adapter === 'gemini'
+          ? 'Google Gemini endpoint (API key required)'
+          : `${profile.defaultBaseUrl ?? 'custom endpoint'}${profile.local ? ' · local, no API key required' : profile.credential === 'always' ? ' · API key required' : ' · API key required for remote endpoints'}`,
+      id: profile.id,
+      picked: profile.id === current,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'QuantsMind: Select Provider Profile',
+      placeHolder: 'Choose a provider profile',
     });
+    if (picked === undefined) {
+      return;
+    }
+    const profile = profiles.find((entry) => entry.id === picked.id);
+    const baseUrl = profile?.defaultBaseUrl ?? undefined;
+    await settings.updateProviderType(picked.id, baseUrl);
+    await refreshAll();
+  };
+
+  const testConnection = async (): Promise<void> => {
+    const status = await completion.getStatus();
+    const result = await completion.testConnection();
+    const detail = [
+      `Profile: ${result.displayName} (${result.profileId})`,
+      `Endpoint: ${result.endpointHost}`,
+      `Reachable: ${result.reachable ? 'yes' : 'no'}`,
+      `Authenticated: ${result.authenticated ? 'yes' : 'no'}`,
+      `Model available: ${result.modelAvailable ? 'yes' : 'no'}`,
+      `Model discovery: ${result.discoveryAvailable ? 'available' : 'unavailable'}`,
+      `Code: ${result.code}`,
+    ].join('\n');
+    logger.info(`connection test ${result.code} ${result.message}`);
+    if (result.reachable && result.authenticated && result.modelAvailable) {
+      void vscode.window.showInformationMessage(
+        `QuantsMind connection test succeeded.\n${detail}`,
+        { modal: false },
+      );
+    } else {
+      void vscode.window.showErrorMessage(
+        `QuantsMind connection test failed: ${result.message}\n${detail}`,
+      );
+    }
+    void status;
+  };
+
+  const selectModel = async (): Promise<void> => {
+    const currentSettings = settings.getProviderSettings();
+    const current = currentSettings.model;
+    const discovery = await completion.listModels();
+    let value: string | undefined;
+    if (discovery.status === 'available' && discovery.models.length > 0) {
+      const items = discovery.models.map((modelId) => ({
+        label: modelId,
+        description: modelId === current ? 'current' : undefined,
+        picked: modelId === current,
+        id: modelId,
+      }));
+      const picked = await vscode.window.showQuickPick(items, {
+        title: 'QuantsMind: Select Model (discovered)',
+        placeHolder: `Discovered ${discovery.models.length} model(s). Pick one or press Escape to enter manually.`,
+      });
+      if (picked !== undefined) {
+        value = picked.id;
+      } else {
+        value = await vscode.window.showInputBox({
+          title: 'QuantsMind: Select Model',
+          prompt: `Model discovery found ${discovery.models.length} model(s). Enter a model manually or cancel.`,
+          value: current,
+          ignoreFocusOut: true,
+          validateInput: (input) =>
+            input.trim().length > 0 ? undefined : 'A model name is required.',
+        });
+      }
+    } else {
+      value = await vscode.window.showInputBox({
+        title: 'QuantsMind: Select Model',
+        prompt:
+          discovery.status === 'available'
+            ? 'Enter the model manually.'
+            : `Model discovery is unavailable (${discovery.message}). Enter the model manually.`,
+        value: current,
+        ignoreFocusOut: true,
+        validateInput: (input) =>
+          input.trim().length > 0 ? undefined : 'A model name is required.',
+      });
+    }
     if (value === undefined) {
       return;
     }
@@ -218,7 +303,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       { label: '$(key) Set API Key', command: COMMANDS.setApiKey },
       { label: '$(trash) Clear API Key', command: COMMANDS.clearApiKey },
       { label: '$(settings-gear) Configure Provider', command: COMMANDS.configureProvider },
+      { label: '$(symbol-method) Select Provider Profile', command: COMMANDS.selectProvider },
       { label: '$(symbol-parameter) Select Model', command: COMMANDS.selectModel },
+      { label: '$(plug) Test Provider Connection', command: COMMANDS.testConnection },
       { label: '$(output) Show Log', command: COMMANDS.showLog },
     ];
     const picked = await vscode.window.showQuickPick(items, {
@@ -339,7 +426,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.setApiKey, setApiKey);
   register(COMMANDS.clearApiKey, clearApiKey);
   register(COMMANDS.configureProvider, configureProvider);
+  register(COMMANDS.selectProvider, selectProvider);
   register(COMMANDS.selectModel, selectModel);
+  register(COMMANDS.testConnection, testConnection);
   register(COMMANDS.showLog, () => output.show());
   register(COMMANDS.showMenu, showMenu);
 
@@ -354,13 +443,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
 
   context.subscriptions.push(
     settings.onDidChange(() => {
+      // Prevent stale provider instances: an in-flight request was dispatched
+      // with the old profile/endpoint/model/credential. Cancel it so its
+      // result cannot be posted as if it came from the new configuration.
+      chatProvider.cancelActiveIfBusy();
       workspaceIndex.invalidate();
       void refreshAll();
     }),
   );
   context.subscriptions.push(
     context.secrets.onDidChange((event) => {
-      if (event.key === API_KEY_SECRET_KEY) {
+      if (isProviderApiKeySecretKey(event.key)) {
+        chatProvider.cancelActiveIfBusy();
         void refreshAll();
       }
     }),

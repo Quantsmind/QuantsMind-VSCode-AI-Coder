@@ -2,11 +2,11 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Project-aware AI coding assistant for VS Code with explicit context control, streaming responses, and approval-first workflows.",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
-  "preview": true,
+  "preview": false,
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -25,7 +25,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder.git"
+    "url": "https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder.git"
   },
   "galleryBanner": {
     "color": "#0B1020",
@@ -122,6 +122,18 @@
         "title": "Select Model",
         "category": "QuantsMind",
         "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "quantsmind.selectProvider",
+        "title": "Select Provider Profile",
+        "category": "QuantsMind",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "quantsmind.testConnection",
+        "title": "Test Provider Connection",
+        "category": "QuantsMind",
+        "icon": "$(plug)"
       },
       {
         "command": "quantsmind.showLog",
@@ -227,15 +239,31 @@
         "quantsmind.provider.type": {
           "type": "string",
           "enum": [
-            "openai-compatible"
+            "openai-compatible",
+            "openai",
+            "groq",
+            "openrouter",
+            "ollama",
+            "lm-studio",
+            "llama-cpp",
+            "vllm",
+            "gemini"
           ],
           "enumDescriptions": [
-            "Any provider exposing an OpenAI-compatible /chat/completions API."
+            "Any provider exposing an OpenAI-compatible /chat/completions API.",
+            "OpenAI cloud API.",
+            "Groq cloud API.",
+            "OpenRouter cloud API.",
+            "Ollama local server.",
+            "LM Studio local server.",
+            "llama.cpp server.",
+            "vLLM self-hosted server.",
+            "Google Gemini."
           ],
           "default": "openai-compatible",
           "scope": "application",
           "order": 1,
-          "markdownDescription": "AI provider adapter. v0.2.0 ships the **openai-compatible** adapter and keeps the abstraction extensible for future providers."
+          "markdownDescription": "Provider profile. Profiles reuse the openai-compatible adapter (except Gemini) and select endpoint defaults and credential keys. Override the base URL to target a custom endpoint."
         },
         "quantsmind.provider.baseUrl": {
           "type": "string",
@@ -432,7 +460,7 @@
     "test:integration": "npm run compile && vscode-test",
     "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-0.2.0.vsix",
+    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-1.0.0.vsix",
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
     "verify:install": "node scripts/verify-install.mjs",

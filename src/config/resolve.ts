@@ -1,4 +1,7 @@
 import {
+  getProviderProfile,
+} from '../providers/profiles';
+import {
   DEFAULT_AGENT_MAX_REPAIR_ITERATIONS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_TIMEOUT_MS,
@@ -116,10 +119,30 @@ function globList(value: unknown): string[] {
 }
 
 export function resolveProviderSettings(raw: RawProviderSettings): ResolvedProviderSettings {
+  const type = stringValue(raw.type, DEFAULT_PROVIDER_TYPE, 100);
+  const profile = getProviderProfile(type);
+
+  // Profile defaults apply only when the raw value is absent or still the
+  // global default (which is what VS Code returns when the user has not
+  // overridden the setting). An explicit non-default URL/model is always
+  // honoured so users can override endpoints.
+  const rawBaseUrl = typeof raw.baseUrl === 'string' ? raw.baseUrl.trim() : '';
+  const rawModel = typeof raw.model === 'string' ? raw.model.trim() : '';
+  const profileBaseUrl =
+    profile?.defaultBaseUrl !== undefined &&
+    (rawBaseUrl.length === 0 || rawBaseUrl === DEFAULT_BASE_URL)
+      ? profile.defaultBaseUrl
+      : undefined;
+  const profileModel =
+    profile?.defaultModel !== undefined &&
+    (rawModel.length === 0 || rawModel === DEFAULT_MODEL)
+      ? profile.defaultModel
+      : undefined;
+
   return {
-    type: stringValue(raw.type, DEFAULT_PROVIDER_TYPE, 100),
-    baseUrl: stringValue(raw.baseUrl, DEFAULT_BASE_URL, 4096),
-    model: stringValue(raw.model, DEFAULT_MODEL, 200),
+    type,
+    baseUrl: profileBaseUrl ?? stringValue(raw.baseUrl, DEFAULT_BASE_URL, 4096),
+    model: profileModel ?? stringValue(raw.model, DEFAULT_MODEL, 200),
     timeoutMs: numberValue(
       raw.timeoutMs,
       DEFAULT_TIMEOUT_MS,

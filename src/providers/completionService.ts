@@ -1,8 +1,18 @@
 import type { SettingsService } from '../config/settings';
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
-import { isLoopbackHost, normalizeBaseUrl } from './endpoint';
+import { isLoopbackOrPrivateHost, normalizeBaseUrl } from './endpoint';
 import { ProviderError, isProviderError, normalizeThrownError } from './errors';
+import { listProviderModels, type ModelDiscoveryResult } from './modelDiscovery';
+import { testProviderConnection, type ConnectionTestResult } from './connectionTest';
+import {
+  credentialRequiredForProfile,
+  getProviderCapabilities,
+  getProviderProfile,
+  listProviderProfiles,
+  type ProviderCapabilities,
+  type ProviderProfile,
+} from './profiles';
 import { createProvider, listProviderTypes, providerDisplayName } from './registry';
 import type { ChatMessage, CompletionOptions, CompletionResult } from './types';
 
@@ -15,6 +25,11 @@ export interface ProviderStatus {
   readonly credentialRequired: boolean;
   readonly ready: boolean;
   readonly configurationError?: string;
+  readonly capabilities?: ProviderCapabilities;
+}
+
+export interface ProviderServiceDependencies {
+  readonly fetchImpl?: typeof fetch;
 }
 
 export class CompletionService {
@@ -26,7 +41,8 @@ export class CompletionService {
 
   async getStatus(): Promise<ProviderStatus> {
     const config = this.settings.getProviderSettings();
-    const hasCredential = await this.secrets.has();
+    const profile = getProviderProfile(config.type);
+    const hasCredential = await this.secrets.forProvider(config.type).has();
     let endpointHost = 'invalid endpoint';
     let loopback = false;
     let configurationError: string | undefined;
@@ -35,19 +51,24 @@ export class CompletionService {
       configurationError = `Unsupported provider type "${config.type}".`;
     }
 
-    try {
-      const normalized = normalizeBaseUrl(config.baseUrl, {
-        allowInsecureLocalhost: config.allowInsecureLocalhost,
-      });
-      endpointHost = new URL(normalized).host;
-      loopback = isLoopbackHost(new URL(normalized).hostname);
-    } catch (error) {
-      configurationError = isProviderError(error)
-        ? error.message
-        : 'The provider endpoint configuration is invalid.';
+    if (config.type === 'gemini' || profile?.adapter === 'gemini') {
+      endpointHost = 'generativelanguage.googleapis.com';
+      loopback = false;
+    } else {
+      try {
+        const normalized = normalizeBaseUrl(config.baseUrl, {
+          allowInsecureLocalhost: config.allowInsecureLocalhost,
+        });
+        endpointHost = new URL(normalized).host;
+        loopback = isLoopbackOrPrivateHost(new URL(normalized).hostname);
+      } catch (error) {
+        configurationError = isProviderError(error)
+          ? error.message
+          : 'The provider endpoint configuration is invalid.';
+      }
     }
 
-    const credentialRequired = !loopback;
+    const credentialRequired = credentialRequiredForProfile(config.type, loopback);
     const ready =
       configurationError === undefined && (hasCredential || !credentialRequired);
 
@@ -60,7 +81,48 @@ export class CompletionService {
       credentialRequired,
       ready,
       configurationError,
+      capabilities: getProviderCapabilities(config.type),
     };
+  }
+
+  getProfiles(): readonly ProviderProfile[] {
+    return listProviderProfiles();
+  }
+
+  getCapabilities(): ProviderCapabilities | undefined {
+    const config = this.settings.getProviderSettings();
+    return getProviderCapabilities(config.type);
+  }
+
+  async listModels(options?: { fetchImpl?: typeof fetch }): Promise<ModelDiscoveryResult> {
+    const config = this.settings.getProviderSettings();
+    const apiKey = await this.secrets.forProvider(config.type).get();
+    return listProviderModels({
+      type: config.type,
+      baseUrl: config.baseUrl,
+      apiKey,
+      timeoutMs: config.timeoutMs,
+      allowInsecureLocalhost: config.allowInsecureLocalhost,
+      fetchImpl: options?.fetchImpl,
+    });
+  }
+
+  async testConnection(options?: { fetchImpl?: typeof fetch }): Promise<ConnectionTestResult> {
+    const config = this.settings.getProviderSettings();
+    const apiKey = await this.secrets.forProvider(config.type).get();
+    const result = await testProviderConnection({
+      type: config.type,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      apiKey,
+      timeoutMs: config.timeoutMs,
+      allowInsecureLocalhost: config.allowInsecureLocalhost,
+      fetchImpl: options?.fetchImpl,
+    });
+    this.logger.info(
+      `connection test profile=${result.profileId} reachable=${result.reachable} authenticated=${result.authenticated} modelAvailable=${result.modelAvailable} discoveryAvailable=${result.discoveryAvailable} code=${result.code}`,
+    );
+    return result;
   }
 
   async complete(
@@ -69,18 +131,28 @@ export class CompletionService {
   ): Promise<CompletionResult> {
     const config = this.settings.getProviderSettings();
 
-    const normalized = normalizeBaseUrl(config.baseUrl, {
-      allowInsecureLocalhost: config.allowInsecureLocalhost,
-    });
-    const loopback = isLoopbackHost(new URL(normalized).hostname);
-    const apiKey = await this.secrets.get();
+    const profile = getProviderProfile(config.type);
+    const isGemini = config.type === 'gemini' || profile?.adapter === 'gemini';
+    const normalized = isGemini
+      ? 'https://generativelanguage.googleapis.com/v1beta/models'
+      : normalizeBaseUrl(config.baseUrl, {
+          allowInsecureLocalhost: config.allowInsecureLocalhost,
+        });
+    const loopback = isGemini ? false : isLoopbackOrPrivateHost(new URL(normalized).hostname);
+    const apiKey = await this.secrets.forProvider(config.type).get();
+    const credentialRequired = credentialRequiredForProfile(config.type, loopback);
 
-    if (apiKey === undefined && !loopback) {
+    if (apiKey === undefined && credentialRequired) {
       throw new ProviderError(
         'authentication',
         'No API key is configured for this provider.',
       );
     }
+
+    // Respect capabilities: fall back to non-streaming when the selected
+    // provider does not advertise streaming support.
+    const capabilities = getProviderCapabilities(config.type);
+    const effectiveStream = capabilities?.streaming === false ? false : config.stream;
 
     const provider = createProvider(config.type, {
       apiKey,
@@ -89,7 +161,7 @@ export class CompletionService {
       timeoutMs: config.timeoutMs,
       temperature: config.temperature,
       maxOutputTokens: config.maxOutputTokens,
-      stream: config.stream,
+      stream: effectiveStream,
       allowInsecureLocalhost: config.allowInsecureLocalhost,
     });
 
@@ -106,7 +178,7 @@ export class CompletionService {
           messages,
           temperature: config.temperature,
           maxOutputTokens: config.maxOutputTokens,
-          stream: config.stream,
+          stream: effectiveStream,
         },
         options,
       );
