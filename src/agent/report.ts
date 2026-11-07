@@ -5,6 +5,7 @@ import {
   type CompletionTaskSummary,
   type Diagnostic,
 } from './models';
+import { describeValidationCoverage, isValidationBound } from './validation';
 
 export interface ICompletionReportService {
   build(session: AgentSession, at: string): CompletionReport;
@@ -78,6 +79,9 @@ export function buildCompletionReport(session: AgentSession, at: string): Comple
   evidence.push(`Requirement: ${session.requirement.text.split(/\r?\n/)[0]?.slice(0, 300) ?? ''}`);
   if (session.plan !== undefined) {
     evidence.push(`Plan "${session.plan.id}" contains ${session.plan.tasks.length} task(s).`);
+    if (session.plan.risks.length > 0) {
+      evidence.push(`Plan risk(s): ${session.plan.risks.slice(0, 5).join(' ')}`);
+    }
   }
   const planDecision = session.approvals.find((decision) => decision.kind === 'plan');
   if (planDecision !== undefined) {
@@ -103,18 +107,40 @@ export function buildCompletionReport(session: AgentSession, at: string): Comple
   if (session.validationRuns.length === 0) {
     evidence.push('No validation command was executed.');
   } else {
+    evidence.push(
+      `Validation coverage: ${describeValidationCoverage(
+        session.validationRuns,
+        session.changeSets,
+        session.repairProposals,
+      )}.`,
+    );
     for (const run of session.validationRuns) {
-      const status = run.evidence.cancelled
-        ? 'cancelled'
-        : run.evidence.timedOut
-          ? 'timed out'
-          : run.evidence.passed
-            ? 'passed'
-            : 'failed';
+      const bound = isValidationBound(run, session.changeSets, session.repairProposals);
+      const subject =
+        run.changeSetId === undefined
+          ? ' without a change set binding'
+          : ` for change set "${run.changeSetId}"` +
+            (run.repairProposalId === undefined ? '' : ` after repair "${run.repairProposalId}"`) +
+            (bound ? '' : ' (binding no longer matches the stored change set)');
+      const evidenceOfRun = run.evidence;
+      if (evidenceOfRun === undefined) {
+        evidence.push(
+          `Validation ${run.outcome}${subject}: ${run.detail ?? 'No command was executed.'}`,
+        );
+        continue;
+      }
+      const status =
+        run.outcome === 'passed'
+          ? 'passed'
+          : evidenceOfRun.cancelled
+            ? 'cancelled'
+            : evidenceOfRun.timedOut
+              ? 'timed out'
+              : 'failed';
       evidence.push(
         `Command "${run.command}" ${status} with exit code ${
-          run.evidence.exitCode ?? 'null'
-        } in ${run.evidence.durationMs} ms at ${run.finishedAt}.`,
+          evidenceOfRun.exitCode ?? 'null'
+        } in ${evidenceOfRun.durationMs} ms at ${run.finishedAt}${subject}.`,
       );
     }
   }

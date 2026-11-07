@@ -1,7 +1,8 @@
 import { expect } from 'chai';
 import type { AgentTask, TaskStatus } from '../../src/agent/models';
 import {
-  findTask,
+  canTransitionTaskStatus,
+  nextRunnableTasks,
   orderTasks,
   refreshBlockedTasks,
   schedule,
@@ -66,11 +67,29 @@ suite('agent task scheduler', () => {
     expect(ordered.map((entry) => entry.id)).to.deep.equal(['a', 'b', 'c']);
   });
 
-  test('updateTask and findTask operate on immutable copies', () => {
+  test('nextRunnableTasks respects bounded concurrency', () => {
+    const tasks = [task('a'), task('b'), task('c', ['a'])];
+    expect(nextRunnableTasks(tasks, 1).map((entry) => entry.id)).to.deep.equal(['a']);
+    expect(nextRunnableTasks(tasks, 2).map((entry) => entry.id)).to.deep.equal(['a', 'b']);
+    expect(nextRunnableTasks(tasks, 3).map((entry) => entry.id)).to.deep.equal(['a', 'b']);
+  });
+
+  test('canTransitionTaskStatus accepts valid and rejects invalid transitions', () => {
+    expect(canTransitionTaskStatus('pending', 'running')).to.equal(true);
+    expect(canTransitionTaskStatus('running', 'completed')).to.equal(true);
+    expect(canTransitionTaskStatus('completed', 'running')).to.equal(false);
+    expect(canTransitionTaskStatus('cancelled', 'pending')).to.equal(false);
+  });
+
+  test('updateTask rejects invalid transitions without mutating input', () => {
     const tasks = [task('a')];
-    const updated = updateTask(tasks, 'a', { status: 'completed', attempts: 1 });
+    let thrown = false;
+    try {
+      updateTask(tasks, 'a', { status: 'completed' });
+    } catch {
+      thrown = true;
+    }
+    expect(thrown).to.equal(true);
     expect(tasks[0].status).to.equal('pending');
-    expect(findTask(updated, 'a')?.status).to.equal('completed');
-    expect(findTask(updated, 'a')?.attempts).to.equal(1);
   });
 });

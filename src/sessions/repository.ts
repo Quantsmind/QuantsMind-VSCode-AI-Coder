@@ -1,8 +1,10 @@
+import { changeSetVersion } from '../agent/validation';
 import { validateChangeInputs, normalizeChangePath, type ChangePlan } from '../changes/model';
 import { redactSecrets } from '../security/redact';
 import {
   MAX_EVENT_MESSAGE_CHARS,
   MAX_SESSION_EVENTS,
+  MAX_SESSION_TASKS,
   MAX_SESSION_SERIALIZED_CHARS,
   MAX_SESSIONS,
   MAX_VALIDATION_OUTPUT_CHARS,
@@ -11,6 +13,7 @@ import {
   isAgentState,
   isTaskStatus,
   isTerminalAgentState,
+  isValidationOutcome,
   type AcceptanceCriterion,
   type AgentSession,
   type AgentTask,
@@ -28,7 +31,16 @@ import {
   type UnifiedDiff,
   type ValidationEvidence,
   type ValidationRun,
+  type ValidationOutcome,
 } from '../agent/models';
+import type {
+  ChangeImpact,
+  ImpactedFile,
+  ImpactedSymbol,
+  RecommendedTest,
+  RegressionArea,
+  ValidationCommandSuggestion,
+} from '../repository/impact';
 import { validateTaskGraph } from '../agent/scheduler';
 
 export const SESSION_STORAGE_KEY = 'quantsmind.agent.sessions.v1';
@@ -270,6 +282,260 @@ function sanitizeDiffs(raw: unknown): UnifiedDiff[] {
     .filter((diff) => diff.path.length > 0);
 }
 
+const CHANGE_SET_STATUSES: readonly ChangeSet['status'][] = [
+  'pending',
+  'approved',
+  'applied',
+  'partial',
+  'rejected',
+  'failed',
+];
+
+function isChangeSetStatus(value: unknown): value is ChangeSet['status'] {
+  return (
+    typeof value === 'string' && (CHANGE_SET_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Keeps only applied IDs that name a change in this exact change set. IDs are
+ * canonicalized and deduplicated so a malformed or hand-edited record cannot
+ * smuggle in unknown operations or make the same operation count twice.
+ */
+function sanitizeAppliedChangeIds(raw: unknown, plan: ChangePlan): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const canonical = new Map(plan.changes.map((change) => [change.id.toLowerCase(), change.id]));
+  const seen = new Set<string>();
+  const applied: string[] = [];
+  for (const value of raw.slice(0, 50)) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const id = canonical.get(value.toLowerCase());
+    if (id === undefined || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    applied.push(id);
+  }
+  return applied;
+}
+
+const IMPACT_CONFIDENCES: readonly ChangeImpact['confidence'][] = ['high', 'medium', 'low'];
+const IMPACT_FILE_RELATIONSHIPS: readonly ImpactedFile['relationship'][] = [
+  'changed',
+  'dependency',
+  'dependent',
+  'test',
+  'module',
+];
+const IMPACT_SYMBOL_RELATIONSHIPS: readonly ImpactedSymbol['relationship'][] = [
+  'changed',
+  'added',
+  'removed',
+  'exported',
+];
+const IMPACT_SYMBOL_KINDS: readonly ImpactedSymbol['kind'][] = [
+  'class',
+  'interface',
+  'function',
+  'method',
+  'variable',
+  'enum',
+  'type',
+  'struct',
+  'trait',
+  'module',
+  'package',
+];
+const IMPACT_RISKS: readonly RegressionArea['risk'][] = ['high', 'medium', 'low'];
+const IMPACT_EVIDENCE_CONFIDENCES: readonly ('confirmed' | 'heuristic')[] = [
+  'confirmed',
+  'heuristic',
+];
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : undefined;
+}
+
+function sanitizeImpactPath(value: unknown): string | undefined {
+  const normalized = normalizeChangePath(value);
+  return normalized !== undefined && normalized.length <= 500 ? normalized : undefined;
+}
+
+function sanitizeImpactedFile(raw: unknown): ImpactedFile | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const path = sanitizeImpactPath(record.path);
+  const relationship = oneOf(record.relationship, IMPACT_FILE_RELATIONSHIPS);
+  const confidence = oneOf(record.confidence, IMPACT_EVIDENCE_CONFIDENCES);
+  if (path === undefined || relationship === undefined || confidence === undefined) {
+    return undefined;
+  }
+  return {
+    path,
+    relationship,
+    distance: Math.min(num(record.distance), 10),
+    confidence,
+    reason: str(record.reason, 500) ?? '',
+  };
+}
+
+function sanitizeImpactedSymbol(raw: unknown): ImpactedSymbol | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const path = sanitizeImpactPath(record.path);
+  const name = str(record.name, 200);
+  const kind = oneOf(record.kind, IMPACT_SYMBOL_KINDS);
+  const relationship = oneOf(record.relationship, IMPACT_SYMBOL_RELATIONSHIPS);
+  const confidence = oneOf(record.confidence, IMPACT_EVIDENCE_CONFIDENCES);
+  if (
+    path === undefined ||
+    name === undefined ||
+    kind === undefined ||
+    relationship === undefined ||
+    confidence === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    path,
+    name,
+    kind,
+    relationship,
+    confidence,
+    changeId: str(record.changeId, 80),
+  };
+}
+
+function sanitizeRegressionArea(raw: unknown): RegressionArea | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const path = sanitizeImpactPath(record.path);
+  const risk = oneOf(record.risk, IMPACT_RISKS);
+  if (path === undefined || risk === undefined) {
+    return undefined;
+  }
+  return {
+    path,
+    risk,
+    reason: str(record.reason, 1_000) ?? '',
+    evidence: arrayOf(record.evidence)
+      .filter((item): item is string => typeof item === 'string')
+      .slice(0, 10)
+      .map((item) => clampText(item, 500)),
+  };
+}
+
+function sanitizeRecommendedTest(raw: unknown): RecommendedTest | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const path = sanitizeImpactPath(record.path);
+  const confidence = oneOf(record.confidence, IMPACT_EVIDENCE_CONFIDENCES);
+  if (path === undefined || confidence === undefined) {
+    return undefined;
+  }
+  return {
+    path,
+    reason: str(record.reason, 500) ?? '',
+    confidence,
+  };
+}
+
+function sanitizeValidationSuggestion(raw: unknown): ValidationCommandSuggestion | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const command = str(record.command, 300);
+  const source = str(record.source, 200);
+  const confidence = oneOf(record.confidence, IMPACT_EVIDENCE_CONFIDENCES);
+  if (command === undefined || source === undefined || confidence === undefined) {
+    return undefined;
+  }
+  return { command, source, confidence };
+}
+
+/**
+ * Impact evidence is informational and comes from persisted JSON, so it is
+ * rebuilt field by field. Unknown enum values, malformed paths, and oversized
+ * payloads are dropped instead of being trusted as analyzer output.
+ */
+function sanitizeImpact(raw: unknown): ChangeImpact | undefined {
+  const record = recordOf(raw);
+  if (record === undefined) {
+    return undefined;
+  }
+  const confidence = oneOf(record.confidence, IMPACT_CONFIDENCES);
+  if (confidence === undefined) {
+    return undefined;
+  }
+  const limitsRecord = recordOf(record.limits);
+  const directFiles = arrayOf(record.directFiles)
+    .slice(0, 50)
+    .map(sanitizeImpactedFile)
+    .filter((file): file is ImpactedFile => file !== undefined);
+  const indirectFiles = arrayOf(record.indirectFiles)
+    .slice(0, 200)
+    .map(sanitizeImpactedFile)
+    .filter((file): file is ImpactedFile => file !== undefined);
+  const relatedSymbols = arrayOf(record.relatedSymbols)
+    .slice(0, 60)
+    .map(sanitizeImpactedSymbol)
+    .filter((symbol): symbol is ImpactedSymbol => symbol !== undefined);
+  const regressionAreas = arrayOf(record.regressionAreas)
+    .slice(0, 50)
+    .map(sanitizeRegressionArea)
+    .filter((area): area is RegressionArea => area !== undefined);
+  const recommendedTests = arrayOf(record.recommendedTests)
+    .slice(0, 10)
+    .map(sanitizeRecommendedTest)
+    .filter((test): test is RecommendedTest => test !== undefined);
+  const validationCommands = arrayOf(record.validationCommands)
+    .slice(0, 8)
+    .map(sanitizeValidationSuggestion)
+    .filter(
+      (suggestion): suggestion is ValidationCommandSuggestion => suggestion !== undefined,
+    );
+  const relatedModules = arrayOf(record.relatedModules)
+    .filter((item): item is string => typeof item === 'string')
+    .slice(0, 20)
+    .map((item) => clampText(item, 200));
+  const evidence = arrayOf(record.evidence)
+    .filter((item): item is string => typeof item === 'string')
+    .slice(0, 20)
+    .map((item) => clampText(item, 1_000));
+  return {
+    directFiles,
+    indirectFiles,
+    relatedSymbols,
+    relatedModules,
+    regressionAreas,
+    recommendedTests,
+    validationCommands,
+    confidence,
+    evidence,
+    generatedAt: iso(record.generatedAt) ?? new Date(0).toISOString(),
+    limits: {
+      maxDepth: Math.min(num(limitsRecord?.maxDepth, 2), 4),
+      maxFiles: Math.min(num(limitsRecord?.maxFiles, 80), 200),
+      truncated: bool(limitsRecord?.truncated),
+    },
+  };
+}
+
 function sanitizeChangeSet(raw: unknown, taskIds: ReadonlySet<string>): ChangeSet | undefined {
   const record = recordOf(raw);
   if (record === undefined) {
@@ -279,6 +545,13 @@ function sanitizeChangeSet(raw: unknown, taskIds: ReadonlySet<string>): ChangeSe
   const id = str(record.id, 80);
   const plan = sanitizeChangePlan(record.plan);
   if (taskId === undefined || id === undefined || plan === undefined || !taskIds.has(taskId)) {
+    return undefined;
+  }
+  // A missing status belongs to an older record and defaults to pending. A
+  // present but unrecognized status is untrusted, so the whole change set is
+  // rejected rather than silently reinterpreted as a different state.
+  const status = record.status === undefined ? 'pending' : record.status;
+  if (!isChangeSetStatus(status)) {
     return undefined;
   }
   const warnings = arrayOf(record.warnings)
@@ -292,7 +565,23 @@ function sanitizeChangeSet(raw: unknown, taskIds: ReadonlySet<string>): ChangeSe
     plan,
     diffs: sanitizeDiffs(record.diffs),
     warnings,
+    version:
+      validVersion(record.version) ??
+      changeSetVersion({
+        id,
+        taskId,
+        summary: '',
+        plan,
+        diffs: [],
+        warnings: [],
+        createdAt: '',
+        version: '',
+        status: 'pending',
+      }),
     createdAt: iso(record.createdAt) ?? new Date(0).toISOString(),
+    appliedChangeIds: sanitizeAppliedChangeIds(record.appliedChangeIds, plan),
+    impact: sanitizeImpact(record.impact),
+    status,
   };
 }
 
@@ -337,6 +626,7 @@ function sanitizeExecution(raw: unknown, taskIds: ReadonlySet<string>): TaskExec
     finishedAt: iso(record.finishedAt),
     changeSetId: str(record.changeSetId, 80),
     validationRunId: str(record.validationRunId, 80),
+    repairProposalId: str(record.repairProposalId, 80),
     historyTaskId: str(record.historyTaskId, 80),
     appliedFiles: sanitizeAppliedFiles(record.appliedFiles),
     error: str(record.error, 2_000),
@@ -360,6 +650,17 @@ function sanitizeRequest(raw: unknown): ApprovalRequest | undefined {
   if (kind === undefined || id === undefined || sessionId === undefined) {
     return undefined;
   }
+  const changeSetVersion = validVersion(record.changeSetVersion);
+  // A change-set approval that carries a malformed version must not be kept
+  // without its binding: that would let a corrupted record skip the freshness
+  // check. Missing versions remain supported for older records.
+  if (
+    kind === 'change-set' &&
+    record.changeSetVersion !== undefined &&
+    changeSetVersion === undefined
+  ) {
+    return undefined;
+  }
   return {
     id,
     sessionId,
@@ -370,6 +671,10 @@ function sanitizeRequest(raw: unknown): ApprovalRequest | undefined {
       .filter((entry): entry is string => typeof entry === 'string')
       .slice(0, 200),
     subjectId: str(record.subjectId, 80),
+    changeSetVersion,
+    command: str(record.command, 200),
+    cwd: str(record.cwd, 500),
+    taskId: str(record.taskId, 80),
     createdAt: iso(record.createdAt) ?? new Date(0).toISOString(),
   };
 }
@@ -435,6 +740,15 @@ function sanitizeEvidence(raw: unknown): ValidationEvidence | undefined {
   };
 }
 
+/**
+ * A change-set version is a content digest, so anything that is not exactly one
+ * is dropped rather than truncated: a clipped digest could silently match the
+ * version of the change set it is supposed to verify.
+ */
+function validVersion(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+}
+
 function sanitizeValidationRun(raw: unknown, taskIds: ReadonlySet<string>): ValidationRun | undefined {
   const record = recordOf(raw);
   if (record === undefined) {
@@ -442,16 +756,43 @@ function sanitizeValidationRun(raw: unknown, taskIds: ReadonlySet<string>): Vali
   }
   const taskId = str(record.taskId, 64);
   const id = str(record.id, 80);
-  const evidence = sanitizeEvidence(record.evidence);
-  if (taskId === undefined || id === undefined || evidence === undefined || !taskIds.has(taskId)) {
+  if (taskId === undefined || id === undefined || !taskIds.has(taskId)) {
     return undefined;
+  }
+  const evidence = sanitizeEvidence(record.evidence);
+  const command = str(record.command, 200) ?? evidence?.command ?? '';
+  const detail = str(record.detail, 500);
+  if (evidence === undefined && detail === undefined) {
+    return undefined;
+  }
+  // Runs stored before outcomes existed hold only evidence; derive the label so
+  // preserved history keeps reporting what actually happened.
+  let outcome: ValidationOutcome;
+  if (isValidationOutcome(record.outcome)) {
+    outcome = record.outcome;
+  } else if (evidence !== undefined) {
+    outcome = evidence.passed ? 'passed' : 'failed';
+  } else {
+    outcome = 'unavailable';
+  }
+  if (outcome === 'passed') {
+    if (evidence === undefined) {
+      outcome = 'unavailable';
+    } else if (!evidence.passed) {
+      outcome = 'failed';
+    }
   }
   return {
     id,
     taskId,
-    command: evidence.command,
+    command,
     startedAt: iso(record.startedAt) ?? new Date(0).toISOString(),
     finishedAt: iso(record.finishedAt) ?? new Date(0).toISOString(),
+    outcome,
+    changeSetId: str(record.changeSetId, 80),
+    changeSetVersion: validVersion(record.changeSetVersion),
+    repairProposalId: str(record.repairProposalId, 80),
+    detail,
     evidence,
   };
 }
@@ -609,10 +950,13 @@ function compact(session: AgentSession): AgentSession {
     events: session.events.slice(-100),
     validationRuns: session.validationRuns.map((run) => ({
       ...run,
-      evidence: {
-        ...run.evidence,
-        output: clampText(run.evidence.output, 4_000),
-      },
+      evidence:
+        run.evidence === undefined
+          ? undefined
+          : {
+              ...run.evidence,
+              output: clampText(run.evidence.output, 4_000),
+            },
     })),
     changeSets: session.changeSets.slice(-10),
     repairProposals: session.repairProposals.slice(-5),
@@ -683,6 +1027,8 @@ export function sanitizeSession(raw: unknown): AgentSession | undefined {
     createdAt,
     updatedAt,
     providerCalls: num(record.providerCalls),
+    /** Missing legacy records default to 0. */
+    recoveryVersion: num(record.recoveryVersion),
     plan: planResult.plan,
     tasks,
     executions,
@@ -691,7 +1037,19 @@ export function sanitizeSession(raw: unknown): AgentSession | undefined {
       .map(sanitizeDecision)
       .filter((decision): decision is ApprovalDecision => decision !== undefined),
     pendingApproval: sanitizeRequest(record.pendingApproval),
+    ...(record.taskApprovals !== undefined
+      ? {
+          taskApprovals: arrayOf(record.taskApprovals)
+            .map(sanitizeRequest)
+            .filter((request): request is ApprovalRequest => request !== undefined)
+            .slice(0, MAX_SESSION_TASKS),
+        }
+      : {}),
     validationRuns,
+    validationSuggestions: arrayOf(record.validationSuggestions)
+      .filter((command): command is string => typeof command === 'string')
+      .slice(0, 8)
+      .map((command) => clampText(command, 200)),
     diagnostics: arrayOf(record.diagnostics)
       .slice(0, 50)
       .map(sanitizeDiagnostic)
@@ -744,6 +1102,7 @@ function migrateLegacy(raw: Record<string, unknown>): AgentSession | undefined {
     createdAt,
     updatedAt: at,
     providerCalls: num(raw.providerCalls),
+    recoveryVersion: num(raw.recoveryVersion),
     tasks: [],
     executions: [],
     changeSets: [],

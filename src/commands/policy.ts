@@ -1,5 +1,5 @@
-import { runApprovedCommand, validateCommand, type CommandResult } from './runner';
-import type { CommandPolicy, CommandRisk, ICommandExecutionService } from '../agent/models';
+import { validateCommand } from './runner';
+import type { CommandPolicy, CommandRisk } from '../agent/models';
 
 const DESTRUCTIVE_FIRST_TOKENS = new Set([
   'rm',
@@ -152,52 +152,4 @@ export function evaluateCommand(
     normalized: validation.normalized,
     reason: 'The command is in the exact allowlist and requires explicit approval.',
   };
-}
-
-export interface CommandExecutionSettings {
-  allowlist(): readonly string[];
-  cwd(): string;
-  workspaceRoot(): string;
-  timeoutMs(): number;
-  maxOutputChars(): number;
-  secret?(): string | undefined;
-}
-
-function blockedResult(command: string, cwd: string, error: string): CommandResult {
-  return {
-    command,
-    cwd,
-    exitCode: null,
-    output: '',
-    timedOut: false,
-    cancelled: false,
-    truncated: false,
-    durationMs: 0,
-    error,
-  };
-}
-
-export class CommandExecutionService implements ICommandExecutionService {
-  constructor(private readonly settings: CommandExecutionSettings) {}
-
-  evaluate(command: string, allowlist: readonly string[] = this.settings.allowlist()): CommandPolicy {
-    return evaluateCommand(command, allowlist);
-  }
-
-  async run(command: string, signal: AbortSignal): Promise<CommandResult> {
-    const policy = this.evaluate(command, this.settings.allowlist());
-    const cwd = this.settings.cwd();
-    if (!policy.allowed || policy.normalized === undefined) {
-      return blockedResult(command, cwd, policy.reason);
-    }
-    return runApprovedCommand(policy.normalized, {
-      cwd,
-      workspaceRoot: this.settings.workspaceRoot(),
-      allowlist: this.settings.allowlist(),
-      timeoutMs: this.settings.timeoutMs(),
-      maxOutputChars: this.settings.maxOutputChars(),
-      secret: this.settings.secret?.(),
-      signal,
-    });
-  }
 }

@@ -7,6 +7,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
 } from '../config/defaults';
 import type { RedactedContextItem } from '../context/filters';
+import type { AttachmentOrigin } from '../security/workspaceTrust';
 import { buildUserContent } from './prompts';
 
 /**
@@ -26,6 +27,11 @@ export interface StoredAttachment {
   readonly endLine?: number;
   readonly redactions: number;
   readonly capturedAt: string;
+  /**
+   * Who selected the content. Absent or `workspace` is treated as automatically
+   * discovered, so Restricted Mode never replays content of unknown origin.
+   */
+  readonly origin?: AttachmentOrigin;
 }
 
 /** The subset of a stored conversation message needed to rebuild provider history. */
@@ -43,9 +49,19 @@ export interface CaptureResult {
   readonly chars: number;
 }
 
+export interface RestoreOptions {
+  /**
+   * False while the workspace is in Restricted Mode. Automatically discovered
+   * content is then withheld; content the user attached themselves still
+   * replays because it was an explicit choice.
+   */
+  readonly includeAutoDiscovered?: boolean;
+}
+
 export interface RestoreResult {
   readonly items: RedactedContextItem[];
   readonly unavailable: readonly StoredAttachment[];
+  readonly withheld: readonly StoredAttachment[];
   readonly chars: number;
 }
 
@@ -116,6 +132,7 @@ export function captureAttachments(
       endLine: item.endLine,
       redactions: item.redactions,
       capturedAt,
+      origin: item.origin ?? 'user',
     });
   }
 
@@ -173,6 +190,7 @@ export function parseStoredAttachment(value: unknown): StoredAttachment | undefi
         : 0,
     capturedAt:
       typeof record.capturedAt === 'string' ? record.capturedAt.slice(0, 40) : new Date(0).toISOString(),
+    origin: record.origin === 'user' ? 'user' : 'workspace',
   };
 }
 
@@ -197,12 +215,19 @@ export function parseAttachmentContext(value: unknown): StoredAttachment[] {
  */
 export function restoreAttachmentContext(
   stored: readonly StoredAttachment[],
+  options: RestoreOptions = {},
 ): RestoreResult {
+  const includeAutoDiscovered = options.includeAutoDiscovered !== false;
   const items: RedactedContextItem[] = [];
   const unavailable: StoredAttachment[] = [];
+  const withheld: StoredAttachment[] = [];
   let chars = 0;
 
   for (const attachment of stored) {
+    if (!includeAutoDiscovered && attachment.origin !== 'user') {
+      withheld.push(attachment);
+      continue;
+    }
     if (attachment.content.length === 0) {
       unavailable.push(attachment);
       continue;
@@ -217,10 +242,11 @@ export function restoreAttachmentContext(
       endLine: attachment.endLine,
       sizeBytes: Buffer.byteLength(attachment.content, 'utf8'),
       redactions: attachment.redactions,
+      origin: attachment.origin,
     });
   }
 
-  return { items, unavailable, chars };
+  return { items, unavailable, withheld, chars };
 }
 
 /**
@@ -230,7 +256,10 @@ export function restoreAttachmentContext(
  * model originally saw. Legacy records fall back to the display text. Local-only
  * messages never reach the provider.
  */
-export function providerContentFor(message: RestorableMessage): string | undefined {
+export function providerContentFor(
+  message: RestorableMessage,
+  options: RestoreOptions = {},
+): string | undefined {
   if (message.localOnly === true) {
     return undefined;
   }
@@ -238,7 +267,7 @@ export function providerContentFor(message: RestorableMessage): string | undefin
     return message.text;
   }
   if (message.question !== undefined || (message.attachmentContext?.length ?? 0) > 0) {
-    const { items } = restoreAttachmentContext(message.attachmentContext ?? []);
+    const { items } = restoreAttachmentContext(message.attachmentContext ?? [], options);
     return buildUserContent(message.question ?? message.text, items);
   }
   return message.text;
@@ -246,16 +275,32 @@ export function providerContentFor(message: RestorableMessage): string | undefin
 
 export function providerHistoryMessages(
   messages: readonly RestorableMessage[],
+  options: RestoreOptions = {},
 ): { role: 'user' | 'assistant'; content: string }[] {
   const rebuilt: { role: 'user' | 'assistant'; content: string }[] = [];
   for (const message of messages) {
-    const content = providerContentFor(message);
+    const content = providerContentFor(message, options);
     if (content === undefined || content.length === 0) {
       continue;
     }
     rebuilt.push({ role: message.role, content });
   }
   return rebuilt;
+}
+
+/** Number of stored attachments a restricted rebuild would leave out. */
+export function withheldAttachmentCount(
+  messages: readonly RestorableMessage[],
+): number {
+  let withheld = 0;
+  for (const message of messages) {
+    for (const attachment of message.attachmentContext ?? []) {
+      if (attachment.origin !== 'user' && attachment.content.length > 0) {
+        withheld += 1;
+      }
+    }
+  }
+  return withheld;
 }
 
 /**

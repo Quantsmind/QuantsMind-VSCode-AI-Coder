@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { redactSecrets } from '../security/redact';
+import { canonicalWindowsShell, planCommand } from './executionPlan';
 
 export const MAX_COMMAND_LENGTH = 200;
 export const MAX_COMMAND_OUTPUT = 120_000;
@@ -148,42 +150,55 @@ export function isWithinWorkspace(cwd: string, workspaceRoot: string): boolean {
   return relative.length === 0 || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function buildEnvironment(): NodeJS.ProcessEnv {
-  const allowed = new Set([
-    'PATH',
-    'Path',
-    'SystemRoot',
-    'SYSTEMROOT',
-    'ComSpec',
-    'COMSPEC',
-    'PATHEXT',
-    'WINDIR',
-    'TEMP',
-    'TMP',
-    'HOME',
-    'USERPROFILE',
-    'APPDATA',
-    'LOCALAPPDATA',
-    'PROGRAMDATA',
-    'PROGRAMFILES',
-    'PROGRAMFILES(X86)',
-    'COMMONPROGRAMFILES',
-    'NUMBER_OF_PROCESSORS',
-    'PROCESSOR_ARCHITECTURE',
-    'OS',
-    'LANG',
-    'LC_ALL',
-    'TERM',
-    'SHELL',
-  ]);
+const INHERITED_ENV_KEYS = new Set([
+  'PATH',
+  'Path',
+  'SystemRoot',
+  'SYSTEMROOT',
+  'ComSpec',
+  'COMSPEC',
+  'PATHEXT',
+  'WINDIR',
+  'TEMP',
+  'TMP',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'COMMONPROGRAMFILES',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  'OS',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'SHELL',
+]);
+
+// eslint-disable-next-line no-control-regex
+const ENV_VALUE_UNSAFE = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Builds the child environment from an explicit key list, drops values that
+ * carry control characters, and rewrites the Windows shell pointer to the
+ * SystemRoot copy so a redirected ComSpec cannot reach a grandchild tool.
+ */
+function buildEnvironment(canonicalShell: string | undefined): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) {
+    if (value === undefined || !INHERITED_ENV_KEYS.has(key) || ENV_VALUE_UNSAFE.test(value)) {
       continue;
     }
-    if (allowed.has(key)) {
-      environment[key] = value;
+    if (key.toUpperCase() === 'COMSPEC') {
+      continue;
     }
+    environment[key] = value;
+  }
+  if (canonicalShell !== undefined) {
+    environment.ComSpec = canonicalShell;
   }
   // CI tools need a writable temporary directory and a deterministic color mode.
   environment.CI = '1';
@@ -211,8 +226,35 @@ function appendBounded(
 }
 
 /**
- * Runs exactly one allowlisted command with no shell, a sanitized environment,
- * bounded output, a hard timeout, and cooperative cancellation.
+ * Confirms the working directory is a real folder whose resolved path stays
+ * inside the resolved workspace, so a link cannot carry execution outside it.
+ */
+async function inspectWorkingDirectory(
+  cwd: string,
+  workspaceRoot: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let realCwd: string;
+  let realRoot: string;
+  try {
+    const status = await fs.promises.stat(cwd);
+    if (!status.isDirectory()) {
+      return { ok: false, reason: 'The working directory is not a folder.' };
+    }
+    realCwd = await fs.promises.realpath(cwd);
+    realRoot = await fs.promises.realpath(workspaceRoot);
+  } catch {
+    return { ok: false, reason: 'The working directory does not exist.' };
+  }
+  if (!isWithinWorkspace(realCwd, realRoot)) {
+    return { ok: false, reason: 'The working directory resolves outside the workspace.' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Runs exactly one allowlisted command as a direct executable invocation, with
+ * a sanitized environment, bounded output, a hard timeout and cooperative
+ * cancellation. A command with no shell-free representation is refused.
  */
 export async function runApprovedCommand(
   raw: string,
@@ -222,6 +264,19 @@ export async function runApprovedCommand(
   const validation = validateCommand(raw, options.allowlist);
   const cwd = path.resolve(options.cwd);
   const maxOutputChars = Math.max(1_000, options.maxOutputChars ?? MAX_COMMAND_OUTPUT);
+  const command = validation.normalized ?? raw;
+
+  const blocked = (error: string, cancelled = false): CommandResult => ({
+    command,
+    cwd,
+    exitCode: null,
+    output: '',
+    timedOut: false,
+    cancelled,
+    truncated: false,
+    durationMs: 0,
+    error,
+  });
 
   if (options.trusted === false) {
     return {
@@ -238,54 +293,28 @@ export async function runApprovedCommand(
   }
 
   if (!validation.ok || validation.normalized === undefined || validation.tokens === undefined) {
-    return {
-      command: raw,
-      cwd,
-      exitCode: null,
-      output: '',
-      timedOut: false,
-      cancelled: false,
-      truncated: false,
-      durationMs: 0,
-      error: validation.reason ?? 'The command is not allowed.',
-    };
+    return blocked(validation.reason ?? 'The command is not allowed.');
   }
 
   if (!isWithinWorkspace(cwd, options.workspaceRoot)) {
-    return {
-      command: validation.normalized,
-      cwd,
-      exitCode: null,
-      output: '',
-      timedOut: false,
-      cancelled: false,
-      truncated: false,
-      durationMs: 0,
-      error: 'The working directory is outside the workspace.',
-    };
+    return blocked('The working directory is outside the workspace.');
+  }
+
+  const directory = await inspectWorkingDirectory(cwd, options.workspaceRoot);
+  if (!directory.ok) {
+    return blocked(directory.reason);
+  }
+
+  const plan = planCommand({ tokens: validation.tokens });
+  if (!plan.ok) {
+    return blocked(plan.reason);
   }
 
   if (options.signal?.aborted === true) {
-    return {
-      command: validation.normalized,
-      cwd,
-      exitCode: null,
-      output: '',
-      timedOut: false,
-      cancelled: true,
-      truncated: false,
-      durationMs: 0,
-    };
+    return blocked('The command was cancelled before it started.', true);
   }
 
-  const isWindows = process.platform === 'win32';
-  const executable = validation.tokens[0];
-  const args = validation.tokens.slice(1);
-  const spawnCommand = isWindows ? (process.env.ComSpec ?? 'cmd.exe') : executable;
-  const spawnArgs = isWindows
-    ? ['/d', '/s', '/c', validation.normalized]
-    : args;
-
+  const execution = plan.plan;
   const output = { text: '', truncated: false };
   let timedOut = false;
   let cancelled = false;
@@ -295,11 +324,12 @@ export async function runApprovedCommand(
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
 
-    const child = spawn(spawnCommand, spawnArgs, {
+    const child = spawn(execution.file, [...execution.args], {
       cwd,
-      env: buildEnvironment(),
+      env: buildEnvironment(canonicalWindowsShell()),
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: execution.verbatimArguments,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -320,7 +350,7 @@ export async function runApprovedCommand(
       options.signal?.removeEventListener('abort', onAbort);
       const redacted = redactSecrets(output.text, [options.secret]);
       resolve({
-        command: validation.normalized ?? raw,
+        command,
         cwd,
         exitCode,
         output: redacted.text,

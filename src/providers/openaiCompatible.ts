@@ -16,6 +16,7 @@ import type {
   CompletionOptions,
   CompletionRequest,
   CompletionResult,
+  CompletionToolCall,
   CompletionUsage,
 } from './types';
 
@@ -158,10 +159,26 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
 export function buildCompletionBody(request: CompletionRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
+    messages: request.messages.map((message) => {
+      const result: Record<string, unknown> = {
+        role: message.role,
+        content: message.content,
+      };
+      if (message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+        result.tool_calls = message.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: {
+            name: call.name,
+            arguments: JSON.stringify(call.arguments),
+          },
+        }));
+      }
+      if (message.role === 'tool' && typeof message.toolCallId === 'string') {
+        result.tool_call_id = message.toolCallId;
+      }
+      return result;
+    }),
     stream: request.stream,
   };
 
@@ -170,6 +187,17 @@ export function buildCompletionBody(request: CompletionRequest): Record<string, 
   }
   if (typeof request.maxOutputTokens === 'number') {
     body.max_tokens = request.maxOutputTokens;
+  }
+  if (Array.isArray(request.tools) && request.tools.length > 0) {
+    body.tools = request.tools.map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+    body.tool_choice = 'auto';
   }
 
   return body;
@@ -225,6 +253,46 @@ function extractContainerText(container: Record<string, unknown> | undefined): s
     return content;
   }
   return readString(container, 'refusal');
+}
+
+function parseToolCalls(value: unknown, secret: string | undefined): CompletionToolCall[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const calls: CompletionToolCall[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    if (record === undefined) {
+      continue;
+    }
+    const nested = asRecord(record.function);
+    const name = readString(record, 'name') ?? readString(nested, 'name');
+    if (name === undefined || name.trim().length === 0) {
+      continue;
+    }
+    const rawArguments = record.arguments ?? nested?.arguments;
+    let args: Record<string, unknown> = {};
+    if (typeof rawArguments === 'string') {
+      try {
+        const parsed = JSON.parse(rawArguments);
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        args = { raw: rawArguments };
+      }
+    } else if (typeof rawArguments === 'object' && rawArguments !== null && !Array.isArray(rawArguments)) {
+      args = rawArguments as Record<string, unknown>;
+    }
+    calls.push({
+      id: readString(record, 'id') ?? `tool-call-${calls.length + 1}`,
+      name: name.trim(),
+      arguments: args,
+    });
+  }
+  // secret is retained for signature compatibility; arguments are parsed as data.
+  void secret;
+  return calls;
 }
 
 function parseUsage(value: unknown): CompletionUsage | undefined {
@@ -329,19 +397,21 @@ function parseJsonResponse(
   }
 
   const message = asRecord(choice.message);
+  const toolCalls = parseToolCalls(message?.tool_calls, secret);
   const text = extractContainerText(message);
-  if (text === undefined) {
+  if (text === undefined && toolCalls.length === 0) {
     throw new ProviderError(
       'invalid_response',
-      'The provider response did not contain message text. Tool-call responses are not supported in this release.',
+      'The provider response did not contain message text.',
     );
   }
 
   return {
-    text,
+    text: text ?? '',
     model: readString(record, 'model'),
     finishReason: readString(choice, 'finish_reason'),
     usage: parseUsage(record.usage),
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };
 }
 

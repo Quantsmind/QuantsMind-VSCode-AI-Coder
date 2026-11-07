@@ -94,7 +94,7 @@ function parseLine(raw: string): ParsedLine | undefined {
  */
 export function analyzeValidationFailure(run: ValidationRun): Diagnostic[] {
   const evidence = run.evidence;
-  if (evidence.passed || evidence.cancelled) {
+  if (evidence === undefined || evidence.passed || evidence.cancelled) {
     return [];
   }
 

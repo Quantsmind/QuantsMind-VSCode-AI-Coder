@@ -220,12 +220,77 @@ export function orderTasks(tasks: readonly AgentTask[]): AgentTask[] {
   return ordered;
 }
 
+export function nextRunnableTasks(
+  tasks: readonly AgentTask[],
+  maxConcurrency = 1,
+): AgentTask[] {
+  const limit = Math.max(1, Math.min(maxConcurrency, 3));
+  const refreshed = refreshBlockedTasks(tasks);
+  const activeCount = refreshed.filter((task) => ACTIVE_STATUSES.includes(task.status)).length;
+  const slots = Math.max(0, limit - activeCount);
+  if (slots === 0) {
+    return [];
+  }
+  const byId = new Map(refreshed.map((task) => [task.id, task]));
+  return refreshed
+    .filter(
+      (task) =>
+        task.status === 'pending' &&
+        task.dependsOn.every((dependency) => byId.get(dependency)?.status === 'completed'),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .slice(0, slots);
+}
+const TASK_STATUS_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+  pending: ['pending', 'blocked', 'running', 'cancelled', 'skipped', 'failed'],
+  blocked: ['blocked', 'pending', 'cancelled', 'skipped', 'failed'],
+  running: [
+    'running',
+    'pending',
+    'awaiting-approval',
+    'applied',
+    'completed',
+    'failed',
+    'validation-failed',
+    'skipped',
+    'cancelled',
+    'repairing',
+  ],
+  'awaiting-approval': [
+    'awaiting-approval',
+    'applied',
+    'skipped',
+    'failed',
+    'cancelled',
+    'running',
+    'completed',
+  ],
+  applied: ['applied', 'validation-failed', 'completed', 'failed', 'skipped', 'cancelled'],
+  'validation-failed': ['validation-failed', 'repairing', 'failed', 'skipped', 'cancelled', 'completed'],
+  repairing: ['repairing', 'validation-failed', 'applied', 'completed', 'failed', 'skipped', 'cancelled'],
+  completed: ['completed'],
+  failed: ['failed', 'pending', 'skipped', 'cancelled'],
+  skipped: ['skipped'],
+  cancelled: ['cancelled'],
+};
+
+export function canTransitionTaskStatus(from: TaskStatus, to: TaskStatus): boolean {
+  return TASK_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
+}
 export function updateTask(
   tasks: readonly AgentTask[],
   taskId: string,
   patch: Partial<Omit<AgentTask, 'id'>>,
 ): AgentTask[] {
-  return tasks.map((task) => (task.id === taskId ? { ...task, ...patch } : task));
+  return tasks.map((task) => {
+    if (task.id !== taskId) {
+      return task;
+    }
+    if (patch.status !== undefined && !canTransitionTaskStatus(task.status, patch.status)) {
+      throw new Error(`Invalid task status transition: ${task.status} -> ${patch.status}.`);
+    }
+    return { ...task, ...patch };
+  });
 }
 
 export function findTask(tasks: readonly AgentTask[], taskId: string): AgentTask | undefined {

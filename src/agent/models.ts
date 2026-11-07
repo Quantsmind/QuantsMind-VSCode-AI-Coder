@@ -1,10 +1,11 @@
 import type { ChangePlan } from '../changes/model';
-import type { CommandResult } from '../commands/runner';
 import type { RedactedContextItem } from '../context/filters';
 import type { CancellationTokenLike } from '../providers/types';
+import type { ChangeImpact } from '../repository/impact';
 import type { WorkspaceSummary } from '../workspace/analyze';
 
 export const SESSION_SCHEMA_VERSION = 1;
+export const CHECKPOINT_SCHEMA_VERSION = 1;
 
 export const MAX_SESSION_TASKS = 20;
 export const MAX_TASK_DEPENDENCIES = 20;
@@ -123,6 +124,8 @@ export interface TaskExecution {
   readonly changeSetId?: string;
   readonly validationRunId?: string;
   readonly historyTaskId?: string;
+  /** Set when the applied state came from a repair proposal rather than the change set alone. */
+  readonly repairProposalId?: string;
   readonly appliedFiles: readonly AppliedFile[];
   readonly error?: string;
 }
@@ -244,7 +247,74 @@ export interface ChangeSet {
   readonly plan: ChangePlan;
   readonly diffs: readonly UnifiedDiff[];
   readonly warnings: readonly string[];
+  /** Digest of the exact plan content; binds approval and validation to this version. */
+  readonly version: string;
   readonly createdAt: string;
+  /** Change IDs that were applied in the last apply attempt. Used to avoid re-applying them. */
+  readonly appliedChangeIds?: readonly string[];
+  /** Bounded, informational impact evidence. Never part of the version hash. */
+  readonly impact?: ChangeImpact;
+  readonly status: 'pending' | 'approved' | 'applied' | 'partial' | 'rejected' | 'failed';
+}
+
+export const CHECKPOINT_STATUSES = [
+  'created',
+  'valid',
+  'restoring',
+  'restored',
+  'invalid',
+] as const;
+
+export type CheckpointStatus = (typeof CHECKPOINT_STATUSES)[number];
+
+export interface CheckpointTaskResult {
+  readonly taskId: string;
+  readonly status: TaskStatus;
+  readonly attempts?: number;
+  readonly summary?: string;
+  readonly error?: string;
+  readonly completedAt?: string;
+}
+
+export interface ExecutionTaskResult {
+  readonly taskId: string;
+  readonly status: TaskStatus;
+  readonly attempts: number;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+  readonly changeSetId?: string;
+  readonly validationRunId?: string;
+  readonly historyTaskId?: string;
+  readonly repairProposalId?: string;
+  readonly appliedFiles: readonly AppliedFile[];
+  readonly error?: string;
+}
+
+export interface ExecutionCheckpoint {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly executionId: string;
+  readonly sequence: number;
+  readonly planId: string;
+  readonly planVersion: string;
+  readonly currentTaskId?: string;
+  readonly completedTaskIds: readonly string[];
+  readonly pendingTaskIds: readonly string[];
+  readonly failedTaskIds: readonly string[];
+  readonly blockedTaskIds: readonly string[];
+  readonly taskResults: readonly CheckpointTaskResult[];
+  readonly executionResults?: readonly ExecutionTaskResult[];
+  readonly pendingApprovalIds: readonly string[];
+  readonly changeSetIds: readonly string[];
+  readonly appliedChangeIds: readonly string[];
+  readonly validationRunIds: readonly string[];
+  readonly repositoryStateRef?: string;
+  readonly createdAt: string;
+  readonly status: CheckpointStatus;
+  readonly schemaVersion: number;
+  readonly integrity?: string;
+  /** Monotonic session recovery version the checkpoint represents. */
+  readonly recoveryVersion?: number;
 }
 
 export interface ApprovalRequest {
@@ -255,6 +325,14 @@ export interface ApprovalRequest {
   readonly detail: string;
   readonly ids: readonly string[];
   readonly subjectId?: string;
+  /** For `validation-command`: the normalized command the user approved. */
+  readonly command?: string;
+  /** For `validation-command`: the directory the command was approved for. */
+  readonly cwd?: string;
+  /** For `change-set`: the exact ChangeSet version this approval is bound to. */
+  readonly changeSetVersion?: string;
+  /** Owning task for task-scoped approvals; absent for session-scoped plan approvals. */
+  readonly taskId?: string;
   readonly createdAt: string;
 }
 
@@ -343,13 +421,31 @@ export interface ValidationEvidence {
   readonly error?: string;
 }
 
+export type ValidationOutcome = 'passed' | 'failed' | 'skipped' | 'unavailable';
+
+export const VALIDATION_OUTCOMES: readonly ValidationOutcome[] = [
+  'passed',
+  'failed',
+  'skipped',
+  'unavailable',
+];
+
 export interface ValidationRun {
   readonly id: string;
   readonly taskId: string;
   readonly command: string;
   readonly startedAt: string;
   readonly finishedAt: string;
-  readonly evidence: ValidationEvidence;
+  readonly outcome: ValidationOutcome;
+  /** The change set whose applied files this run actually tested. */
+  readonly changeSetId?: string;
+  /** Digest of the exact content that change set (plus any repair) writes. */
+  readonly changeSetVersion?: string;
+  /** Set when a repair proposal rewrote the applied state before this run. */
+  readonly repairProposalId?: string;
+  /** Why no command was run, for `skipped` and `unavailable` outcomes. */
+  readonly detail?: string;
+  readonly evidence?: ValidationEvidence;
 }
 
 export interface SessionEvent {
@@ -393,13 +489,23 @@ export interface AgentSession {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly providerCalls: number;
+  /** Monotonically increases whenever authoritative session state changes. */
+  readonly recoveryVersion?: number;
   readonly plan?: DevelopmentPlan;
   readonly tasks: readonly AgentTask[];
   readonly executions: readonly TaskExecution[];
   readonly changeSets: readonly ChangeSet[];
   readonly approvals: readonly ApprovalDecision[];
   readonly pendingApproval?: ApprovalRequest;
+  /**
+   * Task-scoped pending approvals (for example concurrent change-set approvals
+   * owned by different tasks). Legacy sessions keep a single `pendingApproval`;
+   * task-scoped lists take precedence while they hold entries.
+   */
+  readonly taskApprovals?: readonly ApprovalRequest[];
   readonly validationRuns: readonly ValidationRun[];
+  /** Allowlisted commands derived from the project's own scripts at planning time. */
+  readonly validationSuggestions?: readonly string[];
   readonly diagnostics: readonly Diagnostic[];
   readonly repairProposals: readonly RepairProposal[];
   readonly events: readonly SessionEvent[];
@@ -427,40 +533,60 @@ export interface SessionStageView {
 
 export interface AgentSessionView extends AgentSession {
   readonly stages: readonly SessionStageView[];
+  readonly progress: SessionProgressView;
+}
+
+export interface SessionProgressView {
+  readonly totalTasks: number;
+  readonly completedTasks: number;
+  readonly activeTaskId?: string;
+  readonly activeTaskTitle?: string;
+  /** Identifies the exact request the UI must answer; a stale id is refused. */
+  readonly pendingRequestId?: string;
+  readonly pendingRequestKind?: ApprovalKind;
+  readonly pendingSubjectId?: string;
+  readonly validation: string;
+  readonly activity: string;
 }
 
 export interface IApprovalService {
-  approvePlan(sessionId: string, token: CancellationTokenLike): Promise<AgentSessionView>;
-  rejectPlan(sessionId: string): Promise<AgentSessionView>;
+  approvePlan(
+    sessionId: string,
+    token: CancellationTokenLike,
+    requestId: string,
+  ): Promise<AgentSessionView>;
+  rejectPlan(sessionId: string, requestId: string): Promise<AgentSessionView>;
   approveChanges(
     sessionId: string,
     approvedIds: readonly string[],
     token: CancellationTokenLike,
+    requestId: string,
   ): Promise<AgentSessionView>;
-  rejectChanges(sessionId: string): Promise<AgentSessionView>;
+  rejectChanges(sessionId: string, requestId: string): Promise<AgentSessionView>;
   approveRepair(
     sessionId: string,
     approvedIds: readonly string[],
     token: CancellationTokenLike,
+    requestId: string,
   ): Promise<AgentSessionView>;
-  rejectRepair(sessionId: string): Promise<AgentSessionView>;
+  rejectRepair(sessionId: string, requestId: string): Promise<AgentSessionView>;
 }
 
 export interface IValidationService {
-  validate(
+  /** Asks the user to approve one exact command before anything runs. */
+  requestValidation(sessionId: string, command: string): Promise<AgentSessionView>;
+  /** Runs the command named by the approved request, and nothing else. */
+  approveValidation(
     sessionId: string,
-    command: string,
+    requestId: string,
     signal: AbortSignal,
   ): Promise<AgentSessionView>;
+  /** Records a skipped run and leaves the session waiting for another choice. */
+  rejectValidation(sessionId: string, requestId: string): Promise<AgentSessionView>;
 }
 
 export interface IRepairService {
   generateRepair(sessionId: string, token: CancellationTokenLike): Promise<AgentSessionView>;
-}
-
-export interface ICommandExecutionService {
-  evaluate(command: string, allowlist: readonly string[]): CommandPolicy;
-  run(command: string, signal: AbortSignal): Promise<CommandResult>;
 }
 
 export function isAgentState(value: unknown): value is AgentState {
@@ -469,6 +595,10 @@ export function isAgentState(value: unknown): value is AgentState {
 
 export function isTaskStatus(value: unknown): value is TaskStatus {
   return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value);
+}
+
+export function isValidationOutcome(value: unknown): value is ValidationOutcome {
+  return typeof value === 'string' && (VALIDATION_OUTCOMES as readonly string[]).includes(value);
 }
 
 export function isTerminalAgentState(state: AgentState): boolean {

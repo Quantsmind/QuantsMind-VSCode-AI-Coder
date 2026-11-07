@@ -1035,7 +1035,20 @@ suite('chat webview integration', () => {
           expect(planned?.plan?.tasks).to.have.length(1);
           expect(planned?.pendingApproval?.kind).to.equal('plan');
 
+          // A decision that does not name the pending request is dropped at the
+          // wire boundary, so the plan stays unapproved.
           webview.emit({ type: 'approvePlan', sessionId: planned!.id });
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          expect(webview.last('session')?.session.state).to.equal('awaiting-plan-approval');
+          expect(webview.last('session')?.session.pendingApproval?.id).to.equal(
+            planned!.pendingApproval!.id,
+          );
+
+          webview.emit({
+            type: 'approvePlan',
+            sessionId: planned!.id,
+            requestId: planned!.pendingApproval!.id,
+          });
           await waitFor(
             () => webview.last('session')?.session.state === 'awaiting-change-approval',
             15000,
@@ -1054,6 +1067,7 @@ suite('chat webview integration', () => {
             type: 'approveChangeSet',
             sessionId: reviewed!.id,
             ids: reviewed!.changeSets[0].plan.changes.map((change) => change.id),
+            requestId: reviewed!.pendingApproval!.id,
           });
           await waitFor(() => webview.last('session')?.session.state === 'completed', 15000);
           const completed = webview.last('session')?.session;

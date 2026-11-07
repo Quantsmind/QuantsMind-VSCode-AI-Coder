@@ -1,9 +1,13 @@
 import { expect } from 'chai';
+import type { ChangePlan } from '../../src/changes/model';
 import {
   SESSION_SCHEMA_VERSION,
   type AgentSession,
   type AgentState,
+  type ChangeSet,
+  type ValidationRun,
 } from '../../src/agent/models';
+import { changeSetVersion } from '../../src/agent/validation';
 import {
   canPause,
   canTransition,
@@ -31,6 +35,60 @@ function baseSession(state: AgentState): AgentSession {
     diagnostics: [],
     repairProposals: [],
     events: [],
+  };
+}
+
+function storedChangeSet(id: string, path: string, content: string): ChangeSet {
+  const plan: ChangePlan = {
+    id: `${id}-plan`,
+    summary: 'Change',
+    changes: [{ id: 'change-1', kind: 'create', path, summary: 'Apply the change.', content }],
+  };
+  const version = changeSetVersion({
+    id,
+    taskId: 'task-1',
+    summary: 'Change',
+    plan,
+    diffs: [],
+    warnings: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    version: '',
+    status: 'pending',
+  });
+  return {
+    id,
+    taskId: 'task-1',
+    summary: 'Change',
+    plan,
+    diffs: [],
+    warnings: [],
+    version,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    status: 'pending',
+  };
+}
+
+/** A passed run that speaks for the exact content of the given change set. */
+function passedRun(changeSet: ChangeSet): ValidationRun {
+  return {
+    id: 'validation-1',
+    taskId: 'task-1',
+    command: 'npm test',
+    outcome: 'passed',
+    changeSetId: changeSet.id,
+    changeSetVersion: changeSetVersion(changeSet),
+    startedAt: '2026-01-01T00:00:00.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+    evidence: {
+      command: 'npm test',
+      exitCode: 0,
+      passed: true,
+      timedOut: false,
+      cancelled: false,
+      truncated: false,
+      durationMs: 1,
+      output: 'ok',
+    },
   };
 }
 
@@ -114,30 +172,35 @@ suite('agent state machine', () => {
   });
 
   test('deriveStages reports recorded validation evidence', () => {
+    const changeSet = storedChangeSet('change-set-1', 'src/a.ts', 'export const a = 1;\n');
     const completed = {
       ...baseSession('completed'),
-      validationRuns: [
-        {
-          id: 'validation-1',
-          taskId: 'task-1',
-          command: 'npm test',
-          startedAt: '2026-01-01T00:00:00.000Z',
-          finishedAt: '2026-01-01T00:00:01.000Z',
-          evidence: {
-            command: 'npm test',
-            exitCode: 0,
-            passed: true,
-            timedOut: false,
-            cancelled: false,
-            truncated: false,
-            durationMs: 1,
-            output: 'ok',
-          },
-        },
-      ],
+      changeSets: [changeSet],
+      validationRuns: [passedRun(changeSet)],
     } satisfies AgentSession;
     const stages = deriveStages(completed);
     expect(stages.find((stage) => stage.name === 'validate')?.status).to.equal('complete');
     expect(stages.find((stage) => stage.name === 'report')?.status).to.equal('pending');
+  });
+
+  test('deriveStages does not credit a passed run that no longer binds to a change set', () => {
+    const changeSet = storedChangeSet('change-set-1', 'src/a.ts', 'export const a = 1;\n');
+    const drifted = {
+      ...baseSession('completed'),
+      changeSets: [storedChangeSet('change-set-1', 'src/a.ts', 'export const a = 2;\n')],
+      validationRuns: [passedRun(changeSet)],
+    } satisfies AgentSession;
+    const gone = {
+      ...baseSession('completed'),
+      changeSets: [],
+      validationRuns: [passedRun(changeSet)],
+    } satisfies AgentSession;
+
+    expect(deriveStages(drifted).find((stage) => stage.name === 'validate')?.status).to.equal(
+      'skipped',
+    );
+    expect(deriveStages(gone).find((stage) => stage.name === 'validate')?.status).to.equal('skipped');
+    const driftedStage = deriveStages(drifted).find((stage) => stage.name === 'validate');
+    expect(driftedStage?.detail ?? '').to.contain('no longer bound to a change set');
   });
 });

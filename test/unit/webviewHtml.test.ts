@@ -56,6 +56,8 @@ suite('webview HTML', () => {
     expect(html).to.contain('id="conversation-select"');
     expect(html).to.contain('id="delete-conversation"');
     expect(html).to.contain('data-action="summarize-workspace"');
+    expect(html).to.contain('data-action="inspect-repository"');
+    expect(html).to.contain('data-action="explain-context"');
     expect(html).to.contain('data-action="attach-relevant"');
   });
 
@@ -92,6 +94,37 @@ suite('webview HTML', () => {
     expect(source).to.contain("post({ type: 'restorePreviousConversation', id: selected })");
     expect(source).to.contain("'New chat — current, empty'");
     expect(source).to.contain('els.conversationSelect.value = matched ? state.activeConversationId');
+  });
+
+  test('binds every approval button to the pending request and renders validation outcomes', () => {
+    const source = script();
+    const approvalPosts = [
+      "post({ type: 'approvePlan', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'rejectPlan', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'approveChangeSet', sessionId: sessionId, ids: changeIds, requestId: requestId })",
+      "post({ type: 'rejectChangeSet', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'approveRepair', sessionId: sessionId, ids: repairIds, requestId: requestId })",
+      "post({ type: 'rejectRepair', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'approveValidation', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'rejectValidation', sessionId: sessionId, requestId: requestId })",
+      "post({ type: 'requestValidation', sessionId: sessionId, command: command })",
+    ];
+    for (const message of approvalPosts) {
+      expect(source).to.contain(message);
+    }
+    expect((source.match(/data-request-id="/g) || []).length).to.equal(8);
+    expect(source).to.contain("approval.kind === 'validation-command'");
+    expect(source).to.contain("'approve-validation': true");
+    expect(source).to.contain('Request validation');
+    expect(source).to.contain('!session.pendingApproval');
+    expect(source).to.contain('APPROVAL_ACTIONS[action] === true && !requestId');
+    expect(source).to.contain('run.outcome');
+    expect(source).to.contain('VALIDATION_OUTCOME_LABELS');
+    expect(source).to.contain('run.detail');
+    expect(source).to.contain('run.changeSetId');
+    expect(source).to.not.contain("(evidence.passed ? 'ok' : 'bad')");
+    expect(source).to.contain('session.validationSuggestions');
+    expect(source).to.contain('session.progress');
   });
 
   test('escapes asset attributes to prevent markup injection', () => {

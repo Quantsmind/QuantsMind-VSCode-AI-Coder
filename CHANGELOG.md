@@ -35,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard, reports (without blocking on) `npm audit --audit-level=high`, and publishes the
   VSIX plus its SHA-256 checksum as build artifacts.
 
+## [1.1.0] - 2026-11-07
+
+### Added
+
+- Bounded coding-agent runtime with a tool registry and read-only workspace tools.
+- Safe file-change tools using the existing ChangeService, approval, backup, diff,
+  and undo mechanisms.
+- Approved, allowlisted command execution for validation.
+- Repository context tools for overview, context selection, symbol search, and
+  change-impact analysis.
+- Native OpenAI-compatible tool-call support and tool-result feedback.
+- Chat persistence for coding-agent runs and tool results.
+- Tool progress and result rendering in the chat view.
+
+### Changed
+
+- Agent system prompt now guides propose, apply, validate, repair, and revalidate.
+- Provider messages now carry assistant tool calls and tool result messages.
+
+### Tests
+
+- Unit and integration suites pass after the agent runtime changes.
+
 ## [0.3.4] - 2026-11-04
 
 ### Added

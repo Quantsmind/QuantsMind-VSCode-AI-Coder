@@ -2,8 +2,23 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SettingsService } from '../config/settings';
-import { buildContext, isPathExcluded, type RedactedContextItem } from '../context/filters';
+import {
+  buildContext,
+  isPathExcluded,
+  type ContextCandidate,
+  type RedactedContextItem,
+} from '../context/filters';
 import type { Logger } from '../security/logger';
+import { isTrusted, type TrustCheck } from '../security/workspaceTrust';
+import type { FileChange } from '../changes/model';
+import type {
+  ContextSelectionOptions,
+  RepositoryContextSelection,
+} from '../repository/contextSelection';
+import type { RepositoryOverview } from '../repository/discovery';
+import type { DependencyGraph } from '../repository/graph';
+import type { ChangeImpact } from '../repository/impact';
+import { RepositoryIntelligenceService } from '../repository/repositoryIntelligence';
 import {
   buildWorkspaceSummary,
   entryPointsOf,
@@ -72,14 +87,120 @@ export class WorkspaceIndexService {
   private entries: WorkspaceEntry[] | undefined;
   private rootName = 'workspace';
   private rootKey = '';
+  private warnedUntrusted = false;
+  private repositoryService: RepositoryIntelligenceService | undefined;
 
   constructor(
     private readonly settings: SettingsService,
     private readonly logger: Logger,
+    private readonly trustCheck: TrustCheck | undefined = () => vscode.workspace.isTrusted,
   ) {}
+
+  /**
+   * Every index read passes through here. A revoked trust grant must not keep
+   * serving the previously built cache, so the check runs before the cache is
+   * consulted, not only while building it.
+   */
+  private isTrusted(): boolean {
+    if (isTrusted(this.trustCheck)) {
+      return true;
+    }
+    if (!this.warnedUntrusted) {
+      this.warnedUntrusted = true;
+      this.logger.info('workspace index is disabled while the workspace is in Restricted Mode');
+    }
+    return false;
+  }
 
   invalidate(): void {
     this.entries = undefined;
+    this.repositoryService?.invalidate();
+  }
+
+  /**
+   * The repository-intelligence service is owned here so its snapshots reuse
+   * the same trust check, exclusions, and workspace entry list as retrieval.
+   */
+  repositoryIntelligence(): RepositoryIntelligenceService {
+    if (this.repositoryService === undefined) {
+      this.repositoryService = new RepositoryIntelligenceService({
+        rootName: () => this.rootName,
+        listEntries: () => this.getEntries(),
+        readText: (pathToRead) => this.readOptional(pathToRead),
+        excludeGlobs: () => this.settings.getContextSettings().excludeGlobs,
+      });
+    }
+    return this.repositoryService;
+  }
+
+  async repositoryOverview(): Promise<RepositoryOverview | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().overview();
+    } catch (error) {
+      this.logger.warn(`repository overview failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async dependencyGraph(): Promise<DependencyGraph | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().graph();
+    } catch (error) {
+      this.logger.warn(`dependency graph failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async selectRepositoryContext(
+    query: string,
+    options: ContextSelectionOptions,
+  ): Promise<RepositoryContextSelection | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().selectContext(query, options);
+    } catch (error) {
+      this.logger.warn(`repository context selection failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async analyzeChangeImpact(
+    changes: readonly FileChange[],
+    validationCommands: readonly string[] = [],
+  ): Promise<ChangeImpact | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().analyzeChanges(changes, validationCommands);
+    } catch (error) {
+      this.logger.warn(`change impact analysis failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  /** Incrementally re-analyzes a single changed source file. */
+  async updateIndexedFile(filePath: string): Promise<void> {
+    if (!this.isTrusted()) {
+      return;
+    }
+    try {
+      await this.repositoryIntelligence().updateFile(filePath);
+    } catch (error) {
+      this.logger.warn(`incremental repository update failed: ${String(error)}`);
+    }
+  }
+
+  removeIndexedFile(filePath: string): void {
+    this.repositoryService?.removeFile(filePath);
   }
 
   private scoreRoot(folder: vscode.WorkspaceFolder): number {
@@ -180,10 +301,14 @@ export class WorkspaceIndexService {
   }
 
   async getEntries(): Promise<readonly WorkspaceEntry[]> {
+    if (!this.isTrusted()) {
+      return [];
+    }
     const root = this.getRoot();
     const rootKey = root === undefined ? '' : root.uri.toString();
     if (this.entries !== undefined && this.rootKey !== rootKey) {
       this.entries = undefined;
+      this.repositoryService?.invalidate();
     }
     this.rootKey = rootKey;
     if (this.entries === undefined) {
@@ -200,6 +325,9 @@ export class WorkspaceIndexService {
   async retrieve(query: string, secret?: string): Promise<RetrievalResult> {
     const entries = await this.getEntries();
     const summary = buildWorkspaceSummary(this.rootName, entries);
+    if (!this.isTrusted()) {
+      return { summary, items: [], reasons: {}, skipped: [], truncated: false };
+    }
     const workspaceSettings = this.settings.getWorkspaceSettings();
     const contextSettings = this.settings.getContextSettings();
     const root = this.getRoot();
@@ -220,11 +348,41 @@ export class WorkspaceIndexService {
     });
     const reasons: Record<string, string> = {};
     const skipped: { path: string; reason: string }[] = [];
-    const candidates = [];
+    const candidates: ContextCandidate[] = [];
     let totalChars = 0;
     let truncated = false;
 
+    // Symbol and dependency evidence expands the query ranking, but the
+    // existing workspace provenance, redaction, and budget gates still apply
+    // to every file before it can reach the provider.
+    const selected = await this.selectRepositoryContext(query, {
+      maxFiles: workspaceSettings.maxRetrievedFiles,
+      maxChars: budget,
+    });
+    const ordered: { readonly path: string; readonly reason: string }[] = [];
+    const seenPaths = new Set<string>();
+    for (const selection of selected?.selections ?? []) {
+      if (seenPaths.has(selection.path)) {
+        continue;
+      }
+      seenPaths.add(selection.path);
+      ordered.push({
+        path: selection.path,
+        reason: `repository context: ${selection.reason} (${selection.confidence})`,
+      });
+    }
     for (const item of ranked) {
+      if (seenPaths.has(item.path)) {
+        continue;
+      }
+      seenPaths.add(item.path);
+      ordered.push({ path: item.path, reason: item.reason });
+    }
+    if (selected?.truncated === true) {
+      truncated = true;
+    }
+
+    for (const item of ordered) {
       const uri = vscode.Uri.joinPath(root.uri, item.path);
       try {
         const stat = await vscode.workspace.fs.stat(uri);
@@ -251,6 +409,7 @@ export class WorkspaceIndexService {
           path: item.path,
           content,
           languageId: languageIdForPath(item.path),
+          origin: 'workspace',
         });
         reasons[item.path] = item.reason;
         totalChars += content.length;

@@ -68,6 +68,8 @@ export class CompletionService {
     options: CompletionOptions = {},
   ): Promise<CompletionResult> {
     const config = this.settings.getProviderSettings();
+    const tools = options.tools;
+    const stream = tools !== undefined && tools.length > 0 ? false : (options.stream ?? config.stream);
 
     const normalized = normalizeBaseUrl(config.baseUrl, {
       allowInsecureLocalhost: config.allowInsecureLocalhost,
@@ -125,7 +127,8 @@ export class CompletionService {
           messages,
           temperature: config.temperature,
           maxOutputTokens: config.maxOutputTokens,
-          stream: config.stream,
+          stream,
+          tools,
         },
         options,
       );

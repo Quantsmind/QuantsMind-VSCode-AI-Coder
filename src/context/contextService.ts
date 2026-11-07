@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { SettingsService } from '../config/settings';
+import { isTrusted, type TrustCheck } from '../security/workspaceTrust';
 import {
   buildContext,
   isPathExcluded,
@@ -18,7 +19,19 @@ export interface ContextReadResult {
 }
 
 export class ContextService {
-  constructor(private readonly settings: SettingsService) {}
+  constructor(
+    private readonly settings: SettingsService,
+    private readonly trustCheck: TrustCheck | undefined = () => vscode.workspace.isTrusted,
+  ) {}
+
+  /**
+   * The editor buffer is content the user opened and selected themselves, so it
+   * stays available in Restricted Mode. Anything the extension has to find on
+   * disk goes through `listAttachableFiles` or `readUris`, which are gated.
+   */
+  private isTrusted(): boolean {
+    return isTrusted(this.trustCheck);
+  }
 
   displayPath(uri: vscode.Uri): string {
     if (uri.scheme === 'untitled') {
@@ -43,6 +56,7 @@ export class ContextService {
       isSelection: true,
       startLine: selection.start.line + 1,
       endLine: selection.end.line + 1,
+      origin: 'user',
     };
   }
 
@@ -56,6 +70,7 @@ export class ContextService {
       content,
       languageId: editor.document.languageId,
       isSelection: false,
+      origin: 'user',
     };
   }
 
@@ -63,6 +78,16 @@ export class ContextService {
     const candidates: ContextCandidate[] = [];
     const failures: ContextReadFailure[] = [];
     const { maxFileSizeBytes } = this.settings.getContextSettings();
+
+    if (!this.isTrusted()) {
+      for (const uri of uris) {
+        failures.push({
+          path: this.displayPath(uri),
+          message: 'Reading workspace files requires a trusted workspace.',
+        });
+      }
+      return { candidates, failures };
+    }
 
     for (const uri of uris) {
       const displayPath = this.displayPath(uri);
@@ -80,6 +105,7 @@ export class ContextService {
           path: displayPath,
           content: Buffer.from(bytes).toString('utf8'),
           languageId: undefined,
+          origin: 'user',
         });
       } catch (error) {
         failures.push({
@@ -93,6 +119,9 @@ export class ContextService {
   }
 
   async listAttachableFiles(limit = 2000): Promise<vscode.Uri[]> {
+    if (!this.isTrusted()) {
+      return [];
+    }
     const files = await vscode.workspace.findFiles('**/*', undefined, limit);
     const { excludeGlobs } = this.settings.getContextSettings();
     return files

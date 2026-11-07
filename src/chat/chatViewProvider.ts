@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { AgentRuntime } from '../agent/runtime';
+import type { AgentRunEvent } from '../agent/codingAgent';
 import type { AgentSessionView } from '../agent/models';
 import { AgentSessionError } from '../agent/orchestrator';
 import type { ChangeService } from '../changes/changeService';
@@ -20,6 +21,14 @@ import { errorHint, isProviderError, normalizeThrownError } from '../providers/e
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
 import {
+  isTrusted,
+  RESTRICTED_MODE_ACTION_NOTICE,
+  RESTRICTED_MODE_FEATURE_NOTICE,
+  RESTRICTED_MODE_REPLAY_NOTICE,
+  type AttachmentOrigin,
+  type TrustCheck,
+} from '../security/workspaceTrust';
+import {
   attachmentRestoreWarnings,
   captureAttachments,
   displaysForStoredAttachments,
@@ -27,6 +36,7 @@ import {
   enforceAttachmentBudget,
   freshnessOf,
   providerHistoryMessages,
+  withheldAttachmentCount,
   type AttachmentDisplay,
   type StoredAttachment,
 } from './attachmentContext';
@@ -48,11 +58,14 @@ import {
   type AttachmentSummary,
   type HistoryState,
   type HostToWebviewMessage,
+  type RepositoryView,
   type SessionSummary,
   type TranscriptMessage,
   type WebviewToHostMessage,
 } from './protocol';
 import { ChatSession } from './session';
+import { architectureSummary } from '../repository/discovery';
+import { explainContextSelection } from '../repository/contextSelection';
 import { renderChatHtml } from './webviewHtml';
 
 /** Upper bound on disk comparisons a single restoration may trigger. */
@@ -76,6 +89,8 @@ interface AttachmentBuffer {
   readonly startLine?: number;
   readonly endLine?: number;
   readonly redactions: number;
+  /** Provenance decides whether Restricted Mode may put this in a request. */
+  readonly source: AttachmentOrigin;
 }
 
 interface AddResult {
@@ -105,6 +120,7 @@ export interface ChatViewDependencies {
   readonly workspaceIndex: WorkspaceIndexService;
   readonly changeService: ChangeService;
   readonly agentRuntime: AgentRuntime;
+  readonly isTrusted?: TrustCheck;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -130,9 +146,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private history: HistoryState = EMPTY_HISTORY;
   private restoreWarnings: string[] = [];
   private readonly sessionSubscription: { dispose(): void };
+  private readonly trustCheck: TrustCheck;
 
   constructor(private readonly deps: ChatViewDependencies) {
     this.sessionSubscription = deps.agentRuntime.subscribe((view) => this.onSessionUpdate(view));
+    this.trustCheck = deps.isTrusted ?? (() => vscode.workspace.isTrusted);
+  }
+
+  /**
+   * Trust is re-read at each boundary instead of cached: a grant, a revocation,
+   * or a folder change must take effect on the next operation.
+   */
+  private trustState(): boolean {
+    return isTrusted(this.trustCheck);
+  }
+
+  private requireTrust(action: string): boolean {
+    if (this.trustState()) {
+      return true;
+    }
+    this.deps.logger.info(`restricted mode refused to ${action}`);
+    this.notifyWarning(RESTRICTED_MODE_ACTION_NOTICE);
+    return false;
   }
 
   private workspaceRoot(): vscode.WorkspaceFolder | undefined {
@@ -193,6 +228,104 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.view?.show?.(true);
   }
 
+  async runCodingAgentAndReveal(task: string): Promise<void> {
+    const trimmed = task.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+    await this.reveal();
+    if (this.busy) {
+      this.post({ type: 'notice', level: 'warn', message: 'A request is already running.' });
+      return;
+    }
+    const assistantId = `assistant-agent-${++this.requestSeq}`;
+    await this.ensureConversation();
+    this.syncHistoryBeforeSend();
+    await this.recordUser(trimmed, []);
+    const toolEvents: Array<{ tool?: string; ok?: boolean; message: string; output?: string }> = [];
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    this.post({ type: 'assistantStart', id: assistantId, model: 'coding-agent' });
+
+    try {
+      const result = await this.deps.agentRuntime.codingAgent.run(trimmed, {
+        maxIterations: 8,
+        onEvent: (event: AgentRunEvent) => {
+          this.deps.logger.info(`coding agent ${event.type}: ${event.message}`);
+          if (event.type === 'tool') {
+            this.post({
+              type: 'notice',
+              level: event.ok === false ? 'warn' : 'info',
+              message: event.message,
+            });
+            this.post({
+              type: 'agentToolResult',
+              tool: event.tool ?? 'tool',
+              ok: event.ok !== false,
+              message: event.message,
+              output: event.output,
+            });
+            toolEvents.push({
+              tool: event.tool ?? 'tool',
+              ok: event.ok !== false,
+              message: event.message,
+              output: event.output,
+            });
+            if (
+              event.tool !== undefined &&
+              /command/i.test(event.tool) &&
+              typeof event.output === 'string'
+            ) {
+              try {
+                const result = JSON.parse(event.output) as {
+                  command?: string;
+                  cwd?: string;
+                  exitCode?: number | null;
+                  output?: string;
+                  timedOut?: boolean;
+                  cancelled?: boolean;
+                };
+                this.post({
+                  type: 'commandOutput',
+                  command: result.command ?? event.tool,
+                  cwd: result.cwd ?? '',
+                  output: result.output ?? '',
+                  exitCode: result.exitCode ?? null,
+                  timedOut: result.timedOut === true,
+                  cancelled: result.cancelled === true,
+                });
+              } catch {
+                // The tool result was not a command result; leave the notice as the only UI update.
+              }
+            }
+          }
+        },
+      });
+      for (const event of toolEvents) {
+        const summary = `[tool] ${event.tool}: ${event.ok ? 'succeeded' : 'failed'}\n${(event.output ?? '').slice(0, 2000)}`.trim();
+        if (summary.length > 0) {
+          await this.recordAssistant(summary, false, true);
+        }
+      }
+      if (result.finalText.length > 0) {
+        this.post({ type: 'assistantDelta', id: assistantId, delta: result.finalText });
+      }
+      await this.recordAssistant(result.finalText || `Coding agent finished with status: ${result.status}.`);
+      this.post({
+        type: 'assistantEnd',
+        id: assistantId,
+        finishReason: result.status,
+        usage: undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Coding agent failed.';
+      this.post({ type: 'error', message, hint: undefined, code: undefined });
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
+    }
+  }
+
   async refreshStatus(): Promise<void> {
     if (!this.ready) {
       return;
@@ -203,6 +336,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       this.deps.logger.error('failed to refresh provider status', error);
     }
+  }
+
+  /**
+   * Rebuilds the trust-dependent state after VS Code reports a grant. VS Code
+   * has no revoke event (revocation reloads the window), so the other direction
+   * is covered by re-reading the check before each workspace operation.
+   */
+  refreshWorkspaceTrust(): void {
+    const trusted = this.trustState();
+    this.deps.logger.info(`workspace trust changed trusted=${trusted}`);
+    if (this.conversation !== undefined) {
+      this.refreshHistoryState(
+        { ...this.conversation, messages: this.storedMessages },
+        'reload',
+      );
+      this.postHistory();
+    }
+    this.postSessions();
+    this.post({
+      type: 'notice',
+      level: trusted ? 'info' : 'warn',
+      message: trusted
+        ? 'Workspace trust granted. Workspace summaries, relevant-file matching, the file picker, and agent mode are available again.'
+        : RESTRICTED_MODE_FEATURE_NOTICE,
+    });
+    void this.refreshStatus();
   }
 
   async requestSelection(mode: ChatMode, prompt: string): Promise<void> {
@@ -218,7 +377,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const result = await this.addCandidates([candidate]);
+    const result = await this.addCandidates([candidate], 'user');
     if (result.added === 0 && this.attachments.length === 0) {
       this.notifyWarning(
         `The selection could not be attached (${result.skipped[0] ?? 'no usable content'}).`,
@@ -365,7 +524,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     conversation: Conversation,
     source: 'reload' | 'switch' | 'send' | 'budget',
   ): void {
-    const rebuilt = providerHistoryMessages(conversation.messages);
+    const trusted = this.trustState();
+    const rebuilt = providerHistoryMessages(conversation.messages, {
+      includeAutoDiscovered: trusted,
+    });
     this.session.load(rebuilt);
     this.historySourceId = conversation.id;
 
@@ -397,12 +559,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       unavailableAttachments: unavailable,
     };
     this.restoreWarnings = attachmentRestoreWarnings(displays);
+    if (!trusted && withheldAttachmentCount(conversation.messages) > 0) {
+      this.restoreWarnings.push(RESTRICTED_MODE_REPLAY_NOTICE);
+    }
 
     this.deps.logger.info(
       `conversation history ready source=${source} transcriptMessages=${conversation.messages.length} providerMessages=${this.history.messages} providerChars=${this.history.chars} attachmentTurns=${attachmentTurns} unavailableAttachments=${unavailable}`,
     );
 
-    if (source === 'reload' || source === 'switch') {
+    if (trusted && (source === 'reload' || source === 'switch')) {
       void this.auditAttachmentFreshness(conversation);
     }
   }
@@ -415,7 +580,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async auditAttachmentFreshness(conversation: Conversation): Promise<void> {
     const root = this.workspaceRoot();
-    if (root === undefined) {
+    if (root === undefined || !this.trustState()) {
       return;
     }
 
@@ -802,6 +967,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async summarizeWorkspace(): Promise<void> {
+    if (!this.requireTrust('summarize the workspace')) {
+      return;
+    }
     try {
       const summary = await this.deps.workspaceIndex.summarize();
       this.post({
@@ -825,10 +993,120 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async inspectRepository(): Promise<void> {
+    if (!this.requireTrust('inspect the repository')) {
+      return;
+    }
+    try {
+      const overview = await this.deps.workspaceIndex.repositoryOverview();
+      if (overview === undefined) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message: 'Repository inspection is unavailable while the workspace is restricted.',
+        });
+        return;
+      }
+      const graph = await this.deps.workspaceIndex.dependencyGraph();
+      const dependents = new Map<string, number>();
+      const dependencies = new Map<string, number>();
+      for (const edge of graph?.edges ?? []) {
+        dependents.set(edge.to, (dependents.get(edge.to) ?? 0) + 1);
+        dependencies.set(edge.from, (dependencies.get(edge.from) ?? 0) + 1);
+      }
+      const hotspots = (graph?.nodes ?? [])
+        .map((node) => ({
+          path: node.path,
+          dependents: dependents.get(node.path) ?? 0,
+          dependencies: dependencies.get(node.path) ?? 0,
+          publicApi: node.publicApi,
+        }))
+        .sort(
+          (left, right) =>
+            right.dependents - left.dependents ||
+            right.dependencies - left.dependencies ||
+            left.path.localeCompare(right.path),
+        )
+        .slice(0, 12);
+      const repository: RepositoryView = {
+        overview,
+        summary: architectureSummary(overview),
+        dependencies: {
+          nodeCount: graph?.stats.nodeCount ?? 0,
+          edgeCount: graph?.stats.edgeCount ?? 0,
+          heuristicEdges: graph?.stats.heuristicEdges ?? 0,
+          unresolvedCount: graph?.stats.unresolvedCount ?? 0,
+          cycleCount: graph?.stats.cycleCount ?? 0,
+          truncated: graph?.stats.truncated ?? false,
+          hotspots,
+          cycles: (graph?.cycles ?? []).slice(0, 8).map((cycle) => cycle.slice(0, 12)),
+          unresolved: (graph?.unresolved ?? []).slice(0, 20).map((reference) => ({
+            from: reference.from,
+            specifier: reference.specifier,
+            reason: reference.reason,
+            confidence: reference.confidence,
+          })),
+        },
+      };
+      this.post({ type: 'repository', repository });
+    } catch (error) {
+      this.deps.logger.error('repository inspection failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Could not inspect the repository. See the QuantsMind log.',
+      });
+    }
+  }
+
+  private async explainRepositoryContext(query: string): Promise<void> {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      this.notifyWarning('Type a request first so context selection can be explained.');
+      return;
+    }
+    if (!this.requireTrust('explain context selection')) {
+      return;
+    }
+    try {
+      const workspaceSettings = this.deps.settings.getWorkspaceSettings();
+      const contextSettings = this.deps.settings.getContextSettings();
+      const selection = await this.deps.workspaceIndex.selectRepositoryContext(trimmed, {
+        maxFiles: workspaceSettings.maxRetrievedFiles,
+        maxChars: Math.min(workspaceSettings.retrievalMaxChars, contextSettings.maxTotalChars),
+      });
+      if (selection === undefined) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message: 'Context selection is unavailable while the workspace is restricted.',
+        });
+        return;
+      }
+      this.post({
+        type: 'contextSelection',
+        query: trimmed,
+        selections: selection.selections,
+        truncated: selection.truncated,
+        text: explainContextSelection(selection),
+      });
+    } catch (error) {
+      this.deps.logger.error('context selection explanation failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Could not explain context selection. See the QuantsMind log.',
+      });
+    }
+  }
+
   private async attachRelevantFiles(query: string): Promise<void> {
     const trimmed = query.trim();
     if (trimmed.length === 0) {
       this.notifyWarning('Type a request first so relevant files can be selected.');
+      return;
+    }
+    if (!this.requireTrust('select relevant files')) {
       return;
     }
     try {
@@ -848,6 +1126,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           startLine: item.startLine,
           endLine: item.endLine,
           redactions: item.redactions,
+          source: 'workspace',
         });
         added += 1;
       }
@@ -883,6 +1162,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       completedTasks,
       pendingApproval: view.pendingApproval?.kind,
       reportOutcome: view.report?.outcome,
+      activity: view.progress.activity,
+      validation: view.progress.validation,
     };
   }
 
@@ -955,6 +1236,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       endLine: attachment.endLine,
       chars: attachment.content.length,
       redactions: attachment.redactions,
+      origin: attachment.source,
     };
   }
 
@@ -968,6 +1250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       endLine: item.endLine,
       chars: item.content.length,
       redactions: item.redactions,
+      origin: item.origin,
     };
   }
 
@@ -1047,17 +1330,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.startSession(message.requirement);
         break;
       case 'approvePlan':
+        if (!this.requireTrust('approve an agent plan')) {
+          break;
+        }
         await this.runSessionStep(
           message.sessionId,
-          (token) => this.deps.agentRuntime.controller.approvePlan(message.sessionId, token),
+          (token) =>
+            this.deps.agentRuntime.controller.approvePlan(
+              message.sessionId,
+              token,
+              message.requestId,
+            ),
         );
         break;
       case 'rejectPlan':
         await this.runSessionAction(message.sessionId, () =>
-          this.deps.agentRuntime.controller.rejectPlan(message.sessionId),
+          this.deps.agentRuntime.controller.rejectPlan(message.sessionId, message.requestId),
         );
         break;
       case 'approveChangeSet':
+        if (!this.requireTrust('apply file changes')) {
+          break;
+        }
         await this.runSessionStep(
           message.sessionId,
           (token) =>
@@ -1065,15 +1359,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               message.sessionId,
               message.ids,
               token,
+              message.requestId,
             ),
         );
         break;
       case 'rejectChangeSet':
         await this.runSessionAction(message.sessionId, () =>
-          this.deps.agentRuntime.controller.rejectChanges(message.sessionId),
+          this.deps.agentRuntime.controller.rejectChanges(message.sessionId, message.requestId),
         );
         break;
       case 'approveRepair':
+        if (!this.requireTrust('apply repair changes')) {
+          break;
+        }
         await this.runSessionStep(
           message.sessionId,
           (token) =>
@@ -1081,23 +1379,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               message.sessionId,
               message.ids,
               token,
+              message.requestId,
             ),
         );
         break;
       case 'rejectRepair':
         await this.runSessionAction(message.sessionId, () =>
-          this.deps.agentRuntime.controller.rejectRepair(message.sessionId),
+          this.deps.agentRuntime.controller.rejectRepair(message.sessionId, message.requestId),
         );
         break;
       case 'generateRepair':
+        if (!this.requireTrust('request a repair')) {
+          break;
+        }
         await this.runSessionStep(
           message.sessionId,
           (token) =>
             this.deps.agentRuntime.controller.generateRepair(message.sessionId, token),
         );
         break;
-      case 'validateSession':
-        await this.validateSession(message.sessionId, message.command);
+      case 'requestValidation':
+        if (!this.requireTrust('run validation commands')) {
+          break;
+        }
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.requestValidation(message.sessionId, message.command),
+        );
+        break;
+      case 'approveValidation':
+        if (!this.requireTrust('run the approved validation command')) {
+          break;
+        }
+        await this.runApprovedValidation(message.sessionId, message.requestId);
+        break;
+      case 'rejectValidation':
+        await this.runSessionAction(message.sessionId, () =>
+          this.deps.agentRuntime.controller.rejectValidation(
+            message.sessionId,
+            message.requestId,
+          ),
+        );
         break;
       case 'pauseSession':
         await this.runSessionAction(message.sessionId, () =>
@@ -1105,6 +1426,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         break;
       case 'resumeSession':
+        if (!this.requireTrust('resume an agent session')) {
+          break;
+        }
         await this.runSessionStep(
           message.sessionId,
           (token) => this.deps.agentRuntime.controller.resume(message.sessionId, token),
@@ -1145,6 +1469,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'summarizeWorkspace':
         await this.summarizeWorkspace();
+        break;
+      case 'inspectRepository':
+        await this.inspectRepository();
+        break;
+      case 'explainRepositoryContext':
+        await this.explainRepositoryContext(message.query);
         break;
       case 'attachRelevantFiles':
         await this.attachRelevantFiles(message.query);
@@ -1192,12 +1522,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'session', session: view });
         }
       }
-      if (vscode.workspace.isTrusted !== true) {
+      if (!this.trustState()) {
         this.post({
           type: 'notice',
           level: 'warn',
-          message:
-            'This workspace is in Restricted Mode. Chat and inspection are available; agent sessions, file changes, repairs, and validation commands are disabled until you trust the workspace.',
+          message: RESTRICTED_MODE_FEATURE_NOTICE,
         });
       }
     } catch (error) {
@@ -1244,10 +1573,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return { added: 0, skipped: [reason] };
     }
 
-    return this.addCandidates([candidate]);
+    return this.addCandidates([candidate], 'user');
   }
 
-  private async addCandidates(candidates: readonly ContextCandidate[]): Promise<AddResult> {
+  private async addCandidates(
+    candidates: readonly ContextCandidate[],
+    source: AttachmentOrigin,
+  ): Promise<AddResult> {
     const secret = await this.deps.secrets.get();
     const contextSettings = this.deps.settings.getContextSettings();
     const skipped: string[] = [];
@@ -1289,6 +1621,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         startLine: item.startLine,
         endLine: item.endLine,
         redactions: item.redactions,
+        source,
       });
       added += 1;
     }
@@ -1321,6 +1654,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async pickFiles(): Promise<void> {
+    if (!this.requireTrust('list workspace files')) {
+      return;
+    }
     let files: vscode.Uri[];
     try {
       files = await this.deps.contextService.listAttachableFiles();
@@ -1367,7 +1703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     }
 
-    await this.addCandidates(read.candidates);
+    await this.addCandidates(read.candidates, 'user');
   }
 
   private async providerReadiness(): Promise<ProviderStatus | undefined> {
@@ -1436,11 +1772,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       return;
     }
-    if (vscode.workspace.isTrusted !== true) {
+    if (!this.trustState()) {
       this.post({
         type: 'error',
         message: 'Workspace trust is required before starting an agent session.',
-        hint: 'Restricted Mode blocks agent execution, file changes, repairs, and validation commands.',
+        hint: 'Restricted Mode blocks workspace inspection, file changes, repairs, and validation commands. Chat with files you attach yourself still works.',
         code: 'configuration',
       });
       return;
@@ -1630,6 +1966,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async undoSession(sessionId: string): Promise<void> {
+    if (!this.requireTrust('undo file changes')) {
+      return;
+    }
     const view = this.deps.agentRuntime.controller.view(sessionId);
     const execution = view?.executions
       .filter((entry) => entry.historyTaskId !== undefined)
@@ -1679,7 +2018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async validateSession(sessionId: string, command: string): Promise<void> {
+  private async runApprovedValidation(sessionId: string, requestId: string): Promise<void> {
     if (this.sessionSource !== undefined) {
       this.post({
         type: 'notice',
@@ -1694,22 +2033,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.busy = true;
     this.post({ type: 'busy', busy: true });
     try {
-      const view = await this.deps.agentRuntime.controller.validate(
+      const view = await this.deps.agentRuntime.controller.approveValidation(
         sessionId,
-        command,
+        requestId,
         controller.signal,
       );
       this.setActiveSession(view);
       const run = view.validationRuns[view.validationRuns.length - 1];
-      if (run !== undefined) {
+      const evidence = run?.evidence;
+      if (run !== undefined && run.outcome === 'passed' && view.state === 'validating') {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message:
+            'The command passed, but the result does not match the change set it would verify, so the session did not advance.',
+        });
+      }
+      if (run !== undefined && evidence === undefined) {
+        this.post({
+          type: 'notice',
+          level: 'warn',
+          message: `Validation ${run.outcome}: ${run.detail ?? 'no command was executed.'}`,
+        });
+      } else if (evidence !== undefined) {
         this.post({
           type: 'commandOutput',
-          command: run.evidence.command,
+          command: evidence.command,
           cwd: this.workspaceRoot()?.uri.fsPath ?? '.',
-          output: run.evidence.output,
-          exitCode: run.evidence.exitCode,
-          timedOut: run.evidence.timedOut,
-          cancelled: run.evidence.cancelled,
+          output: evidence.output,
+          exitCode: evidence.exitCode,
+          timedOut: evidence.timedOut,
+          cancelled: evidence.cancelled,
         });
       }
     } catch (error) {
@@ -1748,6 +2102,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Discovery can only have run while the workspace was trusted. If trust was
+    // withdrawn since, the buffered content must not reach the provider even
+    // though the user never removed it by hand.
+    if (!this.trustState()) {
+      const discovered = this.attachments.filter((attachment) => attachment.source === 'workspace');
+      if (discovered.length > 0) {
+        this.attachments = this.attachments.filter(
+          (attachment) => attachment.source !== 'workspace',
+        );
+        this.postAttachments();
+        this.notifyWarning(
+          `${discovered.length} automatically discovered attachment(s) were removed because this workspace is in Restricted Mode. Attach files yourself, or trust the workspace to use discovery.`,
+        );
+      }
+    }
+
     const prompt = rawPrompt.trim();
     if (prompt.length > LIMITS.maxPromptChars) {
       this.post({
@@ -1780,6 +2150,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         isSelection: attachment.isSelection,
         startLine: attachment.startLine,
         endLine: attachment.endLine,
+        origin: attachment.source,
       })),
       secret,
     );

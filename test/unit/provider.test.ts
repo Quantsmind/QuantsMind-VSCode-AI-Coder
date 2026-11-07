@@ -407,7 +407,7 @@ suite('provider error handling', () => {
         } catch (error) {
           failure = error;
         }
-        expect((failure as ProviderError).message).to.contain('Tool-call responses');
+        expect((failure as ProviderError).message).to.contain('did not contain message text');
       },
     );
   });

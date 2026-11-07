@@ -13,6 +13,7 @@ import { setUserAgentVersion } from './providers/openaiCompatible';
 import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
 import { API_KEY_SECRET_KEY, SecretStore } from './security/secretStore';
+import { FIRST_RUN_NOTICE_KEY, showFirstRunNotice } from './onboarding/firstRun';
 import { WorkspaceIndexService } from './workspace/indexService';
 import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
 
@@ -395,6 +396,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   };
 
   register(COMMANDS.showMenu, showMenu);
+  const runCodingAgent = async (): Promise<void> => {
+    const prompt = await vscode.window.showInputBox({
+      title: 'QuantsMind: Run Coding Agent',
+      prompt: 'Describe the coding task. The agent will inspect the workspace with read-only tools and return a result.',
+      ignoreFocusOut: true,
+      placeHolder: 'For example: find where provider errors are normalized',
+    });
+    if (prompt === undefined || prompt.trim().length === 0) {
+      return;
+    }
+    await chatProvider.runCodingAgentAndReveal(prompt.trim());
+  };
+  register('quantsmind.runCodingAgent', runCodingAgent);
   register(COMMANDS.inspectWorkspace, inspectWorkspace);
   register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
   register(COMMANDS.showVersion, showVersion);
@@ -405,6 +419,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     workspaceWatcher,
     workspaceWatcher.onDidCreate(invalidateIndex),
     workspaceWatcher.onDidDelete(invalidateIndex),
+    workspaceWatcher.onDidChange((uri) => {
+      void workspaceIndex.updateIndexedFile(vscode.workspace.asRelativePath(uri, false));
+    }),
     vscode.workspace.onDidRenameFiles(invalidateIndex),
   );
 
@@ -424,7 +441,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
       workspaceIndex.invalidate();
       void refreshAll();
-      void chatProvider.refreshStatus();
+      chatProvider.refreshWorkspaceTrust();
     }),
   );
   context.subscriptions.push(
@@ -436,6 +453,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   );
 
   await refreshAll();
+
+  // Automation hosts activate the extension repeatedly against throwaway
+  // profiles; an onboarding toast there would be noise, not behaviour.
+  if (
+    context.extensionMode !== vscode.ExtensionMode.Test &&
+    context.extensionMode !== vscode.ExtensionMode.Development
+  ) {
+    void showFirstRunNotice({
+      isShown: () => context.globalState.get<boolean>(FIRST_RUN_NOTICE_KEY, false),
+      markShown: async () => context.globalState.update(FIRST_RUN_NOTICE_KEY, true),
+      getProvider: async () => completion.getStatus(),
+      show: async (message, items) => vscode.window.showInformationMessage(message, ...items),
+      runCommand: async (command) => vscode.commands.executeCommand(command),
+      onError: (message, error) => logger.error(message, error),
+    });
+  }
 
   activeRuntime = { chatProvider, statusBar, logger };
 

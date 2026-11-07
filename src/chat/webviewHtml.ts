@@ -80,6 +80,8 @@ export function renderChatHtml(assets: WebviewAssets): string {
     <div class="workspace-row">
       <span class="workspace-name" id="workspace-name" title="Active workspace folder">No workspace</span>
       <button type="button" class="text-button" data-action="summarize-workspace" title="Summarize the workspace locally without sending anything">Summary</button>
+      <button type="button" class="text-button" data-action="inspect-repository" title="Inspect repository structure and dependency relationships locally">Repository</button>
+      <button type="button" class="text-button" data-action="explain-context" title="Explain which files repository intelligence would select for the current prompt">Context why</button>
       <button type="button" class="text-button" data-action="attach-relevant" title="Attach files relevant to the current prompt">Relevant files</button>
     </div>
 
@@ -100,6 +102,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
           <button type="button" class="quick-button" data-action="explain-selection">Explain selection</button>
           <button type="button" class="quick-button" data-action="attach-active">Attach active file</button>
           <button type="button" class="quick-button" data-action="summarize-workspace">Summarize workspace</button>
+          <button type="button" class="quick-button" data-action="inspect-repository">Repository intelligence</button>
           <button type="button" class="quick-button accent" data-action="set-key" id="empty-set-key" hidden>Set API key</button>
         </div>
         <p class="empty-footnote">Plan, change-set and repair approvals are separate. Files are written only after per-file approval, validation commands run without a shell from your exact allowlist, and undo restores backups.</p>

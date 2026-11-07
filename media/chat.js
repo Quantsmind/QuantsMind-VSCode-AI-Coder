@@ -146,11 +146,14 @@
   }
 
   function attachmentLabel(attachment) {
+    // Automatically discovered content is labelled so it is never mistaken for
+    // something the user attached on purpose.
+    const suffix = attachment.origin === 'workspace' ? ' · auto' : '';
     if (attachment.isSelection && attachment.startLine) {
       const end = attachment.endLine || attachment.startLine;
-      return attachment.path + ':' + attachment.startLine + '-' + end;
+      return attachment.path + ':' + attachment.startLine + '-' + end + suffix;
     }
-    return attachment.path;
+    return attachment.path + suffix;
   }
 
   function setEmpty(visible) {
@@ -189,7 +192,7 @@
     els.mode.disabled = busy;
     els.sessionSelect.disabled = busy;
     const buttons = document.querySelectorAll(
-      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="clear-attachments"], [data-action="clear-conversation"], [data-action="restore-conversation"]',
+      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="inspect-repository"], [data-action="explain-context"], [data-action="clear-attachments"], [data-action="clear-conversation"], [data-action="restore-conversation"]',
     );
     buttons.forEach(function (button) {
       button.disabled = busy;
@@ -547,8 +550,66 @@
     scrollToBottom(true);
   }
 
-  function createAssistantMessage(model) {
+  function appendAssistantHtml(html, heading) {
     const article = document.createElement('article');
+    article.className = 'message assistant';
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = heading || 'QuantsMind';
+
+    const card = document.createElement('div');
+    card.className = 'assistant-card';
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.innerHTML = html;
+
+    card.append(content);
+    article.append(label, card);
+    els.messages.append(article);
+    setEmpty(false);
+    scrollToBottom(true);
+  }
+
+  function appendToolResult(message) {
+    const article = document.createElement('article');
+    article.className = 'message assistant';
+
+    const label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = 'Tool result';
+
+    const card = document.createElement('div');
+    card.className = 'assistant-card';
+
+    const title = document.createElement('div');
+    title.className = 'message-meta';
+    title.textContent = (message.tool || 'tool') + ' - ' + (message.ok ? 'succeeded' : 'failed');
+
+    const text = document.createElement('p');
+    text.className = 'error-message';
+    text.textContent = message.message || '';
+
+    card.append(title, text);
+
+    if (typeof message.output === 'string' && message.output.trim().length > 0) {
+      const output = document.createElement('pre');
+      output.className = 'message-content';
+      output.style.whiteSpace = 'pre-wrap';
+      output.style.maxHeight = '240px';
+      output.style.overflow = 'auto';
+      const limited = message.output.length > 12000 ? message.output.slice(0, 12000) + '\\n...[truncated]' : message.output;
+      output.textContent = limited;
+      card.append(output);
+    }
+
+    article.append(label, card);
+    els.messages.append(article);
+    setEmpty(false);
+    scrollToBottom(true);
+  }
+
+  function createAssistantMessage(model) {    const article = document.createElement('article');
     article.className = 'message assistant streaming';
 
     const label = document.createElement('div');
@@ -769,6 +830,25 @@
     diagnosing: true,
   };
 
+  var VALIDATION_OUTCOME_LABELS = {
+    passed: 'passed',
+    failed: 'failed',
+    skipped: 'skipped',
+    unavailable: 'no check available',
+  };
+
+  /** Every action that answers a pending ApprovalRequest; each needs its id. */
+  var APPROVAL_ACTIONS = {
+    'approve-plan': true,
+    'reject-plan': true,
+    'approve-change-selected': true,
+    'reject-change': true,
+    'approve-repair-selected': true,
+    'reject-repair': true,
+    'approve-validation': true,
+    'reject-validation': true,
+  };
+
   function isTerminalState(session) {
     return (
       session.state === 'completed' ||
@@ -934,17 +1014,38 @@
   function renderValidations(session) {
     return (session.validationRuns || [])
       .map(function (run) {
-        var evidence = run.evidence || {};
+        var evidence = run.evidence;
+        var outcome =
+          run.outcome || (evidence ? (evidence.passed ? 'passed' : 'failed') : 'unavailable');
+        var tone = outcome === 'passed' ? 'ok' : outcome === 'failed' ? 'bad' : 'muted';
+        var outcomeLabel = VALIDATION_OUTCOME_LABELS[outcome] || outcome;
+        if (!evidence) {
+          return (
+            '<div class="validation ' + tone + '">' +
+            '<div class="validation-head"><span class="validation-command">' +
+            escapeHtml(run.command || outcomeLabel) + '</span>' +
+            '<span class="validation-state">' + escapeHtml(outcomeLabel) + '</span></div>' +
+            '<p class="validation-detail">' +
+            escapeHtml(run.detail || 'No command was executed.') + '</p>' +
+            '</div>'
+          );
+        }
         var stateLabel = evidence.cancelled
           ? 'cancelled'
           : evidence.timedOut
             ? 'timed out'
-            : 'exit ' + (evidence.exitCode === null ? 'unknown' : evidence.exitCode);
+            : 'exit ' + (evidence.exitCode === null || evidence.exitCode === undefined ? 'unknown' : evidence.exitCode);
+        var binding = run.changeSetId
+          ? 'Tested change set ' +
+            run.changeSetId +
+            (run.repairProposalId ? ' after repair ' + run.repairProposalId : '')
+          : '';
         return (
-          '<div class="validation ' + (evidence.passed ? 'ok' : 'bad') + '">' +
+          '<div class="validation ' + tone + '">' +
           '<div class="validation-head"><span class="validation-command">' + escapeHtml(evidence.command || run.command) + '</span>' +
           '<span class="validation-state">' + escapeHtml(stateLabel) + ' · ' + formatNumber(evidence.durationMs) + ' ms</span></div>' +
           '<pre class="command-output">' + escapeHtml(evidence.output || '(no output)') + '</pre>' +
+          (binding ? '<p class="validation-detail">' + escapeHtml(binding) + '</p>' : '') +
           '</div>'
         );
       })
@@ -998,12 +1099,194 @@
     );
   }
 
+  function confidenceLabel(value) {
+    return value === 'confirmed' ? 'confirmed' : 'heuristic';
+  }
+
+  function renderImpact(changeSet) {
+    var impact = changeSet && changeSet.impact;
+    if (!impact || typeof impact !== 'object') {
+      return '';
+    }
+    var directFiles = impact.directFiles || [];
+    var indirectFiles = impact.indirectFiles || [];
+    var regressionAreas = impact.regressionAreas || [];
+    var recommendedTests = impact.recommendedTests || [];
+    var validationCommands = impact.validationCommands || [];
+    var evidence = impact.evidence || [];
+    var filesHtml = directFiles
+      .slice(0, 12)
+      .map(function (file) {
+        return (
+          '<li><code>' + escapeHtml(file.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(file.relationship) + ' · ' + escapeHtml(confidenceLabel(file.confidence)) + '</span></li>'
+        );
+      })
+      .join('');
+    var affectedHtml = indirectFiles
+      .slice(0, 12)
+      .map(function (file) {
+        return (
+          '<li><code>' + escapeHtml(file.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(file.relationship) + ' · depth ' + Number(file.distance || 0) + ' · ' + escapeHtml(confidenceLabel(file.confidence)) + '</span>' +
+          (file.reason ? '<span class="impact-reason">' + escapeHtml(file.reason) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    var testsHtml = recommendedTests
+      .slice(0, 8)
+      .map(function (test) {
+        return (
+          '<li><code>' + escapeHtml(test.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(confidenceLabel(test.confidence)) + '</span>' +
+          (test.reason ? '<span class="impact-reason">' + escapeHtml(test.reason) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    var areasHtml = regressionAreas
+      .slice(0, 8)
+      .map(function (area) {
+        return (
+          '<li><code>' + escapeHtml(area.path) + '</code>' +
+          '<span class="impact-risk risk-' + escapeHtml(area.risk) + '">' + escapeHtml(area.risk) + '</span>' +
+          (area.reason ? '<span class="impact-reason">' + escapeHtml(area.reason) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    var commandsHtml = validationCommands
+      .slice(0, 8)
+      .map(function (item) {
+        return (
+          '<li><code>' + escapeHtml(item.command) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(item.source) + ' · ' + escapeHtml(confidenceLabel(item.confidence)) + '</span></li>'
+        );
+      })
+      .join('');
+    var evidenceHtml = evidence
+      .slice(0, 8)
+      .map(function (item) {
+        return '<li>' + escapeHtml(item) + '</li>';
+      })
+      .join('');
+    return (
+      '<div class="impact-card">' +
+      '<div class="impact-head"><span class="section-label">Change impact</span>' +
+      '<span class="impact-confidence confidence-' + escapeHtml(impact.confidence) + '">' + escapeHtml(impact.confidence) + ' confidence</span></div>' +
+      '<p class="impact-summary">' + Number(directFiles.length) + ' direct · ' + Number(indirectFiles.length) + ' affected · ' + Number(recommendedTests.length) + ' recommended test(s)' +
+      (impact.limits && impact.limits.truncated ? ' · analysis truncated' : '') + '</p>' +
+      (filesHtml ? '<div class="impact-section"><span class="impact-label">Changed files</span><ul class="impact-list">' + filesHtml + '</ul></div>' : '') +
+      (affectedHtml ? '<div class="impact-section"><span class="impact-label">Affected files</span><ul class="impact-list">' + affectedHtml + '</ul></div>' : '') +
+      (areasHtml ? '<div class="impact-section"><span class="impact-label">Regression areas</span><ul class="impact-list">' + areasHtml + '</ul></div>' : '') +
+      (testsHtml ? '<div class="impact-section"><span class="impact-label">Recommended tests</span><ul class="impact-list">' + testsHtml + '</ul></div>' : '') +
+      (commandsHtml ? '<div class="impact-section"><span class="impact-label">Suggested validation</span><ul class="impact-list">' + commandsHtml + '</ul></div>' : '') +
+      (evidenceHtml ? '<div class="impact-section"><span class="impact-label">Evidence</span><ul class="impact-list impact-evidence">' + evidenceHtml + '</ul></div>' : '') +
+      '</div>'
+    );
+  }
+
+  function renderRepositoryHtml(repository) {
+    if (!repository || typeof repository !== 'object' || !repository.overview) {
+      return '<div class="text">No repository data is available.</div>';
+    }
+    var overview = repository.overview;
+    var deps = repository.dependencies || {};
+    var languages = (overview.languages || [])
+      .slice(0, 10)
+      .map(function (language) {
+        return escapeHtml(language.name) + ' (' + Number(language.files || 0) + ')';
+      })
+      .join(', ');
+    var technologies = (overview.technologies || [])
+      .slice(0, 12)
+      .map(function (technology) {
+        return escapeHtml(technology.name) + ' [' + escapeHtml(confidenceLabel(technology.confidence)) + ']';
+      })
+      .join(', ');
+    var buildSystems = (overview.buildSystems || [])
+      .map(function (system) {
+        return escapeHtml(system.name) + (system.commands && system.commands.length ? ' (' + system.commands.slice(0, 3).map(escapeHtml).join(', ') + ')' : '');
+      })
+      .join(', ');
+    var entryPoints = (overview.entryPoints || []).slice(0, 10).map(escapeHtml).join(', ');
+    var configFiles = (overview.configFiles || []).slice(0, 10).map(escapeHtml).join(', ');
+    var hotspots = (deps.hotspots || [])
+      .slice(0, 10)
+      .map(function (spot) {
+        return (
+          '<li><code>' + escapeHtml(spot.path) + '</code>' +
+          '<span class="impact-meta">' + Number(spot.dependents || 0) + ' dependent(s) · ' + Number(spot.dependencies || 0) + ' dependency(ies)' +
+          (spot.publicApi ? ' · public API' : '') + '</span></li>'
+        );
+      })
+      .join('');
+    var cycles = (deps.cycles || [])
+      .slice(0, 6)
+      .map(function (cycle) {
+        return '<li>' + cycle.map(function (path) { return '<code>' + escapeHtml(path) + '</code>'; }).join(' → ') + '</li>';
+      })
+      .join('');
+    var unresolved = (deps.unresolved || [])
+      .slice(0, 10)
+      .map(function (reference) {
+        return '<li><code>' + escapeHtml(reference.from) + '</code> → <code>' + escapeHtml(reference.specifier) + '</code><span class="impact-meta">' + escapeHtml(reference.reason) + ' · ' + escapeHtml(confidenceLabel(reference.confidence)) + '</span></li>';
+      })
+      .join('');
+    return (
+      '<div class="repository-card">' +
+      '<div class="impact-head"><span class="section-label">Repository overview</span>' +
+      '<span class="impact-confidence">local analysis</span></div>' +
+      '<pre class="repository-summary">' + escapeHtml(repository.summary || '') + '</pre>' +
+      '<div class="impact-section"><span class="impact-label">Structure</span>' +
+      '<p>' + Number(overview.fileCount || 0) + ' file(s), ' + Number(overview.sourceFileCount || 0) + ' source, ' + Number(overview.testFileCount || 0) + ' test.</p>' +
+      (languages ? '<p><strong>Languages:</strong> ' + languages + '</p>' : '') +
+      (technologies ? '<p><strong>Technologies:</strong> ' + technologies + '</p>' : '') +
+      (buildSystems ? '<p><strong>Build/test:</strong> ' + buildSystems + '</p>' : '') +
+      (entryPoints ? '<p><strong>Entry points:</strong> ' + entryPoints + '</p>' : '') +
+      (configFiles ? '<p><strong>Config:</strong> ' + configFiles + '</p>' : '') +
+      '</div>' +
+      '<div class="impact-section"><span class="impact-label">Dependencies</span>' +
+      '<p>' + Number(deps.nodeCount || 0) + ' node(s), ' + Number(deps.edgeCount || 0) + ' edge(s), ' + Number(deps.heuristicEdges || 0) + ' heuristic, ' + Number(deps.unresolvedCount || 0) + ' unresolved, ' + Number(deps.cycleCount || 0) + ' cycle(s)' + (deps.truncated ? ' · truncated' : '') + '.</p>' +
+      (hotspots ? '<ul class="impact-list">' + hotspots + '</ul>' : '') +
+      '</div>' +
+      (cycles ? '<div class="impact-section"><span class="impact-label">Cycles</span><ul class="impact-list">' + cycles + '</ul></div>' : '') +
+      (unresolved ? '<div class="impact-section"><span class="impact-label">Unresolved local references</span><ul class="impact-list">' + unresolved + '</ul></div>' : '') +
+      '</div>'
+    );
+  }
+
+  function renderContextSelectionHtml(message) {
+    var selections = message.selections || [];
+    var rows = selections
+      .map(function (selection) {
+        return (
+          '<li><code>' + escapeHtml(selection.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(selection.relationship) + ' · score ' + Number(selection.score || 0) + ' · ' + escapeHtml(confidenceLabel(selection.confidence)) + '</span>' +
+          (selection.reason ? '<span class="impact-reason">' + escapeHtml(selection.reason) + '</span>' : '') +
+          '</li>'
+        );
+      })
+      .join('');
+    return (
+      '<div class="repository-card">' +
+      '<div class="impact-head"><span class="section-label">Context selection</span>' +
+      '<span class="impact-confidence">local only</span></div>' +
+      '<p>Query: <code>' + escapeHtml(message.query || '') + '</code></p>' +
+      (rows ? '<ul class="impact-list">' + rows + '</ul>' : '<p>No files were selected.</p>') +
+      (message.truncated ? '<p class="change-warning">The selection was truncated by its file or character budget.</p>' : '') +
+      '</div>'
+    );
+  }
+
   function renderSessionApproval(session) {
     var approval = session.pendingApproval;
     if (!approval) {
       return '';
     }
     var sessionId = escapeHtml(session.id);
+    var requestId = escapeHtml(approval.id || '');
     if (approval.kind === 'plan') {
       return (
         '<div class="approval-card">' +
@@ -1012,8 +1295,26 @@
         (approval.detail ? '<p class="approval-detail">' + escapeHtml(approval.detail) + '</p>' : '') +
         '<p class="task-notes">No files will be written until you approve the plan and then approve individual changes.</p>' +
         '<div class="task-actions">' +
-        '<button type="button" class="action-button primary" data-session-action="approve-plan" data-session-id="' + sessionId + '">Approve plan</button>' +
-        '<button type="button" class="action-button" data-session-action="reject-plan" data-session-id="' + sessionId + '">Reject plan</button>' +
+        '<button type="button" class="action-button primary" data-session-action="approve-plan" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Approve plan</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-plan" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Reject plan</button>' +
+        '</div></div>'
+      );
+    }
+
+    if (approval.kind === 'validation-command') {
+      return (
+        '<div class="approval-card">' +
+        '<div class="approval-head"><span class="approval-kind">Validation approval</span>' +
+        '<span class="approval-title">' + escapeHtml(approval.title) + '</span></div>' +
+        (approval.detail
+          ? '<pre class="approval-detail">' +
+            escapeHtml(approval.detail).split('\n').join('<br>') +
+            '</pre>'
+          : '') +
+        '<p class="task-notes">Nothing runs until you approve this exact command in this directory. Rejecting it records a skipped check and keeps the session awaiting validation.</p>' +
+        '<div class="task-actions">' +
+        '<button type="button" class="action-button primary" data-session-action="approve-validation" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Run approved command</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-validation" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Do not run</button>' +
         '</div></div>'
       );
     }
@@ -1036,11 +1337,12 @@
         '<div class="approval-card">' +
         '<div class="approval-head"><span class="approval-kind">Change-set approval</span>' +
         '<span class="approval-title">' + escapeHtml(changeSet.summary) + '</span></div>' +
+        renderImpact(changeSet) +
         '<p class="task-notes">Select the files to apply. Backups are created for every applied file.</p>' +
         '<div class="review-list" data-session-reviews="' + sessionId + '">' + reviews + '</div>' +
         '<div class="task-actions">' +
-        '<button type="button" class="action-button primary" data-session-action="approve-change-selected" data-session-id="' + sessionId + '">Apply selected files</button>' +
-        '<button type="button" class="action-button" data-session-action="reject-change" data-session-id="' + sessionId + '">Reject change set</button>' +
+        '<button type="button" class="action-button primary" data-session-action="approve-change-selected" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Apply selected files</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-change" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Reject change set</button>' +
         '</div></div>'
       );
     }
@@ -1066,8 +1368,8 @@
         (proposal.diagnosis ? '<p class="approval-detail">' + escapeHtml(proposal.diagnosis) + '</p>' : '') +
         '<div class="review-list" data-session-repairs="' + sessionId + '">' + repairReviews + '</div>' +
         '<div class="task-actions">' +
-        '<button type="button" class="action-button primary" data-session-action="approve-repair-selected" data-session-id="' + sessionId + '">Apply repair</button>' +
-        '<button type="button" class="action-button" data-session-action="reject-repair" data-session-id="' + sessionId + '">Reject repair</button>' +
+        '<button type="button" class="action-button primary" data-session-action="approve-repair-selected" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Apply repair</button>' +
+        '<button type="button" class="action-button" data-session-action="reject-repair" data-session-id="' + sessionId + '" data-request-id="' + requestId + '">Reject repair</button>' +
         '</div></div>'
       );
     }
@@ -1098,18 +1400,33 @@
         sessionId +
         '">Restore and revalidate</button>';
     }
-    if (session.state === 'validating' && state.validationCommands.length > 0) {
-      var options = state.validationCommands
+    var suggested = (session.validationSuggestions || []).filter(function (command) {
+      return typeof command === 'string' && command.length > 0;
+    });
+    var commands = suggested.length > 0 ? suggested : state.validationCommands;
+    if (session.state === 'validating' && commands.length > 0 && !session.pendingApproval) {
+      var progress = session.progress || {};
+      var activeTask = (session.tasks || []).find(function (task) {
+        return task.id === progress.activeTaskId;
+      });
+      var preferred = activeTask && activeTask.validationCommand ? activeTask.validationCommand : '';
+      var options = commands
         .map(function (command) {
-          return '<option value="' + escapeHtml(command) + '">' + escapeHtml(command) + '</option>';
+          return (
+            '<option value="' + escapeHtml(command) + '"' + (command === preferred ? ' selected' : '') + '>' +
+            escapeHtml(command) +
+            '</option>'
+          );
         })
         .join('');
       actions +=
         '<span class="validation-picker">' +
-        '<select data-session-validation aria-label="Validation command">' + options + '</select>' +
+        '<select data-session-validation aria-label="Validation command" title="' +
+        escapeHtml(suggested.length > 0 ? 'Derived from this project\'s scripts and the command allowlist' : 'Allowlisted validation commands') +
+        '">' + options + '</select>' +
         '<button type="button" class="action-button primary" data-session-action="run-validation" data-session-id="' +
         sessionId +
-        '">Run validation</button>' +
+        '">Request validation</button>' +
         '</span>';
     }
     if (session.state === 'diagnosing') {
@@ -1164,10 +1481,21 @@
           .join('');
         return (
           '<div class="applied-set"><span class="section-label">Approved change set</span>' +
+          renderImpact(changeSet) +
           '<div class="review-list">' + reviews + '</div></div>'
         );
       })
       .join('');
+
+    var progress = session.progress;
+    var activity =
+      progress && progress.activity
+        ? progress.activity +
+          (progress.totalTasks > 0
+            ? ' · ' + Number(progress.completedTasks || 0) + '/' + progress.totalTasks + ' task(s)'
+            : '') +
+          (progress.validation ? ' · validation: ' + progress.validation : '')
+        : '';
 
     var html =
       '<div class="task-card session-card state-' + escapeHtml(session.state) + '">' +
@@ -1175,6 +1503,7 @@
       '<span class="task-status">Session · ' + escapeHtml(SESSION_STATE_LABELS[session.state] || session.state) + '</span>' +
       '<span class="task-meta">' + escapeHtml(meta) + '</span>' +
       '</div>' +
+      (activity ? '<p class="session-activity">' + escapeHtml(activity) + '</p>' : '') +
       '<p class="session-requirement">' + escapeHtml(session.requirement ? session.requirement.text : '') + '</p>' +
       (session.needsReview ? '<p class="change-warning">This session needs review before it can continue. Restore revalidates every applied file hash.</p>' : '') +
       (session.error ? '<p class="task-error">' + escapeHtml(session.error) + '</p>' : '') +
@@ -1251,6 +1580,9 @@
           : '';
       option.textContent =
         (SESSION_STATE_LABELS[session.state] || session.state) + progress + ' — ' + session.requirement;
+      option.title = session.activity
+        ? session.activity + (session.validation ? ' · validation: ' + session.validation : '')
+        : option.textContent;
       if (session.id === state.activeSessionId) {
         matched = true;
         option.selected = true;
@@ -1512,6 +1844,10 @@
         showToast(message.message || '', message.level || 'info');
         break;
       }
+      case 'agentToolResult': {
+        appendToolResult(message);
+        break;
+      }
       case 'clear': {
         clearConversation();
         break;
@@ -1562,6 +1898,16 @@
         showToast('Workspace summarized locally. Nothing was sent to the provider.', 'info');
         break;
       }
+      case 'repository': {
+        appendAssistantHtml(renderRepositoryHtml(message.repository), 'Repository intelligence');
+        showToast('Repository inspected locally. Nothing was sent to the provider.', 'info');
+        break;
+      }
+      case 'contextSelection': {
+        appendAssistantHtml(renderContextSelectionHtml(message), 'Context selection');
+        showToast('Context selection explained locally. Nothing was sent to the provider.', 'info');
+        break;
+      }
       case 'undoResult': {
         showToast(
           message.conflicts > 0
@@ -1597,13 +1943,18 @@
       return;
     }
     var body = button.closest('.session-body');
+    var requestId = button.dataset.requestId;
+    if (APPROVAL_ACTIONS[action] === true && !requestId) {
+      showToast('This approval card is out of date. Reopen the session to review the current request.', 'warn');
+      return;
+    }
 
     switch (action) {
       case 'approve-plan':
-        post({ type: 'approvePlan', sessionId: sessionId });
+        post({ type: 'approvePlan', sessionId: sessionId, requestId: requestId });
         break;
       case 'reject-plan':
-        post({ type: 'rejectPlan', sessionId: sessionId });
+        post({ type: 'rejectPlan', sessionId: sessionId, requestId: requestId });
         break;
       case 'approve-change-selected': {
         var changeIds = body
@@ -1618,11 +1969,11 @@
           showToast('Select at least one file to apply.', 'warn');
           return;
         }
-        post({ type: 'approveChangeSet', sessionId: sessionId, ids: changeIds });
+        post({ type: 'approveChangeSet', sessionId: sessionId, ids: changeIds, requestId: requestId });
         break;
       }
       case 'reject-change':
-        post({ type: 'rejectChangeSet', sessionId: sessionId });
+        post({ type: 'rejectChangeSet', sessionId: sessionId, requestId: requestId });
         break;
       case 'approve-repair-selected': {
         var repairIds = body
@@ -1637,11 +1988,17 @@
           showToast('Select at least one repair change to apply.', 'warn');
           return;
         }
-        post({ type: 'approveRepair', sessionId: sessionId, ids: repairIds });
+        post({ type: 'approveRepair', sessionId: sessionId, ids: repairIds, requestId: requestId });
         break;
       }
       case 'reject-repair':
-        post({ type: 'rejectRepair', sessionId: sessionId });
+        post({ type: 'rejectRepair', sessionId: sessionId, requestId: requestId });
+        break;
+      case 'approve-validation':
+        post({ type: 'approveValidation', sessionId: sessionId, requestId: requestId });
+        break;
+      case 'reject-validation':
+        post({ type: 'rejectValidation', sessionId: sessionId, requestId: requestId });
         break;
       case 'run-validation': {
         var select = body ? body.querySelector('select[data-session-validation]') : null;
@@ -1650,7 +2007,7 @@
           showToast('Choose an allowlisted validation command first.', 'warn');
           return;
         }
-        post({ type: 'validateSession', sessionId: sessionId, command: command });
+        post({ type: 'requestValidation', sessionId: sessionId, command: command });
         break;
       }
       case 'plan-repair':
@@ -1828,6 +2185,12 @@
         break;
       case 'summarize-workspace':
         post({ type: 'summarizeWorkspace' });
+        break;
+      case 'inspect-repository':
+        post({ type: 'inspectRepository' });
+        break;
+      case 'explain-context':
+        post({ type: 'explainRepositoryContext', query: els.prompt.value.trim() });
         break;
       case 'refresh-sessions':
         post({ type: 'refreshSessions' });

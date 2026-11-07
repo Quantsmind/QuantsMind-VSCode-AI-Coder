@@ -1,4 +1,4 @@
-import { hashContent, type ChangePlan } from '../changes/model';
+import { hashContent, type ChangePlan, type FileChange } from '../changes/model';
 import { buildPlanMessages, parseChangePlan } from '../changes/plan';
 import { evaluateCommand } from '../commands/policy';
 import type { CommandResult } from '../commands/runner';
@@ -10,6 +10,7 @@ import {
   MAX_SESSION_EVENTS,
   MAX_VALIDATION_OUTPUT_CHARS,
   SESSION_SCHEMA_VERSION,
+  CHECKPOINT_SCHEMA_VERSION,
   clampText,
   createRequirement,
   isTerminalAgentState,
@@ -21,8 +22,10 @@ import {
   type AppliedFile,
   type ApplyOutcomeLike,
   type ApprovalDecision,
+  type ApprovalKind,
   type ApprovalRequest,
   type ChangeSet,
+  type ExecutionCheckpoint,
   type Diagnostic,
   type IApprovalService,
   type IFileChangeService,
@@ -37,13 +40,17 @@ import {
   type TaskExecution,
   type TaskStatus,
   type UnifiedDiff,
+  type ValidationOutcome,
   type ValidationRun,
 } from './models';
 import { buildDevelopmentPlanMessages, buildTaskRequest, parseDevelopmentPlan } from './planning';
 import { buildCompletionReport } from './report';
-import { findTask, refreshBlockedTasks, schedule, updateTask } from './scheduler';
-import { canPause, deriveStages, transitionSession } from './stateMachine';
+import { canTransitionTaskStatus, findTask, nextRunnableTasks, refreshBlockedTasks, schedule, updateTask } from './scheduler';
+import { canPause, deriveProgress, deriveStages, transitionSession } from './stateMachine';
+import { bindValidation, changeSetVersion, deriveValidationSuggestions, type ValidationBinding } from './validation';
 import type { ISessionRepository } from '../sessions/repository';
+import type { CheckpointRepository } from '../sessions/checkpointRepository';
+import { impactSummary, type ChangeImpact } from '../repository/impact';
 
 export interface OrchestratorLogger {
   info(message: string): void;
@@ -63,7 +70,14 @@ export interface OrchestratorDependencies {
   readonly runCommand: (command: string, signal: AbortSignal) => Promise<CommandResult>;
   readonly agentSettings: () => ResolvedAgentSettings;
   readonly commandSettings: () => ResolvedCommandSettings;
+  /** Maximum number of tasks that may run per execution; defaults to 1 and is clamped to 1..3. */
+  readonly maxConcurrentTasks?: number;
   readonly hashFile?: (path: string) => Promise<string | undefined>;
+  readonly checkpointRepository?: CheckpointRepository;
+  readonly analyzeImpact?: (
+    changes: readonly FileChange[],
+    validationCommands: readonly string[],
+  ) => Promise<ChangeImpact | undefined>;
   readonly repository?: ISessionRepository;
   readonly now?: () => string;
   readonly logger?: OrchestratorLogger;
@@ -79,12 +93,12 @@ export interface IAgentController
   pause(sessionId: string): Promise<AgentSessionView>;
   resume(sessionId: string, token: CancellationTokenLike): Promise<AgentSessionView>;
   cancel(sessionId: string): Promise<AgentSessionView>;
+  cancelTask(sessionId: string, taskId: string): Promise<AgentSessionView>;
   view(sessionId: string): AgentSessionView | undefined;
   list(): readonly AgentSessionView[];
   pendingApproval(sessionId: string): ApprovalRequest | undefined;
   restore(sessionId: string): Promise<AgentSessionView | undefined>;
-  loadStoredSessions(): Promise<readonly AgentSessionView[]>;
-  remove(sessionId: string): Promise<void>;
+  retryTask(sessionId: string, taskId: string, token: CancellationTokenLike): Promise<AgentSessionView>;
 }
 
 /** Raised for invalid controller calls, not for workflow failures. */
@@ -102,6 +116,22 @@ const ACTIVE_TASK_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   'validation-failed',
   'repairing',
 ]);
+
+const DEFAULT_MAX_CONCURRENT_TASKS = 1;
+const MAX_TASK_CONCURRENCY_LIMIT = 3;
+
+/**
+ * Resolves the per-execution task concurrency bound. The default keeps the
+ * historical sequential behavior; the engine accepts up to three concurrent
+ * tasks and rejects anything above that.
+ */
+function resolveMaxConcurrentTasks(value: number | undefined): number {
+  const parsed = value === undefined ? DEFAULT_MAX_CONCURRENT_TASKS : Math.floor(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_MAX_CONCURRENT_TASKS;
+  }
+  return Math.min(MAX_TASK_CONCURRENCY_LIMIT, Math.max(DEFAULT_MAX_CONCURRENT_TASKS, parsed));
+}
 
 const INTERRUPTED_WRITE_STATES: ReadonlySet<AgentState> = new Set<AgentState>([
   'applying',
@@ -138,8 +168,20 @@ function upsertExecution(
       },
     ];
   }
+  const existingExecution = executions[index];
+  if (
+    patch.status !== undefined &&
+    existingExecution !== undefined &&
+    !canTransitionTaskStatus(existingExecution.status, patch.status)
+  ) {
+    throw new Error(
+      `Invalid task execution transition: ${existingExecution.status} -> ${patch.status}.`,
+    );
+  }
   const next = [...executions];
-  next[index] = { ...next[index], ...patch };
+  if (next[index] !== undefined) {
+    next[index] = { ...next[index], ...patch };
+  }
   return next;
 }
 
@@ -165,10 +207,320 @@ export class AgentOrchestrator implements IAgentController {
   private readonly sessions = new Map<string, AgentSession>();
   private readonly busy = new Set<string>();
   private readonly cancelled = new Set<string>();
+  private readonly cancelledTaskIds = new Map<string, Set<string>>();
+  private readonly checkpointSequences = new Map<string, number>();
+  private readonly restoredExecutions = new Set<string>();
   private readonly aborters = new Map<string, AbortController>();
+  private readonly maxConcurrentTasks: number;
+  private readonly applyingChangeSets = new Set<string>();
   private sequence = 0;
 
-  constructor(private readonly deps: OrchestratorDependencies) {}
+  constructor(private readonly deps: OrchestratorDependencies) {
+    this.maxConcurrentTasks = resolveMaxConcurrentTasks(deps.maxConcurrentTasks);
+  }
+
+  async detectInterruptedExecutions(): Promise<readonly string[]> {
+    return this.list()
+      .filter((view) => {
+        const session = this.sessions.get(view.id);
+        return (
+          session !== undefined &&
+          !isTerminalAgentState(session.state) &&
+          session.state !== 'idle' &&
+          session.state !== 'completed'
+        );
+      })
+      .map((view) => view.id);
+  }
+
+  async restoreFromCheckpoint(
+    sessionId: string,
+    checkpointId?: string,
+  ): Promise<{
+    readonly outcome:
+      | 'restored'
+      | 'no-interrupted-execution'
+      | 'no-valid-checkpoint'
+      | 'checkpoint-rejected'
+      | 'restoration-failed';
+    readonly message: string;
+    readonly checkpointId?: string;
+  }> {
+    try {
+      this.requireTrusted('restore an execution checkpoint');
+    } catch (error) {
+      return {
+        outcome: 'restoration-failed',
+        message: messageOf(error),
+      };
+    }
+    let session: AgentSession;
+    try {
+      session = this.require(sessionId);
+    } catch (error) {
+      return {
+        outcome: 'restoration-failed',
+        message: messageOf(error),
+      };
+    }
+    if (isTerminalAgentState(session.state)) {
+      return {
+        outcome: 'no-interrupted-execution',
+        message: 'The execution is not interrupted.',
+      };
+    }
+    const repository = this.deps.checkpointRepository;
+    if (repository === undefined) {
+      return {
+        outcome: 'no-valid-checkpoint',
+        message: 'No checkpoint repository is configured.',
+      };
+    }
+    let checkpoint: ExecutionCheckpoint | undefined;
+    try {
+      checkpoint =
+        checkpointId === undefined
+          ? await repository.latest(session.id)
+          : await repository.get(checkpointId);
+    } catch (error) {
+      return {
+        outcome: 'restoration-failed',
+        message: messageOf(error),
+      };
+    }
+    if (checkpoint === undefined) {
+      return {
+        outcome: 'no-valid-checkpoint',
+        message: 'No valid checkpoint was found for this execution.',
+      };
+    }
+    const checkpointVersion = checkpoint.recoveryVersion ?? 0;
+    const sessionVersion = session.recoveryVersion ?? 0;
+    if (checkpointVersion < sessionVersion) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint is older than the current session state.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    const plan = session.plan;
+    const planVersion = plan === undefined ? '' : hashContent(JSON.stringify(plan));
+    const taskIds = new Set(session.tasks.map((task) => task.id));
+    if (checkpoint.sessionId !== session.id || checkpoint.executionId !== session.id) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint identity does not match the session.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    if (plan !== undefined && checkpoint.planId !== plan.id) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint plan identity does not match.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    if (
+      plan !== undefined &&
+      checkpoint.planVersion.length > 0 &&
+      checkpoint.planVersion !== planVersion
+    ) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint plan version does not match.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    if (checkpoint.taskResults.some((result) => !taskIds.has(result.taskId))) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint contains unknown task IDs.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    if (checkpoint.completedTaskIds.some((id) => !taskIds.has(id))) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint contains unknown completed task IDs.',
+        checkpointId: checkpoint.id,
+      };
+    }
+    const appliedIds = new Set(
+      session.changeSets.flatMap((changeSet) => changeSet.appliedChangeIds ?? []),
+    );
+    if (checkpoint.appliedChangeIds.some((id) => !appliedIds.has(id))) {
+      return {
+        outcome: 'checkpoint-rejected',
+        message: 'Checkpoint contains applied operation IDs not present in the session.',
+        checkpointId: checkpoint.id,
+      };
+    }
+
+    try {
+      const resultById = new Map(checkpoint.taskResults.map((result) => [result.taskId, result]));
+      const executionById = new Map(
+        (checkpoint.executionResults ?? []).map((result) => [result.taskId, result]),
+      );
+      const restoredTasks = session.tasks.map((task) => {
+        const result = resultById.get(task.id);
+        if (result === undefined) {
+          return task;
+        }
+        return {
+          ...task,
+          status: result.status,
+          attempts: result.attempts ?? task.attempts,
+          error: result.error,
+        };
+      });
+      const restoredExecutions = session.executions.map((execution) => {
+        const result = executionById.get(execution.taskId);
+        if (result === undefined) {
+          return execution;
+        }
+        return {
+          ...execution,
+          status: result.status,
+          attempts: result.attempts,
+          startedAt: result.startedAt,
+          finishedAt: result.finishedAt,
+          changeSetId: result.changeSetId,
+          validationRunId: result.validationRunId,
+          historyTaskId: result.historyTaskId,
+          repairProposalId: result.repairProposalId,
+          appliedFiles: result.appliedFiles,
+          error: result.error,
+        };
+      });
+      let current: AgentSession = {
+        ...session,
+        tasks: restoredTasks,
+        executions: restoredExecutions,
+        state: 'paused',
+        pausedFrom: session.state,
+        updatedAt: this.timestamp(),
+      };
+      const knownCheckpointApprovals = new Set(checkpoint.pendingApprovalIds);
+      if (session.taskApprovals !== undefined) {
+        const kept = session.taskApprovals.filter((candidate) =>
+          knownCheckpointApprovals.has(candidate.id),
+        );
+        current = { ...current, taskApprovals: kept };
+      }
+      if (
+        session.pendingApproval !== undefined &&
+        !knownCheckpointApprovals.has(session.pendingApproval.id)
+      ) {
+        current = { ...current, pendingApproval: undefined };
+      }
+      current = this.withEvent(
+        current,
+        'state',
+        `Restored checkpoint ${checkpoint.id} (sequence ${checkpoint.sequence}).`,
+      );
+      await this.record(current);
+      await this.checkpoint(current);
+      return {
+        outcome: 'restored',
+        message: 'Execution state restored from checkpoint.',
+        checkpointId: checkpoint.id,
+      };
+    } catch (error) {
+      return {
+        outcome: 'restoration-failed',
+        message: messageOf(error),
+        checkpointId: checkpoint.id,
+      };
+    }
+  }
+  private async checkpoint(
+    session: AgentSession,
+    currentTaskId?: string,
+  ): Promise<void> {
+    const taskApprovals = session.taskApprovals ?? [];
+    const repository = this.deps.checkpointRepository;
+    if (repository === undefined) {
+      return;
+    }
+    const latest = this.sessions.get(session.id) ?? session;
+    const executionId = session.id;
+    const sequence = (this.checkpointSequences.get(executionId) ?? 0) + 1;
+    this.checkpointSequences.set(executionId, sequence);
+    const plan = session.plan;
+    const tasks = session.tasks;
+    const activeTaskId =
+      currentTaskId ??
+      tasks.find((task) =>
+        ['running', 'awaiting-approval', 'applied', 'validation-failed', 'repairing'].includes(
+          task.status,
+        ),
+      )?.id;
+    const checkpoint: ExecutionCheckpoint = {
+      id: `${executionId}-checkpoint-${sequence}`,
+      sessionId: session.id,
+      executionId,
+      sequence,
+      planId: plan?.id ?? '',
+      planVersion:
+        plan === undefined ? '' : hashContent(JSON.stringify(plan)),
+      currentTaskId: activeTaskId,
+      completedTaskIds: tasks
+        .filter((task) => task.status === 'completed')
+        .map((task) => task.id),
+      pendingTaskIds: tasks
+        .filter((task) => task.status === 'pending')
+        .map((task) => task.id),
+      failedTaskIds: tasks
+        .filter((task) => task.status === 'failed')
+        .map((task) => task.id),
+      blockedTaskIds: tasks
+        .filter((task) => task.status === 'blocked')
+        .map((task) => task.id),
+      taskResults: tasks.map((task) => ({
+        taskId: task.id,
+        status: task.status,
+        attempts: task.attempts,
+        summary: task.title,
+        error: task.error,
+      })),
+      executionResults: session.executions.map((execution) => ({
+        taskId: execution.taskId,
+        status: execution.status,
+        attempts: execution.attempts,
+        startedAt: execution.startedAt,
+        finishedAt: execution.finishedAt,
+        changeSetId: execution.changeSetId,
+        validationRunId: execution.validationRunId,
+        historyTaskId: execution.historyTaskId,
+        repairProposalId: execution.repairProposalId,
+        appliedFiles: execution.appliedFiles,
+        error: execution.error,
+      })),
+      pendingApprovalIds:
+        taskApprovals.length > 0
+          ? taskApprovals.map((candidate) => candidate.id)
+          : session.pendingApproval === undefined
+            ? []
+            : [session.pendingApproval.id],
+      changeSetIds: session.changeSets.map((changeSet) => changeSet.id),
+      appliedChangeIds: [
+        ...new Set(
+          session.changeSets.flatMap((changeSet) => changeSet.appliedChangeIds ?? []),
+        ),
+      ],
+      validationRunIds: session.validationRuns.map((run) => run.id),
+      repositoryStateRef: session.workspaceRoot,
+      recoveryVersion: latest.recoveryVersion ?? 0,
+      createdAt: this.timestamp(),
+      status: 'valid',
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+    };
+    try {
+      await repository.save(checkpoint);
+    } catch (error) {
+      this.deps.logger?.warn(`checkpoint persistence failed: ${messageOf(error)}`);
+    }
+  }
 
   private timestamp(): string {
     return this.deps.now?.() ?? new Date().toISOString();
@@ -194,10 +546,154 @@ export class AgentOrchestrator implements IAgentController {
     }
   }
 
+  /**
+   * Task ids that currently hold an execution slot. A task holds a slot from the
+   * moment it starts running until it reaches a terminal task status; approval,
+   * apply, validation and repair states keep the task in flight.
+   */
+  private inFlightTaskIds(session: AgentSession): readonly string[] {
+    return session.tasks
+      .filter((task) => ACTIVE_TASK_STATUSES.has(task.status))
+      .map((task) => task.id);
+  }
+
+  /** Whether a task has been individually cancelled and must not proceed further. */
+  private taskCancelled(sessionId: string, taskId: string): boolean {
+    return this.cancelledTaskIds.get(sessionId)?.has(taskId) ?? false;
+  }
+
   private requireReviewed(session: AgentSession): void {
     if (session.needsReview) {
       throw new AgentSessionError('Restore and revalidate this session before continuing.');
     }
+  }
+
+  /**
+   * Every decision names the request the user actually saw. A message that
+   * names no request is refused rather than applied to whatever is pending now,
+   * and a request that is already decided can never be decided twice. A
+   * refused message leaves the pending request and the state machine untouched.
+   */
+  private requireRequest(
+    session: AgentSession,
+    kind: ApprovalKind,
+    requestId: string | undefined,
+    taskId?: string,
+  ): ApprovalRequest {
+    const taskScoped = (session.taskApprovals ?? []).filter(
+      (candidate) => candidate.kind === kind && (taskId === undefined || candidate.taskId === taskId),
+    );
+    const pool: ApprovalRequest[] = taskScoped.length > 0
+      ? taskScoped
+      : [session.pendingApproval].filter(
+          (candidate): candidate is ApprovalRequest =>
+            candidate !== undefined && candidate.kind === kind,
+        );
+    if (pool.length === 0) {
+      throw new AgentSessionError(`There is no pending ${kind} approval.`);
+    }
+    if (typeof requestId !== 'string' || requestId.trim().length === 0) {
+      throw new AgentSessionError(
+        `The ${kind} decision must name the pending request. Reopen the session and review the current request.`,
+      );
+    }
+    const request = pool.find((candidate) => candidate.id === requestId);
+    if (request === undefined) {
+      throw new AgentSessionError(
+        'That approval refers to a superseded request. Review the current request before continuing.',
+      );
+    }
+    if (session.approvals.some((decision) => decision.requestId === request.id)) {
+      throw new AgentSessionError('This approval request was already decided.');
+    }
+    return request;
+  }
+
+  /** What a validation result for this task would speak for, or nothing. */
+  private bindingFor(session: AgentSession, taskId: string): ValidationBinding | undefined {
+    const execution = session.executions.find((candidate) => candidate.taskId === taskId);
+    return bindValidation(
+      session.changeSets,
+      session.repairProposals,
+      execution?.changeSetId,
+      execution?.repairProposalId,
+    );
+  }
+
+  /**
+   * Finds change sets that would write the same file paths as another change set.
+   * Overlapping targets between distinct change sets are reported as conflicts.
+   */
+  private detectChangeSetConflicts(
+    sessionId: string,
+    changeSetId: string,
+  ): { taskId: string; changeSetId: string; path: string; reason: string }[] {
+    const session = this.require(sessionId);
+    const targetChangeSet = session.changeSets.find((candidate) => candidate.id === changeSetId);
+    const targets = new Set<string>((targetChangeSet?.plan.changes ?? []).map((change) => change.path));
+    const conflicts: { taskId: string; changeSetId: string; path: string; reason: string }[] = [];
+    for (const other of session.changeSets) {
+      if (other.id === changeSetId) {
+        continue;
+      }
+      const reserved = other.status === 'approved' || other.status === 'applied' || other.status === 'partial';
+      if (!reserved) {
+        continue;
+      }
+      for (const change of other.plan.changes) {
+        if (targets.has(change.path)) {
+          conflicts.push({ taskId: other.taskId, changeSetId: other.id, path: change.path, reason: 'overlapping-file-target' });
+        }
+      }
+    }
+    return conflicts;
+  }
+
+  /** Drops the task-scoped approval owned by a task that reached a terminal state. */
+  private removeTaskApproval(sessionId: string, taskId: string, session?: AgentSession): AgentSession {
+    const source = session ?? this.require(sessionId);
+    const remaining = (source.taskApprovals ?? []).filter((candidate) => candidate.taskId !== taskId);
+    if (remaining.length === (source.taskApprovals ?? []).length) {
+      return source;
+    }
+    return { ...source, taskApprovals: remaining };
+  }
+
+  /**
+   * Keeps the legacy `pendingApproval` alias pointing at a still-pending task
+   * approval after one is consumed; clears it when nothing remains.
+   */
+  private withConsumedApproval(session: AgentSession): AgentSession {
+    // After consuming an approval, always clear pendingApproval so the next
+    // approval must be explicitly requested via requestValidation or approveChanges.
+    // This prevents stale pending approvals from blocking subsequent validation.
+    return { ...session, pendingApproval: undefined };
+  }
+
+  /** Records a check that produced no command evidence, so the report stays honest. */
+  private withoutCommand(
+    session: AgentSession,
+    taskId: string,
+    outcome: ValidationOutcome,
+    detail: string,
+    command = '',
+  ): AgentSession {
+    const at = this.timestamp();
+    const execution = session.executions.find((candidate) => candidate.taskId === taskId);
+    const binding = this.bindingFor(session, taskId);
+    const run: ValidationRun = {
+      id: this.nextId('validation'),
+      taskId,
+      command,
+      startedAt: at,
+      finishedAt: at,
+      outcome,
+      changeSetId: execution?.changeSetId,
+      changeSetVersion: binding?.changeSetVersion,
+      repairProposalId: execution?.repairProposalId,
+      detail: clampText(detail, 500),
+    };
+    return { ...session, validationRuns: [...session.validationRuns, run] };
   }
 
   private withEvent(
@@ -269,6 +765,7 @@ export class AgentOrchestrator implements IAgentController {
       ...session,
       events: [...session.events],
       stages: deriveStages(session),
+      progress: deriveProgress(session),
     };
   }
 
@@ -279,6 +776,7 @@ export class AgentOrchestrator implements IAgentController {
   private async record(input: AgentSession): Promise<AgentSessionView> {
     const session: AgentSession = {
       ...input,
+      recoveryVersion: (input.recoveryVersion ?? 0) + 1,
       events: input.events.slice(-MAX_SESSION_EVENTS),
     };
     this.sessions.set(session.id, session);
@@ -395,6 +893,7 @@ export class AgentOrchestrator implements IAgentController {
       changeSets: [],
       approvals: [],
       validationRuns: [],
+      validationSuggestions: [],
       diagnostics: [],
       repairProposals: [],
       events: [],
@@ -427,6 +926,14 @@ export class AgentOrchestrator implements IAgentController {
 
       let current = this.require(id);
       current = this.withEvent(current, 'note', `Inspected ${context.rootName}.`);
+      current = {
+        ...current,
+        validationSuggestions: deriveValidationSuggestions(
+          context.scripts,
+          this.deps.commandSettings().allowlist,
+          context.packageManager,
+        ),
+      };
       await this.record(current);
 
       const retrieval = await this.deps.retrieve(current.requirement.text, token);
@@ -505,7 +1012,13 @@ export class AgentOrchestrator implements IAgentController {
         sessionId: id,
         kind: 'plan',
         title: `Plan approval: ${clampText(parsed.plan.summary, 160)}`,
-        detail: [parsed.plan.approach, ...parsed.plan.warnings].filter((line) => line.length > 0).join(' '),
+        detail: [
+          parsed.plan.approach,
+          ...parsed.plan.risks.map((risk) => `Risk: ${risk}`),
+          ...parsed.plan.warnings,
+        ]
+          .filter((line) => line.length > 0)
+          .join(' '),
         ids: parsed.plan.tasks.map((task) => task.id),
         subjectId: parsed.plan.id,
         createdAt: this.timestamp(),
@@ -520,7 +1033,11 @@ export class AgentOrchestrator implements IAgentController {
     });
   }
 
-  async approvePlan(sessionId: string, token: CancellationTokenLike): Promise<AgentSessionView> {
+  async approvePlan(
+    sessionId: string,
+    token: CancellationTokenLike,
+    requestId: string,
+  ): Promise<AgentSessionView> {
     this.requireTrusted('approve an agent plan');
     this.requireIdle(sessionId, 'approve the plan');
     const session = this.require(sessionId);
@@ -528,10 +1045,7 @@ export class AgentOrchestrator implements IAgentController {
     if (session.state !== 'awaiting-plan-approval') {
       throw new AgentSessionError('The session is not waiting for plan approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'plan') {
-      throw new AgentSessionError('There is no pending plan approval.');
-    }
+    const request = this.requireRequest(session, 'plan', requestId);
 
     return this.runBusy(sessionId, async () => {
       let current = this.require(sessionId);
@@ -544,6 +1058,8 @@ export class AgentOrchestrator implements IAgentController {
       });
       await this.record(current);
 
+      await this.checkpoint(current);
+
       if (current.plan === undefined || current.plan.tasks.length === 0) {
         return this.completeSession(sessionId);
       }
@@ -551,19 +1067,84 @@ export class AgentOrchestrator implements IAgentController {
     });
   }
 
-  async rejectPlan(sessionId: string): Promise<AgentSessionView> {
+  async rejectPlan(sessionId: string, requestId: string): Promise<AgentSessionView> {
     this.requireIdle(sessionId, 'reject the plan');
     const session = this.require(sessionId);
     if (session.state !== 'awaiting-plan-approval') {
       throw new AgentSessionError('The session is not waiting for plan approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'plan') {
-      throw new AgentSessionError('There is no pending plan approval.');
-    }
+    const request = this.requireRequest(session, 'plan', requestId);
     let current = this.withDecision(session, request, 'rejected', []);
     current = { ...current, pendingApproval: undefined };
     return this.finishRejected(current, 'The plan was rejected by the user.');
+  }
+
+  async retryTask(
+    sessionId: string,
+    taskId: string,
+    token: CancellationTokenLike,
+  ): Promise<AgentSessionView> {
+    this.requireTrusted('retry a task');
+    this.requireIdle(sessionId, 'retry a task');
+    const session = this.require(sessionId);
+    const task = findTask(session.tasks, taskId);
+    if (task === undefined) {
+      throw new AgentSessionError(`Task "${taskId}" is missing from the session.`);
+    }
+    if (task.status !== 'failed') {
+      throw new AgentSessionError(`Task "${taskId}" is not eligible for retry.`);
+    }
+    if (task.attempts >= 3) {
+      throw new AgentSessionError(`Task "${taskId}" has reached the retry limit.`);
+    }
+    if (!task.dependsOn.every((dependency) =>
+      session.tasks.some((other) => other.id === dependency && other.status === 'completed'),
+    )) {
+      throw new AgentSessionError(`Task "${taskId}" has unresolved dependencies.`);
+    }
+    const cancelled = this.cancelled.has(sessionId);
+    if (cancelled) {
+      throw new AgentSessionError('The session is cancelled.');
+    }
+
+    return this.runBusy(sessionId, async () => {
+      let current = this.require(sessionId);
+      current = this.setTasks(
+        current,
+        updateTask(current.tasks, taskId, {
+          status: 'pending',
+          error: undefined,
+        }),
+      );
+      current = this.withEvent(
+        current,
+        'task',
+        `Retrying task "${task.title}" (attempt ${task.attempts + 1}).`,
+        taskId,
+      );
+      await this.record(current);
+      await this.checkpoint(current, taskId);
+      return this.scheduleNext(sessionId, token);
+    });
+  }
+  /**
+   * v0.9.0-A1: starts the next eligible task while execution capacity remains.
+   * The task that called this already holds its execution slot (task status is an
+   * in-flight status), so the scheduler only offers tasks while a slot is free and
+   * independent tasks are started one after another without waiting for the caller
+   * to finish.
+   */
+  private async dispatchNextEligible(
+    sessionId: string,
+    token: CancellationTokenLike,
+  ): Promise<void> {
+    const current = this.require(sessionId);
+    const runnable = nextRunnableTasks(current.tasks, this.maxConcurrentTasks);
+    const next = runnable[0];
+    if (next === undefined) {
+      return;
+    }
+    await this.executeTask(sessionId, next.id, token);
   }
 
   private async scheduleNext(
@@ -581,6 +1162,7 @@ export class AgentOrchestrator implements IAgentController {
     if (statusChanged) {
       current = this.setTasks(current, refreshed);
       await this.record(current);
+      await this.checkpoint(current);
     }
 
     const decision = schedule(current.tasks);
@@ -588,12 +1170,22 @@ export class AgentOrchestrator implements IAgentController {
       case 'done':
         return this.completeSession(sessionId);
       case 'runnable':
-        if (decision.runnable === undefined) {
-          return this.failSession(sessionId, 'The scheduler did not return a runnable task.');
+      case 'waiting': {
+        // Bounded dispatch (v0.9.0-A): start tasks only while an execution slot is
+        // free, and never more than `maxConcurrentTasks` tasks per execution. The
+        // scheduler yields runnable tasks in deterministic order, so a slot frees
+        // only after the task that held it reached a terminal task status.
+        const runnable = nextRunnableTasks(current.tasks, this.maxConcurrentTasks);
+        const next = runnable[0];
+        if (next === undefined) {
+          if (decision.reason === 'runnable') {
+            return this.failSession(sessionId, 'The scheduler did not return a runnable task.');
+          }
+          // An active task still holds the session; wait for an execution slot.
+          return this.viewOf(sessionId);
         }
-        return this.executeTask(sessionId, decision.runnable.id, token);
-      case 'waiting':
-        return this.viewOf(sessionId);
+        return this.executeTask(sessionId, next.id, token);
+      }
       case 'deadlock':
       case 'stopped':
         return this.failSession(sessionId, decision.detail ?? 'No runnable task remains.');
@@ -624,6 +1216,14 @@ export class AgentOrchestrator implements IAgentController {
     if (task.status !== 'pending') {
       return this.failSession(sessionId, `Task "${taskId}" is not runnable.`);
     }
+    if (this.inFlightTaskIds(current).length >= this.maxConcurrentTasks) {
+      // Defense in depth: the scheduler must not start a task while every
+      // execution slot is taken.
+      return this.failSession(
+        sessionId,
+        `The task concurrency limit of ${this.maxConcurrentTasks} was reached.`,
+      );
+    }
 
     const attempt = task.attempts + 1;
     current = this.enterExecuting(current, `Implementing task "${task.title}".`);
@@ -647,6 +1247,17 @@ export class AgentOrchestrator implements IAgentController {
     };
     await this.record(current);
 
+    await this.checkpoint(current, taskId);
+
+    // v0.9.0-A1: with a free execution slot, start the next eligible task so an
+    // execution dispatches independent tasks concurrently instead of stopping at
+    // the first runnable task. The current task holds its slot while this runs.
+    await this.dispatchNextEligible(sessionId, token);
+
+    if (this.taskCancelled(sessionId, taskId)) {
+      return this.viewOf(sessionId);
+    }
+
     const retrieval = await this.deps.retrieve(buildTaskRequest(task), token);
     const stopped = await this.stopIfCancelled(
       sessionId,
@@ -655,6 +1266,9 @@ export class AgentOrchestrator implements IAgentController {
     );
     if (stopped !== undefined) {
       return stopped;
+    }
+    if (this.taskCancelled(sessionId, taskId)) {
+      return this.viewOf(sessionId);
     }
 
     current = this.require(sessionId);
@@ -685,6 +1299,9 @@ export class AgentOrchestrator implements IAgentController {
     if (stoppedAfterPlan !== undefined) {
       return stoppedAfterPlan;
     }
+    if (this.taskCancelled(sessionId, taskId)) {
+      return this.viewOf(sessionId);
+    }
 
     current = this.require(sessionId);
     const parsed = parseChangePlan(result.text);
@@ -692,6 +1309,7 @@ export class AgentOrchestrator implements IAgentController {
       return this.failSession(
         sessionId,
         parsed.errors.join(' ') || `Task "${task.title}" did not return a change plan.`,
+        taskId,
       );
     }
 
@@ -711,6 +1329,13 @@ export class AgentOrchestrator implements IAgentController {
           finishedAt: completedAt,
         }),
       };
+      next = this.removeTaskApproval(sessionId, taskId, next);
+      next = this.withoutCommand(
+        next,
+        taskId,
+        'skipped',
+        `Task "${task.title}" produced no file changes, so there was nothing to validate.`,
+      );
       next = this.withEvent(
         next,
         'task',
@@ -718,6 +1343,7 @@ export class AgentOrchestrator implements IAgentController {
         taskId,
       );
       await this.record(next);
+      await this.checkpoint(next, taskId);
       return this.scheduleNext(sessionId, token);
     }
 
@@ -730,7 +1356,32 @@ export class AgentOrchestrator implements IAgentController {
     if (prepared.errors.length > 0) {
       return this.failSession(sessionId, prepared.errors.join(' '));
     }
+    if (this.taskCancelled(sessionId, taskId)) {
+      return this.viewOf(sessionId);
+    }
 
+    // Impact evidence is informational only. A failure here must never block
+    // preparing or approving the change set.
+    let impact: ChangeImpact | undefined;
+    if (this.deps.analyzeImpact !== undefined) {
+      try {
+        impact = await this.deps.analyzeImpact(prepared.plan.changes, []);
+      } catch (error) {
+        this.deps.logger?.warn(`change impact analysis failed: ${messageOf(error)}`);
+      }
+    }
+
+    const changeSetVersionForPlan = changeSetVersion({
+      id: '',
+      taskId: '',
+      summary: '',
+      plan: prepared.plan,
+      diffs: [],
+      warnings: [],
+      createdAt: '',
+      version: '',
+      status: 'pending',
+    });
     const changeSet: ChangeSet = {
       id: `${sessionId}-changeset-${current.changeSets.length + 1}`,
       taskId,
@@ -738,7 +1389,11 @@ export class AgentOrchestrator implements IAgentController {
       plan: prepared.plan,
       diffs: this.diffsOf(prepared),
       warnings: [...prepared.warnings],
+      version: changeSetVersionForPlan,
       createdAt: this.timestamp(),
+      status: 'pending',
+      appliedChangeIds: undefined,
+      ...(impact === undefined ? {} : { impact }),
     };
     let next = this.require(sessionId);
     next = { ...next, changeSets: [...next.changeSets, changeSet] };
@@ -755,17 +1410,34 @@ export class AgentOrchestrator implements IAgentController {
       sessionId,
       kind: 'change-set',
       title: `Change approval for "${task.title}"`,
-      detail: prepared.plan.summary,
+      detail: [
+        `${prepared.plan.summary} (version ${changeSetVersionForPlan.slice(0, 16)})`,
+        impact === undefined ? '' : `Impact: ${impactSummary(impact)}`,
+        impact === undefined || impact.indirectFiles.length === 0
+          ? ''
+          : `Affected: ${impact.indirectFiles
+              .slice(0, 5)
+              .map((file) => file.path)
+              .join(', ')}${impact.indirectFiles.length > 5 ? ', …' : ''}`,
+      ]
+        .filter((line) => line.length > 0)
+        .join('\n'),
       ids: prepared.plan.changes.map((change) => change.id),
       subjectId: changeSet.id,
+      changeSetVersion: changeSetVersionForPlan,
+      taskId,
       createdAt: this.timestamp(),
     };
-    next = { ...next, pendingApproval: request };
-    next = transitionSession(next, 'awaiting-change-approval', {
-      at: this.timestamp(),
-      eventId: this.nextId('event'),
-      message: `The change set for task "${task.title}" is awaiting approval.`,
-    });
+    next = { ...next, pendingApproval: request, taskApprovals: [...(next.taskApprovals ?? []), request] };
+    next =
+      next.state === 'awaiting-change-approval'
+        ? this.withEvent(next, 'task', `The change set for task "${task.title}" is awaiting approval.`, taskId)
+        : transitionSession(next, 'awaiting-change-approval', {
+            at: this.timestamp(),
+            eventId: this.nextId('event'),
+            message: `The change set for task "${task.title}" is awaiting approval.`,
+          });
+    await this.checkpoint(next, taskId);
     return this.record(next);
   }
 
@@ -773,6 +1445,7 @@ export class AgentOrchestrator implements IAgentController {
     sessionId: string,
     approvedIds: readonly string[],
     token: CancellationTokenLike,
+    requestId: string,
   ): Promise<AgentSessionView> {
     this.requireTrusted('apply file changes');
     this.requireIdle(sessionId, 'approve changes');
@@ -781,8 +1454,8 @@ export class AgentOrchestrator implements IAgentController {
     if (session.state !== 'awaiting-change-approval') {
       throw new AgentSessionError('The session is not waiting for change approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'change-set' || request.subjectId === undefined) {
+    const request = this.requireRequest(session, 'change-set', requestId);
+    if (request.subjectId === undefined) {
       throw new AgentSessionError('There is no pending change set approval.');
     }
 
@@ -792,23 +1465,169 @@ export class AgentOrchestrator implements IAgentController {
       if (changeSet === undefined) {
         return this.failSession(sessionId, 'The pending change set is missing from the session.');
       }
+      if (changeSet.status === 'failed' || changeSet.status === 'rejected') {
+        return this.failTask(
+          sessionId,
+          changeSet.taskId,
+          `Change set "${changeSet.id}" is already ${changeSet.status} and cannot be applied.`,
+        );
+      }
+      if (
+        request.changeSetVersion !== undefined &&
+        request.changeSetVersion !== changeSet.version
+      ) {
+        return this.failSession(
+          sessionId,
+          'The change set version no longer matches the approval. Re-review the change set before applying.',
+          changeSet.taskId,
+        );
+      }
+      if (request.taskId !== undefined && request.taskId !== changeSet.taskId) {
+        return this.failSession(
+          sessionId,
+          `The change set "${changeSet.id}" does not belong to task "${request.taskId}". Approvals are task-scoped.`,
+          changeSet.taskId,
+        );
+      }
+      const conflicts = this.detectChangeSetConflicts(sessionId, changeSet.id);
+      if (conflicts.length > 0) {
+        const detail = conflicts
+          .map((conflict) => `${conflict.taskId} ${conflict.changeSetId} ${conflict.path}: ${conflict.reason}`)
+          .join('; ');
+        return this.failTask(
+          sessionId,
+          changeSet.taskId,
+          `Change set "${changeSet.id}" was blocked by a file conflict with an existing change set: ${detail}.`,
+        );
+      }
+      if (changeSet.status === 'applied') {
+        return this.failSession(
+          sessionId,
+          `The change set "${changeSet.id}" has already been applied. Duplicate apply requests are not permitted.`,
+        );
+      }
+      // For partial ChangeSets, filter out change IDs that were already applied
+      // so we only approve the eligible remaining operations.
+      const previouslyAppliedIds = new Set(
+        (changeSet.appliedChangeIds ?? []).map((id) => id.toLowerCase()),
+      );
+      const filteredApprovedIds = [...new Set(approvedIds)].filter(
+        (id) => !previouslyAppliedIds.has(id.toLowerCase()),
+      );
+      if (filteredApprovedIds.length === 0 && approvedIds.length > 0) {
+        // All approved changes were already applied; this is a duplicate request.
+        return this.failSession(
+          sessionId,
+          `The change set "${changeSet.id}" has already been applied. No eligible remaining operations to approve.`,
+        );
+      }
+      // Derive the exact set of eligible remaining change IDs from persisted history.
+      const eligibleRemainingIds = new Set(
+        changeSet.plan.changes
+          .filter((change) => !previouslyAppliedIds.has(change.id.toLowerCase()))
+          .map((change) => change.id),
+      );
+      // Verify the approved set exactly matches the eligible remaining set.
+      // Reject if the approval contains already-applied IDs (should not happen due to filter,
+      // but defend against races), altered operations, or missing/extra IDs.
+      const approvedLower = filteredApprovedIds.map((id) => id.toLowerCase());
+      const eligibleLower = eligibleRemainingIds;
+      if (approvedLower.length !== eligibleLower.size) {
+        return this.failSession(
+          sessionId,
+          `The approval does not match the exact remaining operation set for change set "${changeSet.id}". ` +
+            `Approved ${approvedIds.length} change(s); eligible remaining ${eligibleRemainingIds.size} change(s). ` +
+            `Approval must contain exactly the remaining change IDs; no more, no less.`,
+        );
+      }
       const validIds = new Set(changeSet.plan.changes.map((change) => change.id));
-      const selected = [...new Set(approvedIds)].filter((id) => validIds.has(id));
+      // For partial ChangeSets, verify exact remaining operation set.
+      // For pending ChangeSets, use original membership validation.
+      let selected: string[];
+      if (changeSet.status === 'partial') {
+        // Verify the approved set exactly matches the eligible remaining set.
+        const approvedLower = filteredApprovedIds.map((id) => id.toLowerCase());
+        const eligibleLower = eligibleRemainingIds;
+        if (approvedLower.length !== eligibleLower.size) {
+          return this.failSession(
+            sessionId,
+            `The approval does not match the exact remaining operation set for change set "${changeSet.id}". ` +
+              `Approved ${approvedIds.length} change(s); eligible remaining ${eligibleRemainingIds.size} change(s). ` +
+              `Approval must contain exactly the remaining change IDs; no more, no less.`,
+          );
+        }
+        let allMatching = true;
+        for (const id of approvedLower) {
+          if (!eligibleLower.has(id)) {
+            allMatching = false;
+            break;
+          }
+        }
+        if (!allMatching) {
+          return this.failSession(
+            sessionId,
+            `The approval does not match the exact remaining operation set for change set "${changeSet.id}". ` +
+              `Approved ${approvedIds.length} change(s); eligible remaining ${eligibleRemainingIds.size} change(s). ` +
+              `Approval must contain exactly the remaining change IDs; no more, no less.`,
+          );
+        }
+        if (eligibleLower.size > 0) {
+          const unapproved = [...eligibleLower].filter((id) => !approvedLower.includes(id));
+          if (unapproved.length > 0) {
+            return this.failSession(
+              sessionId,
+              `The approval does not match the exact remaining operation set for change set "${changeSet.id}". ` +
+                `Approved ${approvedIds.length} change(s); eligible remaining ${eligibleRemainingIds.size} change(s). ` +
+                `The following remaining change ID(s) were not approved: ${unapproved.join(', ')}. ` +
+                `Approval must contain exactly the remaining change IDs; no more, no less.`,
+            );
+          }
+        }
+        selected = filteredApprovedIds;
+      } else {
+        // For pending ChangeSets, use original membership validation.
+        selected = [...new Set(approvedIds)].filter((id) => validIds.has(id));
+      }
+
+      if (selected.length === 0 && approvedIds.length > 0) {
+        throw new AgentSessionError(
+          'The approved files do not belong to the current change set. Review the current change set before applying.',
+        );
+      }
 
       if (selected.length === 0) {
         current = this.withDecision(current, request, 'rejected', []);
-        current = { ...current, pendingApproval: undefined };
+        current = this.removeTaskApproval(sessionId, changeSet.taskId, current);
+        current = this.withConsumedApproval(current);
+        current = {
+          ...current,
+          changeSets: current.changeSets.map((cs) =>
+            cs.id === changeSet.id ? { ...cs, status: 'rejected' } : cs,
+          ),
+        };
         current = this.setTasks(
           current,
           current.tasks.map((task) =>
             task.id === changeSet.taskId ? { ...task, status: 'skipped' as const } : task,
           ),
         );
+        const hasNonTerminalTasks = current.tasks.some((task) => !isTerminalTaskStatus(task.status));
+        if (hasNonTerminalTasks) {
+          await this.record(current);
+          return this.viewOf(sessionId);
+        }
         return this.finishRejected(current, 'The change set was rejected by the user.');
       }
 
       current = this.withDecision(current, request, 'approved', selected);
-      current = { ...current, pendingApproval: undefined };
+      current = {
+        ...current,
+        changeSets: current.changeSets.map((cs) =>
+          cs.id === changeSet.id ? { ...cs, status: 'approved' } : cs,
+        ),
+      };
+      current = this.removeTaskApproval(sessionId, changeSet.taskId, current);
+      current = this.withConsumedApproval(current);
       current = transitionSession(current, 'applying', {
         at: this.timestamp(),
         eventId: this.nextId('event'),
@@ -818,6 +1637,10 @@ export class AgentOrchestrator implements IAgentController {
 
       const historyTaskId = this.changeTaskId(sessionId, changeSet.taskId);
       const applyId = this.nextId('apply');
+      if (this.applyingChangeSets.has(sessionId)) {
+        return this.failTask(sessionId, changeSet.taskId, 'A change set is already being applied for this session.');
+      }
+      this.applyingChangeSets.add(sessionId);
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -829,7 +1652,9 @@ export class AgentOrchestrator implements IAgentController {
         );
         outcome = report.outcome;
       } catch (error) {
-        return this.failSession(sessionId, messageOf(error));
+        return this.failSession(sessionId, messageOf(error), changeSet.taskId);
+      } finally {
+        this.applyingChangeSets.delete(sessionId);
       }
       if (this.cancelled.has(sessionId)) {
         return this.viewOf(sessionId);
@@ -855,6 +1680,19 @@ export class AgentOrchestrator implements IAgentController {
         changeSet.taskId,
       );
       await this.record(next);
+      next = {
+        ...next,
+        changeSets: next.changeSets.map((cs) =>
+          cs.id === changeSet.id
+            ? {
+                ...cs,
+                status: outcome.applied.length > 0 ? ('applied' as const) : ('failed' as const),
+              }
+            : cs,
+        ),
+      };
+      await this.record(next);
+      await this.checkpoint(next, changeSet.taskId);
 
       if (outcome.applied.length === 0) {
         return this.failSession(
@@ -897,6 +1735,12 @@ export class AgentOrchestrator implements IAgentController {
           finishedAt: completedAt,
         }),
       };
+      done = this.withoutCommand(
+        done,
+        changeSet.taskId,
+        'skipped',
+        `Task "${task?.title ?? changeSet.taskId}" has no allowlisted validation command, so change set "${changeSet.id}" has no command evidence.`,
+      );
       done = this.withEvent(
         done,
         'note',
@@ -904,45 +1748,74 @@ export class AgentOrchestrator implements IAgentController {
         changeSet.taskId,
       );
       await this.record(done);
+      // Re-evaluate the session state now that this task's change set is decided.
+      // Keep the session approvable so other tasks awaiting approval are not
+      // stranded behind a completed task. Never mark the session complete while
+      // tasks remain pending or active.
+      const otherActive = done.tasks.some(
+        (t) => t.id !== changeSet.taskId && !isTerminalTaskStatus(t.status),
+      );
+      done = transitionSession(done, 'executing', {
+        at: this.timestamp(),
+        eventId: this.nextId('event'),
+        message: `Change set "${changeSet.id}" applied.`,
+      });
+      if (otherActive) {
+        done = transitionSession(done, 'awaiting-change-approval', {
+          at: this.timestamp(),
+          eventId: this.nextId('event'),
+          message: `Other tasks still await change approval.`,
+        });
+      }
+      await this.record(done);
       return this.scheduleNext(sessionId, token);
     });
   }
 
-  async rejectChanges(sessionId: string): Promise<AgentSessionView> {
+  async rejectChanges(sessionId: string, requestId: string): Promise<AgentSessionView> {
     this.requireIdle(sessionId, 'reject changes');
     const session = this.require(sessionId);
     if (session.state !== 'awaiting-change-approval') {
       throw new AgentSessionError('The session is not waiting for change approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'change-set') {
-      throw new AgentSessionError('There is no pending change set approval.');
-    }
+    const request = this.requireRequest(session, 'change-set', requestId);
     const changeSet = session.changeSets.find((candidate) => candidate.id === request.subjectId);
     let current = this.withDecision(session, request, 'rejected', []);
-    current = { ...current, pendingApproval: undefined };
+    if (changeSet?.taskId !== undefined) {
+      current = this.removeTaskApproval(sessionId, changeSet.taskId, current);
+    }
+    current = this.withConsumedApproval(current);
     current = this.setTasks(
       current,
       current.tasks.map((task) =>
-        task.id === changeSet?.taskId || task.status === 'awaiting-approval'
+        task.id === changeSet?.taskId && !isTerminalTaskStatus(task.status)
           ? { ...task, status: 'skipped' as const }
           : task,
       ),
     );
+    const hasNonTerminalTasks = current.tasks.some((task) => !isTerminalTaskStatus(task.status));
+    if (hasNonTerminalTasks) {
+      await this.record(current);
+      return this.viewOf(sessionId);
+    }
     return this.finishRejected(current, 'The change set was rejected by the user.');
   }
 
-  async validate(
-    sessionId: string,
-    command: string,
-    signal: AbortSignal,
-  ): Promise<AgentSessionView> {
+  /**
+   * Nothing runs here. The candidate command is normalized against the current
+   * allowlist and put in front of the user as an approval request naming the
+   * exact command, working directory, task and change set it would verify.
+   */
+  async requestValidation(sessionId: string, command: string): Promise<AgentSessionView> {
     this.requireTrusted('run validation commands');
-    this.requireIdle(sessionId, 'run validation');
+    this.requireIdle(sessionId, 'request validation');
     const session = this.require(sessionId);
     this.requireReviewed(session);
     if (session.state !== 'validating') {
       throw new AgentSessionError('The session is not waiting for validation.');
+    }
+    if (session.pendingApproval !== undefined) {
+      throw new AgentSessionError('Another approval request is still pending.');
     }
     const task = session.tasks.find((candidate) => candidate.status === 'applied');
     if (task === undefined) {
@@ -962,13 +1835,146 @@ export class AgentOrchestrator implements IAgentController {
           command: clampText(command, 200),
         };
         denied = { ...denied, diagnostics: [...denied.diagnostics, diagnostic].slice(-50) };
+        denied = this.withoutCommand(
+          denied,
+          task.id,
+          'unavailable',
+          `The requested check could not run: ${policy.reason}`,
+          clampText(command, 200),
+        );
         denied = this.withEvent(denied, 'diagnostic', diagnostic.message, task.id);
         await this.record(denied);
         return this.failSession(sessionId, diagnostic.message);
       }
 
-      let current = this.require(sessionId);
-      current = this.withEvent(current, 'command', `Running "${policy.normalized}".`, task.id);
+      const binding = this.bindingFor(this.require(sessionId), task.id);
+      const cwd = this.deps.workspaceRoot;
+      const request: ApprovalRequest = {
+        id: this.nextId('approval'),
+        sessionId,
+        kind: 'validation-command',
+        title: `Run "${policy.normalized}" for "${task.title}"`,
+        detail:
+          `Command: ${policy.normalized}\nWorking directory: ${cwd}\nTask: ${task.id}` +
+          (binding === undefined
+            ? '\nThe applied change set is no longer retained, so this result would verify nothing.'
+            : `\nChange set: ${binding.changeSetId} version ${binding.changeSetVersion.slice(0, 16)}.`),
+        ids: [policy.normalized, cwd, task.id],
+        subjectId: task.id,
+        taskId: task.id,
+        command: policy.normalized,
+        cwd,
+        createdAt: this.timestamp(),
+      };
+      let next = this.require(sessionId);
+      next = { ...next, pendingApproval: request, taskApprovals: [...(next.taskApprovals ?? []), request] };
+      next = this.withEvent(
+        next,
+        'approval',
+        `Approval requested to run "${policy.normalized}".`,
+        task.id,
+      );
+      return this.record(next);
+    });
+  }
+
+  /** Records the refusal as a skipped run and leaves the session awaiting validation. */
+  async rejectValidation(sessionId: string, requestId: string): Promise<AgentSessionView> {
+    this.requireIdle(sessionId, 'reject the validation request');
+    const session = this.require(sessionId);
+    if (session.state !== 'validating') {
+      throw new AgentSessionError('The session is not waiting for validation.');
+    }
+    const task = session.tasks.find((candidate) => candidate.status === 'applied');
+    const request = this.requireRequest(session, 'validation-command', requestId, task?.id);
+    let current = this.withDecision(session, request, 'rejected', []);
+    if (task?.id !== undefined) {
+      current = this.removeTaskApproval(sessionId, task.id, current);
+    }
+    current = this.withConsumedApproval(current);
+    if (task !== undefined) {
+      current = this.withoutCommand(
+        current,
+        task.id,
+        'skipped',
+        'The validation command was rejected by the user.',
+        clampText(request.command ?? '', 200),
+      );
+    }
+    return this.record(current);
+  }
+
+  /**
+   * Executes only the command named by the approved request. The allowlist,
+   * working directory, task and change-set binding are all re-checked against the
+   * request, so approving one command can never authorize another.
+   */
+  async approveValidation(
+    sessionId: string,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<AgentSessionView> {
+    this.requireTrusted('run validation commands');
+    this.requireIdle(sessionId, 'run the approved validation command');
+    const session = this.require(sessionId);
+    this.requireReviewed(session);
+    if (session.state !== 'validating') {
+      throw new AgentSessionError('The session is not waiting for validation.');
+    }
+    const task = session.tasks.find((candidate) => candidate.status === 'applied');
+    if (task === undefined) {
+      throw new AgentSessionError('No applied task is waiting for validation.');
+    }
+    const request = this.requireRequest(session, 'validation-command', requestId, task.id);
+    if (request.subjectId !== task.id || request.command === undefined || request.cwd === undefined) {
+      throw new AgentSessionError(
+        'The approved request no longer names the applied task. Review the current request.',
+      );
+    }
+    if (request.cwd !== this.deps.workspaceRoot) {
+      throw new AgentSessionError(
+        'The approved request belongs to a different workspace folder.',
+      );
+    }
+
+    const approvedCommand = request.command;
+
+    return this.runBusy(sessionId, async () => {
+      const policy = evaluateCommand(approvedCommand, this.deps.commandSettings().allowlist);
+      if (!policy.allowed || policy.normalized !== approvedCommand) {
+        const reason = policy.reason ?? 'The command no longer matches the approved request.';
+        let denied = this.require(sessionId);
+        const diagnostic: Diagnostic = {
+          id: `diag-runtime-${denied.diagnostics.length + 1}`,
+          severity: 'error',
+          source: 'runtime',
+          message: `The approved validation command cannot run: ${reason}`,
+          command: clampText(approvedCommand, 200),
+        };
+        denied = { ...denied, diagnostics: [...denied.diagnostics, diagnostic].slice(-50) };
+        denied = this.withDecision(denied, request, 'approved', request.ids);
+        denied = this.removeTaskApproval(sessionId, task.id, denied);
+        denied = this.withConsumedApproval(denied);
+        denied = this.withoutCommand(
+          denied,
+          task.id,
+          'unavailable',
+          `The approved check could not run: ${reason}`,
+          clampText(approvedCommand, 200),
+        );
+        denied = this.withEvent(denied, 'diagnostic', diagnostic.message, task.id);
+        return this.record(denied);
+      }
+
+      let current = this.withDecision(this.require(sessionId), request, 'approved', request.ids);
+      current = this.removeTaskApproval(sessionId, task.id, current);
+      current = this.withConsumedApproval(current);
+      current = this.withEvent(
+        current,
+        'command',
+        `Running approved command "${policy.normalized}".`,
+        task.id,
+      );
       await this.record(current);
 
       const startedAt = this.timestamp();
@@ -1018,12 +2024,24 @@ export class AgentOrchestrator implements IAgentController {
         output: clampText(result.output, MAX_VALIDATION_OUTPUT_CHARS),
         error: result.error,
       };
+      const testedSession = this.require(sessionId);
+      const tested = testedSession.executions.find((execution) => execution.taskId === task.id);
+      const binding = bindValidation(
+        testedSession.changeSets,
+        testedSession.repairProposals,
+        tested?.changeSetId,
+        tested?.repairProposalId,
+      );
       const run: ValidationRun = {
         id: this.nextId('validation'),
         taskId: task.id,
         command: result.command,
         startedAt,
         finishedAt,
+        outcome: evidence.passed ? 'passed' : 'failed',
+        changeSetId: tested?.changeSetId,
+        changeSetVersion: binding?.changeSetVersion,
+        repairProposalId: tested?.repairProposalId,
         evidence,
       };
 
@@ -1042,7 +2060,31 @@ export class AgentOrchestrator implements IAgentController {
         task.id,
       );
 
+      await this.record(next);
+      await this.checkpoint(next, task.id);
+
       if (evidence.passed) {
+        const drift = await this.verifyAppliedFiles(next, task.id);
+        if (binding === undefined || drift.length > 0) {
+          const staleWorkspace = drift.length > 0;
+          const reason =
+            binding === undefined
+              ? `"${run.command}" passed, but no retained change set describes what it tested, ` +
+                'so the result does not authorize the session to continue.'
+              : `"${run.command}" passed, but ${drift[0]} The result no longer verifies the workspace.`;
+          const unbound: Diagnostic = {
+            id: `diag-runtime-${next.diagnostics.length + 1}`,
+            severity: 'error',
+            source: 'runtime',
+            message: reason,
+            command: run.command,
+          };
+          next = { ...next, diagnostics: [...next.diagnostics, unbound].slice(-50) };
+          next = { ...next, needsReview: staleWorkspace };
+          next = this.withEvent(next, 'diagnostic', reason, task.id);
+          await this.record(next);
+          return this.viewOf(sessionId);
+        }
         next = this.setTasks(
           next,
           updateTask(next.tasks, task.id, { status: 'completed', error: undefined }),
@@ -1058,10 +2100,13 @@ export class AgentOrchestrator implements IAgentController {
 
         let advanced = this.require(sessionId);
         if (advanced.state === 'validating') {
-          advanced = transitionSession(advanced, 'executing', {
+          const hasAwaitingTasks = advanced.tasks.some((t) => t.status === 'awaiting-approval');
+          advanced = transitionSession(advanced, hasAwaitingTasks ? 'awaiting-change-approval' : 'executing', {
             at: this.timestamp(),
             eventId: this.nextId('event'),
-            message: 'Validation passed; scheduling the next task.',
+            message: hasAwaitingTasks
+              ? 'Validation passed; other tasks await change approval.'
+              : 'Validation passed; scheduling the next task.',
           });
           await this.record(advanced);
         }
@@ -1097,6 +2142,7 @@ export class AgentOrchestrator implements IAgentController {
     sessionId: string,
     token: CancellationTokenLike,
   ): Promise<AgentSessionView> {
+    this.requireTrusted('request a repair');
     this.requireIdle(sessionId, 'request a repair');
     const session = this.require(sessionId);
     this.requireReviewed(session);
@@ -1120,7 +2166,7 @@ export class AgentOrchestrator implements IAgentController {
       }
       const run = [...current.validationRuns]
         .reverse()
-        .find((candidate) => candidate.taskId === task.id);
+        .find((candidate) => candidate.taskId === task.id && candidate.evidence !== undefined);
       if (run === undefined) {
         return this.failSession(sessionId, 'No validation evidence is available for the failed task.');
       }
@@ -1239,9 +2285,10 @@ export class AgentOrchestrator implements IAgentController {
         detail: prepared.plan.summary,
         ids: prepared.plan.changes.map((change) => change.id),
         subjectId: proposal.id,
+        taskId: task.id,
         createdAt: this.timestamp(),
       };
-      next = { ...next, pendingApproval: approval };
+      next = { ...next, pendingApproval: approval, taskApprovals: [...(next.taskApprovals ?? []), approval] };
       next = this.withEvent(
         next,
         'repair',
@@ -1261,6 +2308,7 @@ export class AgentOrchestrator implements IAgentController {
     sessionId: string,
     approvedIds: readonly string[],
     token: CancellationTokenLike,
+    requestId: string,
   ): Promise<AgentSessionView> {
     this.requireTrusted('apply repair changes');
     this.requireIdle(sessionId, 'approve the repair');
@@ -1269,8 +2317,12 @@ export class AgentOrchestrator implements IAgentController {
     if (session.state !== 'awaiting-repair-approval') {
       throw new AgentSessionError('The session is not waiting for repair approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'repair' || request.subjectId === undefined) {
+    const request = this.requireRequest(session, 'repair', requestId);
+    const taskId = request.taskId
+      ?? session.tasks.find((candidate) => candidate.status === 'repairing')?.id
+      ?? session.tasks.find((candidate) => candidate.status === 'validation-failed')?.id;
+    const task = taskId === undefined ? undefined : session.tasks.find((candidate) => candidate.id === taskId);
+    if (request.subjectId === undefined) {
       throw new AgentSessionError('There is no pending repair approval.');
     }
 
@@ -1291,16 +2343,23 @@ export class AgentOrchestrator implements IAgentController {
       const validIds = new Set(proposal.plan.changes.map((change) => change.id));
       const selected = [...new Set(approvedIds)].filter((id) => validIds.has(id));
 
+      if (selected.length === 0 && approvedIds.length > 0) {
+        throw new AgentSessionError(
+          'The approved files do not belong to the current repair proposal. Review the current proposal before applying.',
+        );
+      }
+
       if (selected.length === 0) {
-        await this.record({
-          ...this.withDecision(current, request, 'rejected', []),
-          pendingApproval: undefined,
-        });
+        let rejected = this.withDecision(current, request, 'rejected', []);
+        rejected = task === undefined ? rejected : this.removeTaskApproval(sessionId, task.id, rejected);
+        rejected = this.withConsumedApproval(rejected);
+        await this.record(rejected);
         return this.failSession(sessionId, 'The repair proposal was rejected by the user.');
       }
 
       current = this.withDecision(current, request, 'approved', selected);
-      current = { ...current, pendingApproval: undefined };
+      current = task === undefined ? current : this.removeTaskApproval(sessionId, task.id, current);
+      current = this.withConsumedApproval(current);
       current = transitionSession(current, 'repairing', {
         at: this.timestamp(),
         eventId: this.nextId('event'),
@@ -1336,6 +2395,7 @@ export class AgentOrchestrator implements IAgentController {
           status: 'applied',
           appliedFiles: mergeAppliedFiles(previous, appliedFiles),
           historyTaskId,
+          repairProposalId: proposal.id,
         }),
       };
       const problems = outcome.conflicts.length + outcome.failed.length;
@@ -1347,6 +2407,7 @@ export class AgentOrchestrator implements IAgentController {
         proposal.taskId,
       );
       await this.record(next);
+      await this.checkpoint(next, proposal.taskId);
 
       if (outcome.applied.length === 0) {
         return this.failSession(
@@ -1375,20 +2436,23 @@ export class AgentOrchestrator implements IAgentController {
     });
   }
 
-  async rejectRepair(sessionId: string): Promise<AgentSessionView> {
+  async rejectRepair(sessionId: string, requestId: string): Promise<AgentSessionView> {
     this.requireIdle(sessionId, 'reject the repair');
     const session = this.require(sessionId);
     if (session.state !== 'awaiting-repair-approval') {
       throw new AgentSessionError('The session is not waiting for repair approval.');
     }
-    const request = session.pendingApproval;
-    if (request === undefined || request.kind !== 'repair') {
-      throw new AgentSessionError('There is no pending repair approval.');
+    const request = this.requireRequest(session, 'repair', requestId);
+    const taskId = request.taskId
+      ?? session.tasks.find((candidate) => candidate.status === 'repairing')?.id
+      ?? session.tasks.find((candidate) => candidate.status === 'validation-failed')?.id;
+    const task = taskId === undefined ? undefined : session.tasks.find((candidate) => candidate.id === taskId);
+    let rejected = this.withDecision(session, request, 'rejected', []);
+    if (task?.id !== undefined) {
+      rejected = this.removeTaskApproval(sessionId, task.id, rejected);
     }
-    await this.record({
-      ...this.withDecision(session, request, 'rejected', []),
-      pendingApproval: undefined,
-    });
+    rejected = this.withConsumedApproval(rejected);
+    await this.record(rejected);
     return this.failSession(sessionId, 'The repair proposal was rejected by the user.');
   }
 
@@ -1441,6 +2505,69 @@ export class AgentOrchestrator implements IAgentController {
     return this.cancelSession(sessionId, 'The session was cancelled by the user.');
   }
 
+  /**
+   * Cancels a single active task without touching unrelated tasks. The
+   * cancelled task's execution slot is released, its pending approvals are
+   * invalidated, and it can never be dispatched again. Other active tasks
+   * continue unaffected.
+   */
+  async cancelTask(sessionId: string, taskId: string): Promise<AgentSessionView> {
+    this.requireIdle(sessionId, 'cancel a task');
+    const session = this.require(sessionId);
+    const task = findTask(session.tasks, taskId);
+    if (task === undefined) {
+      throw new AgentSessionError(`Task "${taskId}" is missing from the session.`);
+    }
+    if (!ACTIVE_TASK_STATUSES.has(task.status)) {
+      throw new AgentSessionError(
+        `Task "${taskId}" is not active and cannot be cancelled.`,
+      );
+    }
+
+    return this.runBusy(sessionId, async () => {
+      let current = this.require(sessionId);
+      const taskToCancel = findTask(current.tasks, taskId);
+      if (taskToCancel === undefined || !ACTIVE_TASK_STATUSES.has(taskToCancel.status)) {
+        throw new AgentSessionError(
+          `Task "${taskId}" is not active and cannot be cancelled.`,
+        );
+      }
+
+      const cancelledAt = this.timestamp();
+      let cancelled = this.cancelledTaskIds.get(sessionId) ?? new Set<string>();
+      cancelled = new Set([...cancelled, taskId]);
+      this.cancelledTaskIds.set(sessionId, cancelled);
+
+      current = this.setTasks(
+        current,
+        current.tasks.map((t) =>
+          t.id === taskId ? { ...t, status: 'cancelled' as const, error: 'The task was cancelled.' } : t,
+        ),
+      );
+      current = {
+        ...current,
+        executions: current.executions.map((execution) =>
+          execution.taskId === taskId && ACTIVE_TASK_STATUSES.has(execution.status)
+            ? { ...execution, status: 'cancelled' as const, finishedAt: cancelledAt, error: 'The task was cancelled.' }
+            : execution,
+        ),
+      };
+      current = this.removeTaskApproval(sessionId, taskId, current);
+      // A cancelled task's pending change sets can never be applied.
+      current = {
+        ...current,
+        changeSets: current.changeSets.map((cs) =>
+          cs.taskId === taskId && (cs.status === 'pending' || cs.status === 'approved')
+            ? { ...cs, status: 'failed' as const }
+            : cs,
+        ),
+      };
+      current = this.withEvent(current, 'task', `Task "${taskToCancel.title}" was cancelled.`, taskId);
+      await this.checkpoint(current, taskId);
+      return this.record(current);
+    });
+  }
+
   private async cancelSession(sessionId: string, message: string): Promise<AgentSessionView> {
     const session = this.require(sessionId);
     if (isTerminalAgentState(session.state)) {
@@ -1458,6 +2585,11 @@ export class AgentOrchestrator implements IAgentController {
       });
     }
     const cancelledAt = this.timestamp();
+    const cancelledTaskIds = new Set(
+      current.tasks
+        .filter((task) => !isTerminalTaskStatus(task.status))
+        .map((task) => task.id),
+    );
     const tasks = current.tasks.map((task) =>
       isTerminalTaskStatus(task.status) ? task : { ...task, status: 'cancelled' as const },
     );
@@ -1470,12 +2602,16 @@ export class AgentOrchestrator implements IAgentController {
       { ...current, executions, pendingApproval: undefined },
       tasks,
     );
+    for (const taskId of cancelledTaskIds) {
+      current = this.removeTaskApproval(sessionId, taskId, current);
+    }
     current = this.withEvent(current, 'note', message);
     current = transitionSession(current, 'cancelled', {
       at: cancelledAt,
       eventId: this.nextId('event'),
       message: 'The session was cancelled.',
     });
+    await this.checkpoint(current);
     return this.finishWithReport(current);
   }
 
@@ -1492,7 +2628,61 @@ export class AgentOrchestrator implements IAgentController {
     return this.finishWithReport(completed);
   }
 
-  private async failSession(sessionId: string, message: string): Promise<AgentSessionView> {
+  /**
+   * Fails just one task without tearing down the session, so other tasks
+   * keep their state, including any pending approvals, and can proceed.
+   */
+  private async failTask(
+    sessionId: string,
+    taskId: string,
+    message: string,
+  ): Promise<AgentSessionView> {
+    let current = this.require(sessionId);
+    const at = this.timestamp();
+    current = this.setTasks(
+      current,
+      current.tasks.map((task) => {
+        if (task.id === taskId && ACTIVE_TASK_STATUSES.has(task.status)) {
+          return { ...task, status: 'failed' as const, error: message };
+        }
+        return task;
+      }),
+    );
+    current = {
+      ...current,
+      executions: current.executions.map((execution) => {
+        if (execution.taskId === taskId && ACTIVE_TASK_STATUSES.has(execution.status)) {
+          return { ...execution, status: 'failed' as const, finishedAt: at, error: message };
+        }
+        return execution;
+      }),
+    };
+    current = {
+      ...current,
+      changeSets: current.changeSets.map((changeSet) =>
+        changeSet.taskId === taskId && (changeSet.status === 'pending' || changeSet.status === 'approved')
+          ? { ...changeSet, status: 'failed' as const }
+          : changeSet,
+      ),
+    };
+    current = this.removeTaskApproval(sessionId, taskId, current);
+    const diagnostic: Diagnostic = {
+      id: `diag-runtime-${current.diagnostics.length + 1}`,
+      severity: 'error',
+      source: 'runtime',
+      message: clampText(message, 2_000),
+    };
+    current = { ...current, diagnostics: [...current.diagnostics, diagnostic].slice(-50) };
+    current = this.withEvent(current, 'diagnostic', message, taskId);
+    await this.checkpoint(current, taskId);
+    return this.record(current);
+  }
+
+  private async failSession(
+    sessionId: string,
+    message: string,
+    taskId?: string,
+  ): Promise<AgentSessionView> {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
       throw new AgentSessionError('Unknown agent session.');
@@ -1514,21 +2704,29 @@ export class AgentOrchestrator implements IAgentController {
     current = this.setTasks(
       current,
       current.tasks.map((task) => {
-        if (ACTIVE_TASK_STATUSES.has(task.status)) {
+        const taskFailed = taskId === undefined || task.id === taskId;
+        if (taskFailed && ACTIVE_TASK_STATUSES.has(task.status)) {
           return { ...task, status: 'failed' as const, error: message };
+        }
+        if (taskId !== undefined && task.id !== taskId) {
+          // An attributed task failure must not tear down unrelated in-flight tasks.
+          return task;
         }
         return isTerminalTaskStatus(task.status)
           ? task
           : { ...task, status: 'skipped' as const };
       }),
     );
+    current = taskId === undefined ? current : this.removeTaskApproval(sessionId, taskId, current);
     current = {
       ...current,
-      executions: current.executions.map((execution) =>
-        ACTIVE_TASK_STATUSES.has(execution.status)
-          ? { ...execution, status: 'failed' as const, finishedAt: at, error: message }
-          : execution,
-      ),
+      executions: current.executions.map((execution) => {
+        const executionFailed = taskId === undefined || execution.taskId === taskId;
+        if (executionFailed && ACTIVE_TASK_STATUSES.has(execution.status)) {
+          return { ...execution, status: 'failed' as const, finishedAt: at, error: message };
+        }
+        return execution;
+      }),
     };
     const diagnostic: Diagnostic = {
       id: `diag-runtime-${current.diagnostics.length + 1}`,
@@ -1541,6 +2739,7 @@ export class AgentOrchestrator implements IAgentController {
       diagnostics: [...current.diagnostics, diagnostic].slice(-50),
     };
     current = this.withEvent(current, 'diagnostic', message);
+    await this.checkpoint(current);
     return this.finishWithReport(current);
   }
 
@@ -1560,6 +2759,7 @@ export class AgentOrchestrator implements IAgentController {
         isTerminalTaskStatus(task.status) ? task : { ...task, status: 'skipped' as const },
       ),
     );
+    await this.checkpoint(current);
     return this.finishWithReport(current);
   }
 
@@ -1621,12 +2821,12 @@ export class AgentOrchestrator implements IAgentController {
       '',
       'A previous change set was applied, but validation failed. Produce a complete replacement change plan that fixes the failure.',
       `Validation command: ${run.command}`,
-      `Exit code: ${run.evidence.exitCode ?? 'null'}`,
-      run.evidence.timedOut ? 'The command timed out.' : '',
+      `Exit code: ${run.evidence?.exitCode ?? 'null'}`,
+      run.evidence?.timedOut === true ? 'The command timed out.' : '',
       `Repair attempt ${attempt} of ${maxAttempts}.`,
       errors.length > 0 ? `Diagnostics:\n${errors.join('\n')}` : '',
       'Validation output (truncated, redacted):',
-      run.evidence.output.slice(0, 8_000),
+      run.evidence === undefined ? '' : run.evidence.output.slice(0, 8_000),
       '',
       'Reuse the existing file paths where appropriate. Return complete file contents.',
     ]
@@ -1651,8 +2851,39 @@ export class AgentOrchestrator implements IAgentController {
       }
       const loaded: AgentSession = isTerminalAgentState(session.state)
         ? session
-        : { ...session, needsReview: true };
+        : {
+            ...session,
+            needsReview: true,
+            tasks: session.tasks.map((task) =>
+              task.status === 'running'
+                ? { ...task, status: 'failed' as const, error: 'Interrupted by extension restart.' }
+                : task,
+            ),
+          };
       this.sessions.set(session.id, loaded);
+    }
+
+    if (this.deps.isTrusted === undefined || this.deps.isTrusted()) {
+      for (const session of [...this.sessions.values()]) {
+        if (isTerminalAgentState(session.state)) {
+          continue;
+        }
+        if (this.restoredExecutions.has(session.id)) {
+          continue;
+        }
+        const interrupted = (await this.detectInterruptedExecutions()).includes(session.id);
+        if (!interrupted) {
+          continue;
+        }
+        this.restoredExecutions.add(session.id);
+        try {
+          await this.restoreFromCheckpoint(session.id);
+        } catch (error) {
+          this.deps.logger?.warn(
+            `Checkpoint restoration failed for ${session.id}: ${messageOf(error)}`,
+          );
+        }
+      }
     }
     return this.list();
   }
@@ -1678,6 +2909,7 @@ export class AgentOrchestrator implements IAgentController {
       this.sessions.set(sessionId, session);
       return this.toView(session);
     }
+    this.requireTrusted('restore an active agent session');
 
     const original = session.state;
     let current = this.withEvent(
@@ -1693,12 +2925,12 @@ export class AgentOrchestrator implements IAgentController {
     ) {
       const tasks = current.tasks.map((task) =>
         task.status === 'running' || task.status === 'awaiting-approval'
-          ? { ...task, status: 'pending' as const, error: undefined }
+          ? { ...task, status: 'failed' as const, error: 'Interrupted by extension restart.' }
           : task,
       );
       const executions = current.executions.map((execution) =>
         execution.status === 'running' || execution.status === 'awaiting-approval'
-          ? { ...execution, status: 'pending' as const, finishedAt: undefined }
+          ? { ...execution, status: 'failed' as const, finishedAt: execution.finishedAt ?? this.timestamp(), error: 'Interrupted by extension restart.' }
           : execution,
       );
       current = this.setTasks(
@@ -1785,13 +3017,23 @@ export class AgentOrchestrator implements IAgentController {
     return this.record(restored);
   }
 
-  private async verifyAppliedFiles(session: AgentSession): Promise<string[]> {
+  /**
+   * Compares the files the session wrote with what is on disk now. Pass a task id
+   * to check one task's writes, or none for the whole session.
+   */
+  private async verifyAppliedFiles(
+    session: AgentSession,
+    taskId?: string,
+  ): Promise<string[]> {
     if (this.deps.hashFile === undefined) {
       return [];
     }
     const hashFile = this.deps.hashFile;
     const problems: string[] = [];
     for (const execution of session.executions) {
+      if (taskId !== undefined && execution.taskId !== taskId) {
+        continue;
+      }
       for (const file of execution.appliedFiles) {
         const actual = await hashFile(file.path);
         if (file.kind === 'delete') {

@@ -20,6 +20,7 @@ suite('webview message parsing', () => {
       'refreshSessions',
       'newConversation',
       'summarizeWorkspace',
+      'inspectRepository',
     ] as const;
 
     for (const type of types) {
@@ -34,10 +35,6 @@ suite('webview message parsing', () => {
     });
 
     for (const type of [
-      'approvePlan',
-      'rejectPlan',
-      'rejectChangeSet',
-      'rejectRepair',
       'generateRepair',
       'pauseSession',
       'resumeSession',
@@ -53,30 +50,74 @@ suite('webview message parsing', () => {
       });
     }
 
+    for (const type of ['approvePlan', 'rejectPlan', 'rejectChangeSet', 'rejectRepair']) {
+      expect(
+        parseWebviewMessage({
+          type,
+          sessionId: 'session-1',
+          requestId: 'approval-1',
+        }),
+      ).to.deep.equal({ type, sessionId: 'session-1', requestId: 'approval-1' });
+    }
+
     expect(
       parseWebviewMessage({
         type: 'approveChangeSet',
         sessionId: 'session-1',
         ids: ['change-1', 'change-2'],
+        requestId: 'approval-1',
       }),
     ).to.deep.equal({
       type: 'approveChangeSet',
       sessionId: 'session-1',
       ids: ['change-1', 'change-2'],
+      requestId: 'approval-1',
     });
     expect(
-      parseWebviewMessage({ type: 'approveRepair', sessionId: 'session-1', ids: ['r1'] }),
-    ).to.deep.equal({ type: 'approveRepair', sessionId: 'session-1', ids: ['r1'] });
+      parseWebviewMessage({
+        type: 'approveRepair',
+        sessionId: 'session-1',
+        ids: ['r1'],
+        requestId: 'approval-1',
+      }),
+    ).to.deep.equal({
+      type: 'approveRepair',
+      sessionId: 'session-1',
+      ids: ['r1'],
+      requestId: 'approval-1',
+    });
     expect(
       parseWebviewMessage({
-        type: 'validateSession',
+        type: 'requestValidation',
         sessionId: 'session-1',
         command: 'npm run test:unit',
       }),
     ).to.deep.equal({
-      type: 'validateSession',
+      type: 'requestValidation',
       sessionId: 'session-1',
       command: 'npm run test:unit',
+    });
+    expect(
+      parseWebviewMessage({
+        type: 'approveValidation',
+        sessionId: 'session-1',
+        requestId: 'approval-1',
+      }),
+    ).to.deep.equal({
+      type: 'approveValidation',
+      sessionId: 'session-1',
+      requestId: 'approval-1',
+    });
+    expect(
+      parseWebviewMessage({
+        type: 'rejectValidation',
+        sessionId: 'session-1',
+        requestId: 'approval-1',
+      }),
+    ).to.deep.equal({
+      type: 'rejectValidation',
+      sessionId: 'session-1',
+      requestId: 'approval-1',
     });
   });
 
@@ -86,12 +127,50 @@ suite('webview message parsing', () => {
       type: 'approveChangeSet',
       sessionId: 'session-1',
       ids: [...ids, 42, ''],
+      requestId: 'approval-1',
     });
     expect(parsed).to.deep.equal({
       type: 'approveChangeSet',
       sessionId: 'session-1',
       ids: ids.slice(0, 100),
+      requestId: 'approval-1',
     });
+  });
+
+  test('drops an approval that does not name the pending request', () => {
+    for (const type of [
+      'approvePlan',
+      'rejectPlan',
+      'rejectChangeSet',
+      'rejectRepair',
+      'approveValidation',
+      'rejectValidation',
+    ]) {
+      expect(parseWebviewMessage({ type, sessionId: 'session-1' }), type).to.equal(undefined);
+      expect(parseWebviewMessage({ type, sessionId: 'session-1', requestId: '' }), type).to.equal(
+        undefined,
+      );
+      expect(
+        parseWebviewMessage({ type, sessionId: 'session-1', requestId: 42 }),
+        type,
+      ).to.equal(undefined);
+      expect(
+        parseWebviewMessage({ type, sessionId: 'session-1', requestId: 'x'.repeat(201) }),
+        type,
+      ).to.equal(undefined);
+    }
+
+    expect(
+      parseWebviewMessage({ type: 'approveChangeSet', sessionId: 'session-1', ids: ['change-1'] }),
+    ).to.equal(undefined);
+    expect(
+      parseWebviewMessage({
+        type: 'approveRepair',
+        sessionId: 'session-1',
+        ids: ['r1'],
+        requestId: '',
+      }),
+    ).to.equal(undefined);
   });
 
   test('rejects malformed session messages', () => {
@@ -105,8 +184,11 @@ suite('webview message parsing', () => {
       parseWebviewMessage({ type: 'approveRepair', sessionId: 'session-1', ids: 'all' }),
     ).to.equal(undefined);
     expect(
-      parseWebviewMessage({ type: 'validateSession', sessionId: 'session-1', command: 7 }),
+      parseWebviewMessage({ type: 'requestValidation', sessionId: 'session-1', command: 7 }),
     ).to.equal(undefined);
+    expect(parseWebviewMessage({ type: 'validateSession', sessionId: 'session-1' })).to.equal(
+      undefined,
+    );
     expect(parseWebviewMessage({ type: 'deleteSession', sessionId: { id: 'x' } })).to.equal(
       undefined,
     );
@@ -159,5 +241,15 @@ suite('webview message parsing', () => {
     expect(parseWebviewMessage(null)).to.equal(undefined);
     expect(parseWebviewMessage('ready')).to.equal(undefined);
     expect(parseWebviewMessage(42)).to.equal(undefined);
+  });
+
+  test('parses repository inspection messages', () => {
+    expect(parseWebviewMessage({ type: 'inspectRepository' })).to.deep.equal({
+      type: 'inspectRepository',
+    });
+    expect(
+      parseWebviewMessage({ type: 'explainRepositoryContext', query: 'login' }),
+    ).to.deep.equal({ type: 'explainRepositoryContext', query: 'login' });
+    expect(parseWebviewMessage({ type: 'explainRepositoryContext' })).to.equal(undefined);
   });
 });

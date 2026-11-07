@@ -15,6 +15,7 @@ import {
   providerContentFor,
   providerHistoryMessages,
   restoreAttachmentContext,
+  withheldAttachmentCount,
   type StoredAttachment,
 } from '../../src/chat/attachmentContext';
 import { buildUserContent } from '../../src/chat/prompts';
@@ -236,5 +237,89 @@ suite('captured attachment context', () => {
       'What does this do?',
     );
     expect(providerContentFor({ role: 'user', text: '', localOnly: true })).to.equal(undefined);
+  });
+
+  test('records who selected each piece of captured content', () => {
+    const explicit = captureAttachments([contextItem('src/a.ts', 'const a = 1;')], CAPTURED_AT);
+    const discovered = captureAttachments(
+      [contextItem('src/b.ts', 'const b = 1;', { origin: 'workspace' })],
+      CAPTURED_AT,
+    );
+
+    expect(explicit.captured[0].origin).to.equal('user');
+    expect(discovered.captured[0].origin).to.equal('workspace');
+  });
+
+  test('treats stored attachments without provenance as automatically discovered', () => {
+    const [legacy] = parseAttachmentContext([{ path: 'src/a.ts', content: 'const a = 1;' }]);
+    const [explicit] = parseAttachmentContext([
+      { path: 'src/a.ts', content: 'const a = 1;', origin: 'user' },
+    ]);
+
+    expect(legacy.origin).to.equal('workspace');
+    expect(explicit.origin).to.equal('user');
+  });
+
+  test('withholds discovered context but replays explicit attachments while restricted', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        text: 'discovered turn',
+        question: 'discovered turn',
+        attachmentContext: [
+          stored({ path: 'src/auto.ts', content: 'const auto = 1;', origin: 'workspace' }),
+        ],
+      },
+      {
+        role: 'user' as const,
+        text: 'chosen turn',
+        question: 'chosen turn',
+        attachmentContext: [
+          stored({ path: 'src/mine.ts', content: 'const mine = 1;', origin: 'user' }),
+        ],
+      },
+    ];
+
+    const restricted = providerHistoryMessages(messages, { includeAutoDiscovered: false });
+
+    expect(restricted).to.deep.equal([
+      { role: 'user', content: 'discovered turn' },
+      {
+        role: 'user',
+        content: buildUserContent('chosen turn', [
+          contextItem('src/mine.ts', 'const mine = 1;', { origin: 'user' }),
+        ]),
+      },
+    ]);
+    expect(restricted[1].content).to.contain('const mine = 1;');
+    expect(restricted.map((message) => message.content).join('\n')).to.not.contain(
+      'const auto = 1;',
+    );
+    expect(withheldAttachmentCount(messages)).to.equal(1);
+
+    const restored = restoreAttachmentContext(messages[0].attachmentContext, {
+      includeAutoDiscovered: false,
+    });
+    expect(restored.items).to.deep.equal([]);
+    expect(restored.withheld.map((attachment) => attachment.path)).to.deep.equal(['src/auto.ts']);
+  });
+
+  test('replays every stored attachment when the workspace is trusted', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        text: 'both',
+        question: 'both',
+        attachmentContext: [
+          stored({ path: 'src/auto.ts', content: 'const auto = 1;', origin: 'workspace' }),
+          stored({ path: 'src/mine.ts', content: 'const mine = 1;', origin: 'user' }),
+        ],
+      },
+    ];
+
+    const rebuilt = providerHistoryMessages(messages, { includeAutoDiscovered: true });
+    expect(rebuilt[0].content).to.contain('const auto = 1;');
+    expect(rebuilt[0].content).to.contain('const mine = 1;');
+    expect(withheldAttachmentCount(messages)).to.equal(1);
   });
 });

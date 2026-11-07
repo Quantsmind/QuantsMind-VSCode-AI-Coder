@@ -1113,6 +1113,10 @@ pre.diff {
   border-left: 2px solid var(--qm-danger);
 }
 
+.validation.muted {
+  border-left: 2px solid var(--qm-muted);
+}
+
 .validation-head {
   display: flex;
   justify-content: space-between;
@@ -1144,6 +1148,15 @@ pre.diff {
   font-size: 10px;
   line-height: 1.45;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.validation-detail {
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -1233,6 +1246,14 @@ pre.diff {
 .session-card.state-cancelled,
 .session-card.state-paused {
   --qm-task-accent: var(--qm-muted);
+}
+
+.session-activity {
+  margin: 8px 0 0;
+  color: var(--qm-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .session-requirement {
@@ -1522,6 +1543,139 @@ pre.diff {
 .action-button.subtle:hover {
   color: var(--vscode-foreground, #ccc);
   border-color: var(--qm-border);
+}
+
+/* Repository intelligence and change-impact evidence. */
+.impact-card,
+.repository-card {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--qm-border);
+  border-radius: 6px;
+  background: var(--qm-surface);
+}
+
+.impact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.impact-confidence {
+  flex-shrink: 0;
+  color: var(--qm-muted);
+  font-size: 9.5px;
+}
+
+.impact-confidence.confidence-high {
+  color: var(--qm-success);
+}
+
+.impact-confidence.confidence-medium {
+  color: var(--qm-warning);
+}
+
+.impact-confidence.confidence-low {
+  color: var(--qm-danger);
+}
+
+.impact-summary {
+  margin: 5px 0 0;
+  color: var(--qm-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.impact-section {
+  margin-top: 7px;
+}
+
+.impact-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--qm-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.impact-list {
+  margin: 3px 0 0;
+  padding-left: 16px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.impact-list li {
+  margin-bottom: 3px;
+}
+
+.impact-list code,
+.repository-card code {
+  font-size: 10px;
+}
+
+.impact-meta {
+  display: block;
+  color: var(--qm-muted);
+  font-size: 9.5px;
+}
+
+.impact-reason {
+  display: block;
+  color: var(--qm-muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.impact-evidence {
+  color: var(--qm-muted);
+}
+
+.impact-risk {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.impact-risk.risk-high {
+  color: var(--qm-danger);
+  border: 1px solid var(--qm-danger);
+}
+
+.impact-risk.risk-medium {
+  color: var(--qm-warning);
+  border: 1px solid var(--qm-warning);
+}
+
+.impact-risk.risk-low {
+  color: var(--qm-muted);
+  border: 1px solid var(--qm-border);
+}
+
+.repository-summary {
+  margin: 5px 0 0;
+  padding: 6px 8px;
+  background: var(--qm-code);
+  border-radius: 4px;
+  color: var(--qm-muted);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.repository-card p {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

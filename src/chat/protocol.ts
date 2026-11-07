@@ -5,6 +5,8 @@ import type {
   CompletionReport,
 } from '../agent/models';
 import type { ProviderStatus } from '../providers/completionService';
+import type { SelectedContextFile } from '../repository/contextSelection';
+import type { RepositoryOverview } from '../repository/discovery';
 import type { AttachmentDisplay } from './attachmentContext';
 import { isChatMode, type ChatMode } from './prompts';
 
@@ -49,6 +51,10 @@ export interface SessionSummary {
   readonly completedTasks: number;
   readonly pendingApproval?: ApprovalKind;
   readonly reportOutcome?: CompletionReport['outcome'];
+  /** Plain-language description of the current operation, from recorded state. */
+  readonly activity: string;
+  /** Validation coverage, e.g. `1 passed, 1 skipped`. */
+  readonly validation: string;
 }
 
 export interface TranscriptMessage {
@@ -68,6 +74,36 @@ export interface AttachmentSummary {
   readonly endLine?: number;
   readonly chars: number;
   readonly redactions: number;
+  /** `workspace` marks content QuantsMind discovered; `user` marks explicit choices. */
+  readonly origin?: 'user' | 'workspace';
+}
+
+export interface RepositoryDependencyView {
+  readonly nodeCount: number;
+  readonly edgeCount: number;
+  readonly heuristicEdges: number;
+  readonly unresolvedCount: number;
+  readonly cycleCount: number;
+  readonly truncated: boolean;
+  readonly hotspots: readonly {
+    readonly path: string;
+    readonly dependents: number;
+    readonly dependencies: number;
+    readonly publicApi: boolean;
+  }[];
+  readonly cycles: readonly (readonly string[])[];
+  readonly unresolved: readonly {
+    readonly from: string;
+    readonly specifier: string;
+    readonly reason: string;
+    readonly confidence: 'confirmed' | 'heuristic';
+  }[];
+}
+
+export interface RepositoryView {
+  readonly overview: RepositoryOverview;
+  readonly summary: string;
+  readonly dependencies: RepositoryDependencyView;
 }
 
 export type WebviewToHostMessage =
@@ -87,25 +123,25 @@ export type WebviewToHostMessage =
   | { readonly type: 'showLog' }
   | { readonly type: 'refreshStatus' }
   | { readonly type: 'startSession'; readonly requirement: string }
-  | { readonly type: 'approvePlan'; readonly sessionId: string }
-  | { readonly type: 'rejectPlan'; readonly sessionId: string }
+  | { readonly type: 'approvePlan'; readonly sessionId: string; readonly requestId: string }
+  | { readonly type: 'rejectPlan'; readonly sessionId: string; readonly requestId: string }
   | {
       readonly type: 'approveChangeSet';
       readonly sessionId: string;
       readonly ids: readonly string[];
+      readonly requestId: string;
     }
-  | { readonly type: 'rejectChangeSet'; readonly sessionId: string }
+  | { readonly type: 'rejectChangeSet'; readonly sessionId: string; readonly requestId: string }
   | {
       readonly type: 'approveRepair';
       readonly sessionId: string;
       readonly ids: readonly string[];
+      readonly requestId: string;
     }
-  | { readonly type: 'rejectRepair'; readonly sessionId: string }
-  | {
-      readonly type: 'validateSession';
-      readonly sessionId: string;
-      readonly command: string;
-    }
+  | { readonly type: 'rejectRepair'; readonly sessionId: string; readonly requestId: string }
+  | { readonly type: 'requestValidation'; readonly sessionId: string; readonly command: string }
+  | { readonly type: 'approveValidation'; readonly sessionId: string; readonly requestId: string }
+  | { readonly type: 'rejectValidation'; readonly sessionId: string; readonly requestId: string }
   | { readonly type: 'generateRepair'; readonly sessionId: string }
   | { readonly type: 'pauseSession'; readonly sessionId: string }
   | { readonly type: 'resumeSession'; readonly sessionId: string }
@@ -121,6 +157,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'switchConversation'; readonly id: string }
   | { readonly type: 'deleteConversation'; readonly id: string }
   | { readonly type: 'summarizeWorkspace' }
+  | { readonly type: 'inspectRepository' }
+  | { readonly type: 'explainRepositoryContext'; readonly query: string }
   | { readonly type: 'attachRelevantFiles'; readonly query: string };
 
 export type HostToWebviewMessage =
@@ -184,6 +222,13 @@ export type HostToWebviewMessage =
     }
   | { readonly type: 'busy'; readonly busy: boolean }
   | { readonly type: 'notice'; readonly level: 'info' | 'warn' | 'error'; readonly message: string }
+  | {
+      readonly type: 'agentToolResult';
+      readonly tool: string;
+      readonly ok: boolean;
+      readonly message: string;
+      readonly output?: string;
+    }
   | { readonly type: 'clear' }
   | {
       readonly type: 'conversations';
@@ -216,6 +261,14 @@ export type HostToWebviewMessage =
       readonly fileCount: number;
       readonly truncated: boolean;
     }
+  | { readonly type: 'repository'; readonly repository: RepositoryView }
+  | {
+      readonly type: 'contextSelection';
+      readonly query: string;
+      readonly selections: readonly SelectedContextFile[];
+      readonly truncated: boolean;
+      readonly text: string;
+    }
   | {
       readonly type: 'undoResult';
       readonly taskId: string;
@@ -241,6 +294,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function isId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+
+/**
+ * A decision is only accepted when it names the request the user actually saw.
+ * A missing or malformed id drops the whole message: keeping the message but
+ * losing the binding would let a stale approval card act on the current
+ * request, so there is no fallback to the pending request.
+ */
+function readRequestId(record: Record<string, unknown>): string | undefined {
+  return isId(record.requestId) ? record.requestId : undefined;
 }
 
 /**
@@ -271,15 +334,18 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
     case 'newConversation':
     case 'clearConversation':
     case 'summarizeWorkspace':
+    case 'inspectRepository':
       return { type: record.type };
+    case 'explainRepositoryContext':
+      if (typeof record.query !== 'string') {
+        return undefined;
+      }
+      return { type: 'explainRepositoryContext', query: record.query };
     case 'startSession':
       if (typeof record.requirement !== 'string') {
         return undefined;
       }
       return { type: 'startSession', requirement: record.requirement };
-    case 'rejectPlan':
-    case 'rejectChangeSet':
-    case 'rejectRepair':
     case 'generateRepair':
     case 'pauseSession':
     case 'resumeSession':
@@ -293,26 +359,34 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
       }
       return { type: record.type, sessionId: record.sessionId };
     case 'approvePlan':
-      if (!isId(record.sessionId)) {
+    case 'rejectPlan':
+    case 'rejectChangeSet':
+    case 'rejectRepair':
+    case 'approveValidation':
+    case 'rejectValidation': {
+      const requestId = readRequestId(record);
+      if (!isId(record.sessionId) || requestId === undefined) {
         return undefined;
       }
-      return { type: 'approvePlan', sessionId: record.sessionId };
-    case 'validateSession':
+      return { type: record.type, sessionId: record.sessionId, requestId };
+    }
+    case 'requestValidation':
       if (!isId(record.sessionId) || typeof record.command !== 'string') {
         return undefined;
       }
       return {
-        type: 'validateSession',
+        type: 'requestValidation',
         sessionId: record.sessionId,
         command: record.command,
       };
     case 'approveChangeSet':
     case 'approveRepair': {
-      if (!isId(record.sessionId) || !Array.isArray(record.ids)) {
+      const requestId = readRequestId(record);
+      if (!isId(record.sessionId) || !Array.isArray(record.ids) || requestId === undefined) {
         return undefined;
       }
       const ids = record.ids.filter(isId).slice(0, 100);
-      return { type: record.type, sessionId: record.sessionId, ids };
+      return { type: record.type, sessionId: record.sessionId, ids, requestId };
     }
     case 'restorePreviousConversation':
       if (record.id === undefined) {

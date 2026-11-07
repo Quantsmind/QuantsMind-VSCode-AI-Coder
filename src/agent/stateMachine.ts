@@ -4,9 +4,11 @@ import {
   type AgentSession,
   type AgentState,
   type SessionEvent,
+  type SessionProgressView,
   type SessionStageName,
   type SessionStageView,
 } from './models';
+import { describeValidationCoverage, isValidationBound } from './validation';
 
 export type AgentTransitionEvent =
   | 'start'
@@ -232,7 +234,11 @@ export function deriveStages(session: AgentSession): SessionStageView[] {
     state === 'repairing';
   const anyApplied = session.executions.some((execution) => execution.appliedFiles.length > 0);
   const anyChangeSet = session.changeSets.length > 0;
-  const passedRun = session.validationRuns.find((run) => run.evidence.passed);
+  const passedRun = session.validationRuns.find(
+    (run) =>
+      run.outcome === 'passed' &&
+      isValidationBound(run, session.changeSets, session.repairProposals),
+  );
   const lastRun = session.validationRuns[session.validationRuns.length - 1];
   const terminalFailure = state === 'failed' || state === 'rejected' || state === 'cancelled';
 
@@ -304,11 +310,17 @@ export function deriveStages(session: AgentSession): SessionStageView[] {
       ? 'complete'
       : state === 'validating'
         ? 'running'
-        : lastRun !== undefined
+        : lastRun?.outcome === 'failed'
           ? 'failed'
-          : 'pending',
+          : session.validationRuns.length > 0
+            ? 'skipped'
+            : 'pending',
     session.validationRuns.length > 0
-      ? `${session.validationRuns.length} run(s)`
+      ? describeValidationCoverage(
+          session.validationRuns,
+          session.changeSets,
+          session.repairProposals,
+        )
       : undefined,
   );
   const repair = stage(
@@ -339,4 +351,42 @@ export function deriveStages(session: AgentSession): SessionStageView[] {
     repair,
     report,
   ];
+}
+
+const IN_FLIGHT_TASK_STATUSES: readonly string[] = [
+  'running',
+  'awaiting-approval',
+  'applied',
+  'validation-failed',
+  'repairing',
+];
+
+/**
+ * Progress and the pending approval identity, derived only from recorded
+ * state. The webview echoes `pendingRequestId` back so a stale card cannot act
+ * on a newer request.
+ */
+export function deriveProgress(session: AgentSession): SessionProgressView {
+  const activeTask = session.tasks.find((task) =>
+    IN_FLIGHT_TASK_STATUSES.includes(task.status),
+  );
+  const label = STATE_LABELS[session.state] ?? session.state;
+  return {
+    totalTasks: session.tasks.length,
+    completedTasks: session.tasks.filter((task) => task.status === 'completed').length,
+    activeTaskId: activeTask?.id,
+    activeTaskTitle: activeTask?.title,
+    pendingRequestId: session.pendingApproval?.id,
+    pendingRequestKind: session.pendingApproval?.kind,
+    pendingSubjectId: session.pendingApproval?.subjectId,
+    validation: describeValidationCoverage(
+      session.validationRuns,
+      session.changeSets,
+      session.repairProposals,
+    ),
+    activity:
+      activeTask !== undefined && activeTask.title.length > 0
+        ? `${label} — ${activeTask.title}`
+        : label,
+  };
 }
