@@ -107,7 +107,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }),
       retrieve: async (query, token) => {
         void token;
-        const secret = await this.deps.secrets.get();
+        const secret = await this.currentSecret();
         return this.deps.workspaceIndex.retrieve(query, secret);
       },
       changes: deps.changeService,
@@ -123,7 +123,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           allowlist: commandSettings.allowlist,
           timeoutMs: commandSettings.timeoutMs,
           maxOutputChars: commandSettings.maxOutputChars,
-          secret: await this.deps.secrets.get(),
+          secret: await this.currentSecret(),
           signal,
         });
       },
@@ -131,6 +131,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       logger: this.deps.logger,
       onChange: (task) => this.onTaskUpdate(task),
     });
+  }
+
+  private async currentSecret(): Promise<string | undefined> {
+    try {
+      const providerType = this.deps.settings.getProviderSettings().type;
+      return await this.deps.secrets.forProvider(providerType).get();
+    } catch {
+      return await this.deps.secrets.get();
+    }
   }
 
   private workspaceRoot(): vscode.WorkspaceFolder | undefined {
@@ -200,6 +209,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: 'status', status });
     } catch (error) {
       this.deps.logger.error('failed to refresh provider status', error);
+    }
+  }
+
+  /**
+   * Called when provider configuration changed while a request is active.
+   * Cancels the active request so a stale profile cannot finish and post a
+   * result under the new profile's UI.
+   */
+  cancelActiveIfBusy(): void {
+    if (this.busy) {
+      this.cancelActive();
     }
   }
 
@@ -495,7 +515,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     try {
-      const secret = await this.deps.secrets.get();
+      const secret = await this.currentSecret();
       const retrieval = await this.deps.workspaceIndex.retrieve(trimmed, secret);
       let added = 0;
       for (const item of retrieval.items) {
@@ -855,7 +875,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async addCandidates(candidates: readonly ContextCandidate[]): Promise<AddResult> {
-    const secret = await this.deps.secrets.get();
+    const secret = await this.currentSecret();
     const contextSettings = this.deps.settings.getContextSettings();
     const skipped: string[] = [];
     let added = 0;
@@ -1242,7 +1262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const secret = await this.deps.secrets.get();
+    const secret = await this.currentSecret();
     const built = await this.deps.contextService.build(
       this.attachments.map((attachment) => ({
         path: attachment.path,

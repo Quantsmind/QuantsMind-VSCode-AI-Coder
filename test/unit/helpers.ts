@@ -194,6 +194,8 @@ export function createSettings(
     getAgentSettings: () => resolveAgentSettings({}),
     getCommandSettings: () => resolveCommandSettings({}),
     updateModel: async () => undefined,
+    updateProviderType: async () => undefined,
+    updateBaseUrl: async () => undefined,
     onDidChange: () => ({ dispose: () => undefined }),
   };
 }

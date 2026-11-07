@@ -17,7 +17,7 @@ suite('extension activation and manifest', () => {
     const api = await ext.activate();
 
     expect(ext.isActive).to.equal(true);
-    expect(api.version).to.equal('0.2.0');
+    expect(api.version).to.equal('1.0.0');
     expect(api.getProviderStatus).to.be.a('function');
     expect(api.revealChat).to.be.a('function');
     expect(Object.keys(api).sort()).to.deep.equal(['getProviderStatus', 'revealChat', 'version']);
@@ -38,7 +38,7 @@ suite('extension activation and manifest', () => {
 
     expect(manifest.activationEvents).to.deep.equal(['onStartupFinished']);
     expect(manifest.main).to.equal('./out/src/extension.js');
-    expect(manifest.preview).to.equal(true);
+    expect(manifest.preview).to.equal(false);
 
     const capabilities = manifest.capabilities as Record<string, unknown>;
     const untrusted = capabilities.untrustedWorkspaces as Record<string, unknown>;
