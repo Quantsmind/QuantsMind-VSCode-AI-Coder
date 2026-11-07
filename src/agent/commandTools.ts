@@ -3,6 +3,7 @@ import { runApprovedCommand, type CommandResult } from '../commands/runner';
 import { analyzeValidationFailure } from './diagnostics';
 import type { AgentTool, AgentToolResult } from './codingAgent';
 import type { Diagnostic, ValidationEvidence } from './models';
+import { hashContent, type ChangePlan } from '../changes/model';
 
 export interface CommandToolApproval {
   (request: { readonly command: string; readonly cwd: string; readonly risk: string }): Promise<boolean>;
@@ -35,7 +36,7 @@ export class CommandTools {
     };
   }
 
-  async runCommand(command: unknown): Promise<AgentToolResult> {
+  async runCommand(command: unknown, boundPlan?: ChangePlan): Promise<AgentToolResult> {
     if (typeof command !== 'string') {
       return { ok: false, tool: 'run_command', error: 'Command must be text.', durationMs: 0 };
     }
@@ -85,7 +86,11 @@ export class CommandTools {
               error: result.error,
             } as ValidationEvidence,
           });
-    const enriched = { ...result, diagnostics };
+    const binding =
+      boundPlan !== undefined
+        ? { planId: boundPlan.id, planHash: hashContent(JSON.stringify(boundPlan)) }
+        : undefined;
+    const enriched = { ...result, diagnostics, binding };
     return {
       ok: result.exitCode === 0 && result.error === undefined,
       tool: 'run_command',
@@ -98,6 +103,34 @@ export class CommandTools {
   async runValidationCommand(command: unknown): Promise<AgentToolResult> {
     const result = await this.runCommand(command);
     return { ...result, tool: 'run_validation_command' };
+  }
+
+  async diagnoseValidationFailure(output: unknown): Promise<AgentToolResult> {
+    const text = typeof output === 'string' ? output : '';
+    const diagnostics = analyzeValidationFailure({
+      id: 'validation-diagnosis',
+      taskId: 'coding-agent',
+      command: 'validation',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      outcome: 'failed',
+      evidence: {
+        command: 'validation',
+        exitCode: 1,
+        passed: false,
+        timedOut: false,
+        cancelled: false,
+        truncated: false,
+        durationMs: 0,
+        output: text,
+      } as ValidationEvidence,
+    });
+    return {
+      ok: diagnostics.length > 0,
+      tool: 'diagnose_validation_failure',
+      output: JSON.stringify(diagnostics, null, 2),
+      durationMs: 0,
+    };
   }
 
   toAgentTools(): readonly AgentTool[] {
@@ -126,6 +159,14 @@ export class CommandTools {
         parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
         async execute(args) {
           return self.runValidationCommand(args.command);
+        },
+      },
+      {
+        name: 'diagnose_validation_failure',
+        description: 'Analyze validation output and return structured diagnostics without running another command.',
+        parameters: { type: 'object', properties: { output: { type: 'string' } } },
+        async execute(args) {
+          return self.diagnoseValidationFailure(args.output);
         },
       },
     ];

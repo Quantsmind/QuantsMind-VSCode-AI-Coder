@@ -242,6 +242,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.ensureConversation();
     this.syncHistoryBeforeSend();
     await this.recordUser(trimmed, []);
+    this.session.addUser(trimmed);
     const toolEvents: Array<{ tool?: string; ok?: boolean; message: string; output?: string }> = [];
     this.busy = true;
     this.post({ type: 'busy', busy: true });
@@ -503,6 +504,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (existing !== undefined) {
       this.conversation = existing;
       this.storedMessages = [...existing.messages];
+      this.session.load(
+        existing.messages
+          .filter((message) => message.localOnly !== true)
+          .map((message) => ({ role: message.role, content: message.text })),
+      );
       this.refreshHistoryState(existing, 'reload');
       return;
     }
@@ -826,6 +832,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.busy = false;
     this.conversation = conversation;
     this.storedMessages = [...conversation.messages];
+    this.session.load(
+      conversation.messages
+        .filter((message) => message.localOnly !== true)
+        .map((message) => ({ role: message.role, content: message.text })),
+    );
     this.refreshHistoryState(conversation, 'switch');
     this.attachments = [];
     this.pendingDraft = undefined;

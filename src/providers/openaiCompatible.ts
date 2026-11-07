@@ -425,6 +425,7 @@ async function parseStreamingResponse(
   let finishReason: string | undefined;
   let usage: CompletionUsage | undefined;
   let sawEvent = false;
+  const streamedToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
 
   for await (const data of parseServerSentEvents(body)) {
     if (data === '[DONE]') {
@@ -465,10 +466,33 @@ async function parseStreamingResponse(
     }
 
     finishReason = readString(choice, 'finish_reason') ?? finishReason;
-    const delta = extractContainerText(asRecord(choice.delta));
+    const deltaRecord = asRecord(choice.delta);
+    const delta = extractContainerText(deltaRecord);
     if (delta !== undefined && delta.length > 0) {
       text += delta;
       onDelta?.(delta);
+    }
+
+    const rawToolCalls = Array.isArray(deltaRecord?.tool_calls) ? deltaRecord.tool_calls : [];
+    for (const raw of rawToolCalls) {
+      const record = asRecord(raw);
+      if (record === undefined) {
+        continue;
+      }
+      const index = typeof record.index === 'number' ? record.index : streamedToolCalls.size;
+      const existing = streamedToolCalls.get(index) ?? { arguments: '' };
+      if (typeof record.id === 'string') {
+        existing.id = record.id;
+      }
+      const fn = asRecord(record.function);
+      if (typeof fn?.name === 'string') {
+        existing.name = fn.name;
+      }
+      const args = fn?.arguments;
+      if (typeof args === 'string') {
+        existing.arguments += args;
+      }
+      streamedToolCalls.set(index, existing);
     }
   }
 
@@ -479,7 +503,23 @@ async function parseStreamingResponse(
     );
   }
 
-  return { text, model, finishReason, usage };
+  const accumulatedToolCalls = [...streamedToolCalls.values()].map((call, index) => ({
+    id: call.id ?? `tool-call-${index + 1}`,
+    type: 'function',
+    function: {
+      name: call.name ?? '',
+      arguments: call.arguments,
+    },
+  }));
+  const toolCalls = parseToolCalls(accumulatedToolCalls, secret);
+
+  return {
+    text,
+    model,
+    finishReason,
+    usage,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
 }
 
 class OpenAiCompatibleProvider implements AiProvider {

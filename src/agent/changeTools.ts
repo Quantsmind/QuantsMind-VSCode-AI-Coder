@@ -62,7 +62,7 @@ export class ChangeTools {
       return {
         ok: true,
         tool: 'prepare_file_change',
-        output: JSON.stringify({ taskId, summary, files, warnings: prepared.warnings }, null, 2),
+        output: JSON.stringify({ taskId, summary, files, warnings: prepared.warnings, plan: prepared.plan }, null, 2),
         durationMs: 0,
       };
     } catch (error) {

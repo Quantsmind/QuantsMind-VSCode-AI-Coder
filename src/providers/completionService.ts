@@ -4,7 +4,9 @@ import type { SecretStore } from '../security/secretStore';
 import { describeEndpointHost, isLoopbackHost, normalizeBaseUrl } from './endpoint';
 import { ProviderError, isProviderError, normalizeThrownError } from './errors';
 import { createProvider, listProviderTypes, providerDisplayName } from './registry';
+import { describeCapabilities } from './capabilities';
 import type { ChatMessage, CompletionOptions, CompletionResult } from './types';
+import type { ProviderCapabilities } from './capabilities';
 
 export interface ProviderStatus {
   readonly providerType: string;
@@ -15,6 +17,7 @@ export interface ProviderStatus {
   readonly credentialRequired: boolean;
   readonly ready: boolean;
   readonly configurationError?: string;
+  readonly capabilities?: ProviderCapabilities;
 }
 
 export class CompletionService {
@@ -60,6 +63,7 @@ export class CompletionService {
       credentialRequired,
       ready,
       configurationError,
+      capabilities: describeCapabilities(config),
     };
   }
 

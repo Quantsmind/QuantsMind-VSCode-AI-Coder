@@ -121,6 +121,22 @@ suite('command tools', () => {
     expect(result.error).to.contain('Destructive commands are not permitted');
   });
 
+  test('diagnoses validation failures without running a command', async () => {
+    const tools = new CommandTools({
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      allowlist: ['node --version'],
+      timeoutMs: 1000,
+      trusted: true,
+      approval: async () => true,
+    });
+    const tool = tools.toAgentTools().find((item) => item.name === 'diagnose_validation_failure')!;
+    const result = await tool.execute({ output: 'test.ts(42,1): error TS2304: Cannot find name test' });
+
+    expect(result.ok).to.equal(true);
+    expect(result.output).to.contain('TS2304');
+  });
+
   test('does not run without approval', async () => {
     const tools = new CommandTools({
       cwd: process.cwd(),

@@ -58,6 +58,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unit and integration suites pass after the agent runtime changes.
 
+## [1.2.0] - 2026-11-07
+
+### Added
+
+- Validation diagnostics as a standalone tool: `diagnose_validation_failure`.
+- Validation command results now include structured diagnostics and plan binding.
+- Change preparation output now includes the full plan for validation binding.
+- Richer chat tool-result rendering for diffs and command output.
+
+### Changed
+
+- Agent system prompt now guides the model through validate, repair, and revalidate.
+- Command validation output now exposes diagnostics for failed runs.
+
+### Tests
+
+- Unit and integration suites pass after the v1.2.0 validation and UX changes.
+
+## [1.3.0] - 2026-11-07
+
+### Changed
+
+- Coding-agent prompts now restore provider history from the persisted conversation.
+- Provider history restoration excludes local-only tool-result messages, so tool output is preserved in the transcript without being replayed to the model.
+- Version bumped to 1.3.0.
+
+### Tests
+
+- Compile, lint, unit tests, and integration tests pass after the history-restoration changes.
+
 ## [0.3.4] - 2026-11-04
 
 ### Added

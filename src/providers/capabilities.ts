@@ -17,7 +17,7 @@ export function describeCapabilities(
   maxContextChars = 40_000,
 ): ProviderCapabilities {
   return {
-    nativeToolCalling: false,
+    nativeToolCalling: true,
     structuredOutput: true,
     streaming: settings.stream,
     maxContextChars: Math.max(2_000, Math.min(maxContextChars, 400_000)),
