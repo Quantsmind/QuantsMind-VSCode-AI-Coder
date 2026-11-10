@@ -1,12 +1,13 @@
 {
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
-  "description": "Project-aware AI coding assistant for VS Code with explicit context control, streaming responses, and approval-first workflows.",
-  "version": "1.0.0",
+  "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
+  "version": "2.0.0",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
-  "preview": false,
+  "preview": true,
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -39,7 +40,7 @@
     "untrustedWorkspaces": {
       "supported": true
     },
-    "virtualWorkspaces": true
+    "virtualWorkspaces": false
   },
   "contributes": {
     "viewsContainers": {
@@ -127,7 +128,7 @@
         "command": "quantsmind.selectProvider",
         "title": "Select Provider Profile",
         "category": "QuantsMind",
-        "icon": "$(symbol-method)"
+        "icon": "$(plug)"
       },
       {
         "command": "quantsmind.testConnection",
@@ -155,7 +156,7 @@
       },
       {
         "command": "quantsmind.startAgentTask",
-        "title": "Start Agent Task (Plan Changes)",
+        "title": "Start Agent Session",
         "category": "QuantsMind",
         "icon": "$(rocket)"
       },
@@ -164,6 +165,24 @@
         "title": "Show Change History",
         "category": "QuantsMind",
         "icon": "$(history)"
+      },
+      {
+        "command": "quantsmind.showVersion",
+        "title": "About QuantsMind / Version",
+        "category": "QuantsMind",
+        "icon": "$(info)"
+      },
+      {
+        "command": "quantsmind.inspectWorkspace",
+        "title": "Inspect Workspace (Read-Only)",
+        "category": "QuantsMind",
+        "icon": "$(search)"
+      },
+      {
+        "command": "quantsmind.runSelfDiagnostics",
+        "title": "Run Complete Self-Diagnostics",
+        "category": "QuantsMind",
+        "icon": "$(pulse)"
       },
       {
         "command": "quantsmind.showMenu",
@@ -247,18 +266,20 @@
             "lm-studio",
             "llama-cpp",
             "vllm",
-            "gemini"
+            "gemini",
+            "pollinations"
           ],
           "enumDescriptions": [
             "Any provider exposing an OpenAI-compatible /chat/completions API.",
-            "OpenAI cloud API.",
-            "Groq cloud API.",
-            "OpenRouter cloud API.",
-            "Ollama local server.",
-            "LM Studio local server.",
-            "llama.cpp server.",
-            "vLLM self-hosted server.",
-            "Google Gemini."
+            "Paid provider; API key required. See https://openai.com/api/pricing/.",
+            "Free tier available; API key required. See https://groq.com/pricing/.",
+            "Paid / pay-as-you-go. See https://openrouter.ai/pricing.",
+            "Local, self-hosted; no provider fees.",
+            "Local, self-hosted; no provider fees.",
+            "Local, self-hosted; no provider fees.",
+            "Self-hosted; no provider fees.",
+            "Free tier available; API key required. See https://ai.google.dev/gemini-api/docs/pricing.",
+            "Free, no API key required by default. Anonymous service; availability and rate limits can change without notice. See https://text.pollinations.ai/openai/models."
           ],
           "default": "openai-compatible",
           "scope": "application",
@@ -318,7 +339,7 @@
           "default": true,
           "scope": "application",
           "order": 8,
-          "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected."
+          "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected. Loopback traffic is unencrypted and any local process can answer the port, so each such request is logged at warn level in the QuantsMind output channel. Set to `false` to require HTTPS everywhere."
         },
         "quantsmind.context.excludeGlobs": {
           "type": "array",
@@ -390,7 +411,7 @@
           "default": 6,
           "minimum": 1,
           "maximum": 20,
-          "scope": "resource",
+          "scope": "application",
           "order": 40,
           "markdownDescription": "Maximum number of provider calls an agent task may make, including repair iterations."
         },
@@ -399,7 +420,7 @@
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "scope": "resource",
+          "scope": "application",
           "order": 41,
           "markdownDescription": "Maximum number of repair passes after a validation failure."
         },
@@ -408,7 +429,7 @@
           "default": 180000,
           "minimum": 10000,
           "maximum": 900000,
-          "scope": "resource",
+          "scope": "application",
           "order": 42,
           "markdownDescription": "Wall-clock limit for an agent task step. The task is cancelled when the limit is reached."
         },
@@ -425,7 +446,7 @@
             "npm run verify"
           ],
           "uniqueItems": true,
-          "scope": "resource",
+          "scope": "application",
           "order": 50,
           "markdownDescription": "Exact validation commands that may run after you approve them. Commands are executed without a shell and cannot contain shell metacharacters. Nothing runs automatically."
         },
@@ -434,7 +455,7 @@
           "default": 120000,
           "minimum": 1000,
           "maximum": 600000,
-          "scope": "resource",
+          "scope": "application",
           "order": 51,
           "markdownDescription": "Timeout for an approved validation command."
         },
@@ -443,7 +464,7 @@
           "default": 120000,
           "minimum": 1000,
           "maximum": 1000000,
-          "scope": "resource",
+          "scope": "application",
           "order": 52,
           "markdownDescription": "Maximum captured output characters for a validation command. Output is redacted before display."
         }
@@ -460,11 +481,14 @@
     "test:integration": "npm run compile && vscode-test",
     "test:packaged": "npm run compile && vscode-test --config .vscode-test.packaged.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "package": "npm run compile && vsce package --out quantsmind-vscode-ai-coder-1.0.0.vsix",
+    "package": "npm run compile && node scripts/package.mjs",
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "verify:install": "node scripts/verify-install.mjs",
-    "verify": "npm run lint && npm run verify:deps && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
+    "release": "node scripts/release.mjs",
+    "sha256": "node scripts/sha256.mjs",
+    "verify": "npm run lint && npm run verify:deps && npm run verify:release && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
   },
   "dependencies": {
     "minimatch": "11.0.4"

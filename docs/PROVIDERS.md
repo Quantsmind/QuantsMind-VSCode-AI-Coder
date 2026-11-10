@@ -16,8 +16,16 @@ OpenAI, OpenRouter, and compatible self-hosted or local servers.
 - `AiProvider` with `id`, `displayName`, and `complete`.
 
 `src/providers/registry.ts` maps `quantsmind.provider.type` to a factory.
-v0.2.0 registers `openai-compatible`. The chat layer and the agent task runner
+v0.3.0 registers `openai-compatible`. The chat layer and the agent orchestrator
 only depend on the contract, so a new provider does not require changes there.
+
+Every provider reports a `ProviderCapabilities` descriptor. In this build
+`nativeToolCalling` is always `false`: no executable tool definitions are sent
+to a provider. `structuredOutput` is `true` because the prompt requests JSON and
+the local parser validates it, not because the provider has a native
+structured-output mode. `streaming` follows the configured setting.
+`maxContextChars` is advisory guidance derived from the retrieval budget. See
+[PROVIDER_CONFIGURATION.md](PROVIDER_CONFIGURATION.md).
 
 ## Configuration
 
@@ -55,7 +63,7 @@ POST <baseUrl>/chat/completions
 Content-Type: application/json
 Accept: text/event-stream        (streaming) or application/json
 Authorization: Bearer <credential>   (remote providers)
-User-Agent: QuantsMind-VSCode-AI-Coder/0.2.0
+User-Agent: QuantsMind-VSCode-AI-Coder/0.3.0
 
 {
   "model": "gpt-4o-mini",

@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { ChangeService } from '../../src/changes/changeService';
 import { ChangeHistoryStore } from '../../src/changes/history';
 import { ChatViewProvider } from '../../src/chat/chatViewProvider';
+import { createAgentRuntime } from '../../src/agent/runtime';
 import { ConversationStore } from '../../src/chat/persistence';
 import type { HostToWebviewMessage } from '../../src/chat/protocol';
 import type { ResolvedProviderSettings } from '../../src/config/resolve';
@@ -141,6 +142,20 @@ function createHarness(
       vscode.Uri.file(join(tmpdir(), 'quantsmind-test-backups')),
       logger,
     ),
+    agentRuntime: createAgentRuntime({
+      completion,
+      settings,
+      secrets,
+      logger,
+      workspaceIndex: new WorkspaceIndexService(settings, logger),
+      changeService: new ChangeService(
+        settings,
+        new ChangeHistoryStore(mementoLike),
+        vscode.Uri.file(join(tmpdir(), 'quantsmind-test-backups')),
+        logger,
+      ),
+      sessionStore: mementoLike,
+    }),
   });
 
   const webview = new FakeWebview();
@@ -491,7 +506,7 @@ suite('provider profiles integration (C)', () => {
       await markReady(webview);
       webview.emit({ type: 'send', prompt: 'Hello', mode: 'ask' });
       await waitFor(() => server.requests.length === 1);
-      provider.cancelActiveIfBusy();
+      provider.cancelActiveRequest();
       await waitFor(() => webview.has('assistantCancelled'));
       expect(webview.has('assistantEnd')).to.equal(false);
     } finally {

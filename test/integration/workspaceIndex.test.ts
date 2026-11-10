@@ -58,10 +58,41 @@ suite('workspace index and retrieval', () => {
     expect(second.map((entry) => entry.path)).to.deep.equal(first.map((entry) => entry.path));
   });
 
-  test('exposes entry-point and test-path helpers', async () => {
+  test('builds repository intelligence from the indexed workspace', async () => {
     const index = new WorkspaceIndexService(settings, logger);
-    expect(await index.entryPoints()).to.deep.equal([]);
-    expect(await index.isTestOnly('src/example.ts')).to.equal(false);
-    expect(await index.isTestOnly('test/example.test.ts')).to.equal(true);
+    const overview = await index.repositoryOverview();
+    expect(overview).to.not.equal(undefined);
+    expect(overview?.languages.map((language) => language.name)).to.include('TypeScript');
+    expect(overview?.sourceFileCount).to.be.at.least(2);
+
+    const graph = await index.dependencyGraph();
+    expect(graph).to.not.equal(undefined);
+    expect(graph?.nodes.map((node) => node.path)).to.include.members([
+      'src/example.ts',
+      'src/utils.ts',
+    ]);
+
+    const { validateChangeInputs } = await import('../../src/changes/model');
+    const changes = validateChangeInputs([
+      {
+        kind: 'modify',
+        path: 'src/utils.ts',
+        content: 'export function sum(values: readonly number[]): number { return values.length; }\n',
+        summary: 'Change sum.',
+      },
+    ]).changes;
+    const impact = await index.analyzeChangeImpact(changes, []);
+    expect(impact?.directFiles.map((file) => file.path)).to.deep.equal(['src/utils.ts']);
+    expect(impact?.confidence).to.be.oneOf(['high', 'medium', 'low']);
+  });
+
+  test('blocks repository intelligence in restricted mode', async () => {
+    const restricted = new WorkspaceIndexService(settings, logger, () => false);
+    expect(await restricted.repositoryOverview()).to.equal(undefined);
+    expect(await restricted.dependencyGraph()).to.equal(undefined);
+    expect(await restricted.selectRepositoryContext('example', { maxFiles: 3, maxChars: 1000 })).to.equal(
+      undefined,
+    );
+    expect(await restricted.analyzeChangeImpact([], [])).to.equal(undefined);
   });
 });

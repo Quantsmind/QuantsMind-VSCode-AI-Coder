@@ -1,5 +1,6 @@
 import { minimatch } from 'minimatch';
 import { redactSecrets } from '../security/redact';
+import type { AttachmentOrigin } from '../security/workspaceTrust';
 
 export const CONTEXT_TRUNCATION_MARKER =
   '\n\n[QuantsMind: content truncated to fit the configured context budget]';
@@ -11,6 +12,8 @@ export interface ContextCandidate {
   readonly isSelection?: boolean;
   readonly startLine?: number;
   readonly endLine?: number;
+  /** Who selected this content; carried through filtering and storage. */
+  readonly origin?: AttachmentOrigin;
 }
 
 export interface ContextItem extends ContextCandidate {

@@ -1,8 +1,22 @@
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ChatMessage {
   readonly role: ChatRole;
   readonly content: string;
+  readonly toolCalls?: readonly CompletionToolCall[];
+  readonly toolCallId?: string;
+}
+
+export interface CompletionToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Readonly<Record<string, unknown>>;
+}
+
+export interface CompletionToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
 }
 
 export interface CompletionRequest {
@@ -11,6 +25,7 @@ export interface CompletionRequest {
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
   readonly stream: boolean;
+  readonly tools?: readonly CompletionToolDefinition[];
 }
 
 export interface CompletionUsage {
@@ -24,6 +39,7 @@ export interface CompletionResult {
   readonly model?: string;
   readonly finishReason?: string;
   readonly usage?: CompletionUsage;
+  readonly toolCalls?: readonly CompletionToolCall[];
 }
 
 export interface DisposableLike {
@@ -40,6 +56,8 @@ export interface CompletionOptions {
   readonly token?: CancellationTokenLike;
   readonly timeoutMs?: number;
   readonly onDelta?: (delta: string) => void;
+  readonly tools?: readonly CompletionToolDefinition[];
+  readonly stream?: boolean;
 }
 
 /**
@@ -51,3 +69,5 @@ export interface AiProvider {
   readonly displayName: string;
   complete(request: CompletionRequest, options?: CompletionOptions): Promise<CompletionResult>;
 }
+
+export type IProvider = AiProvider;

@@ -8,6 +8,7 @@ import {
   credentialRequiredForProfile,
   isLocalProviderProfile,
   providerAdapterForType,
+  type ProviderAccessClass,
 } from '../../src/providers/profiles';
 import { createProvider, listProviderTypes, providerDisplayName } from '../../src/providers/registry';
 import { resolveProviderSettings } from '../../src/config/resolve';
@@ -30,7 +31,7 @@ function config(overrides: Partial<OpenAiCompatibleConfig> = {}): OpenAiCompatib
 }
 
 suite('provider profile registration', () => {
-  test('lists all nine provider profiles', () => {
+  test('lists all ten provider profiles (nine built-in + Pollinations)', () => {
     const ids = listProviderProfileIds();
     expect(ids).to.deep.equal([
       'openai-compatible',
@@ -42,6 +43,7 @@ suite('provider profile registration', () => {
       'llama-cpp',
       'vllm',
       'gemini',
+      'pollinations',
     ]);
   });
 
@@ -123,7 +125,7 @@ suite('provider profile registration', () => {
     expect(ollama?.streaming).to.equal(true);
     expect(ollama?.modelDiscovery).to.equal(true);
     expect(ollama?.cancellation).to.equal(true);
-    expect(ollama?.toolCalling).to.equal(false);
+    expect(ollama?.toolCalling).to.equal(true);
 
     const gemini = getProviderCapabilities('gemini');
     expect(gemini?.completion).to.equal(true);
@@ -132,9 +134,13 @@ suite('provider profile registration', () => {
     expect(gemini?.limitations).to.be.an('array');
     expect(gemini?.limitations.length).to.be.greaterThan(0);
 
-    // No profile advertises tool calling (adapter rejects tool-call responses).
+    // OpenAI-compatible profiles advertise tool calling; Gemini does not.
     for (const profile of listProviderProfiles()) {
-      expect(profile.capabilities.toolCalling).to.equal(false);
+      if (profile.id === 'gemini') {
+        expect(profile.capabilities.toolCalling).to.equal(false);
+      } else {
+        expect(profile.capabilities.toolCalling).to.equal(true);
+      }
     }
   });
 
@@ -158,5 +164,65 @@ suite('provider profile registration', () => {
     expect(credentialRequiredForProfile('openai-compatible', false)).to.equal(true);
     expect(isLocalProviderProfile('vllm')).to.equal(true);
     expect(isLocalProviderProfile('openai')).to.equal(false);
+  });
+
+  suite('Pollinations free preset', () => {
+    test('pollinations is registered as free-no-key with no credential required', () => {
+      const profile = getProviderProfile('pollinations');
+      expect(profile).to.not.equal(undefined);
+      expect(profile?.id).to.equal('pollinations');
+      expect(profile?.displayName).to.equal('Pollinations');
+      expect(profile?.adapter).to.equal('openai-compatible');
+      expect(profile?.defaultBaseUrl).to.equal('https://text.pollinations.ai/openai');
+      expect(profile?.defaultModel).to.equal('openai-fast');
+      expect(profile?.credential).to.equal('never');
+      expect(profile?.local).to.equal(false);
+      expect(profile?.access).to.equal('free-no-key');
+      expect(profile?.pricing.access).to.equal('free-no-key');
+      expect(profile?.pricing.pricingSource).to.contain('pollinations');
+      expect(profile?.pricing.anonymousNote).to.contain('can change without notice');
+      expect(profile?.pricing.endpointEditable).to.equal(true);
+    });
+
+    test('pollinations never requires a credential', () => {
+      expect(credentialRequiredForProfile('pollinations', false)).to.equal(false);
+      expect(credentialRequiredForProfile('pollinations', true)).to.equal(false);
+    });
+  });
+
+  suite('access classification', () => {
+    test('reports access class for every profile', () => {
+      const expected: Record<string, ProviderAccessClass> = {
+        'openai-compatible': 'custom-unknown',
+        openai: 'paid',
+        groq: 'free-tier-key',
+        openrouter: 'paid',
+        ollama: 'local',
+        'lm-studio': 'local',
+        'llama-cpp': 'local',
+        vllm: 'local',
+        gemini: 'free-tier-key',
+        pollinations: 'free-no-key',
+      };
+      for (const [id, expectedAccess] of Object.entries(expected)) {
+        const profile = getProviderProfile(id);
+        expect(profile?.access, id).to.equal(expectedAccess);
+        expect(profile?.pricing.access, id).to.equal(expectedAccess);
+      }
+    });
+
+    test('local profiles are never paid', () => {
+      for (const id of ['ollama', 'lm-studio', 'llama-cpp', 'vllm']) {
+        expect(getProviderProfile(id)?.access).to.equal('local');
+        expect(isLocalProviderProfile(id)).to.equal(true);
+      }
+    });
+
+    test('pricing source is never empty', () => {
+      for (const profile of listProviderProfiles()) {
+        expect(profile.pricing.pricingSource.length).to.be.greaterThan(0);
+        expect(profile.pricing.verifiedAt.length).to.be.greaterThan(0);
+      }
+    });
   });
 });

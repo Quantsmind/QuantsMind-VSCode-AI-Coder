@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { SettingsService } from '../config/settings';
 import { isPathExcluded } from '../context/filters';
 import type { Logger } from '../security/logger';
-import { applyChangePlan, undoAppliedChanges, type ApplyOutcome, type UndoOutcome } from './apply';
+import { applyChangePlan, undoAppliedChanges, type ApplyOutcome, type UndoOutcome, type UndoResult } from './apply';
 import { WorkspaceChangeFs, type ChangeFs } from './fs';
 import {
   ChangeHistoryStore,
@@ -12,6 +12,7 @@ import {
 } from './history';
 import { hashContent, withExpectedHash, type ChangePlan } from './model';
 import { buildReviewChanges, type ReviewChange } from './review';
+import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 
 export interface PreparedPlan {
   readonly plan: ChangePlan;
@@ -35,13 +36,22 @@ export class ChangeService {
   ) {}
 
   createFs(taskId: string): ChangeFs {
-    const root = vscode.workspace.workspaceFolders?.[0];
+    return this.createApplyFs(taskId, taskId);
+  }
+
+  createApplyFs(taskId: string, applyId: string): ChangeFs {
+    // Containment and writes must target the same root the index selected.
+    const root = selectWorkspaceRoot(vscode.workspace.workspaceFolders);
     if (root === undefined) {
       throw new Error('Open a workspace folder before applying changes.');
     }
     return new WorkspaceChangeFs(
       root.uri,
-      vscode.Uri.joinPath(this.backupRoot, this.safeTaskId(taskId)),
+      vscode.Uri.joinPath(
+        this.backupRoot,
+        this.safeTaskId(taskId),
+        this.safeTaskId(applyId),
+      ),
     );
   }
 
@@ -50,6 +60,7 @@ export class ChangeService {
   }
 
   async prepare(plan: ChangePlan, taskId: string): Promise<PreparedPlan> {
+    this.requireTrusted('prepare file changes');
     const fs = this.createFs(taskId);
     const excludeGlobs = this.settings.getContextSettings().excludeGlobs;
     const errors: string[] = [];
@@ -124,13 +135,25 @@ export class ChangeService {
     };
   }
 
+  private requireTrusted(action: string): void {
+    if (vscode.workspace.isTrusted !== true) {
+      throw new Error(`Workspace trust is required to ${action}.`);
+    }
+  }
+
   async apply(
     plan: ChangePlan,
     approvedIds: readonly string[],
     taskId: string,
     summary: string,
+    applyId?: string,
   ): Promise<ApplyReport> {
-    const fs = this.createFs(taskId);
+    this.requireTrusted('apply file changes');
+    const resolvedApplyId =
+      applyId && applyId.length > 0
+        ? applyId
+        : `${taskId}-apply-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const fs = this.createApplyFs(taskId, resolvedApplyId);
     const outcome = await applyChangePlan(plan, fs, { approvedIds });
     const appliedCount = outcome.applied.length;
     const total = plan.changes.length;
@@ -144,6 +167,7 @@ export class ChangeService {
             : 'partial';
 
     const entry: HistoryEntry = {
+      applyId: resolvedApplyId,
       taskId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -154,29 +178,40 @@ export class ChangeService {
     };
     await this.history.add(entry);
     this.logger.info(
-      `change set ${taskId}: applied=${appliedCount} conflicts=${outcome.conflicts.length} failed=${outcome.failed.length}`,
+      `change set ${taskId} apply ${resolvedApplyId}: applied=${appliedCount} conflicts=${outcome.conflicts.length} failed=${outcome.failed.length}`,
     );
 
     return { outcome, entry };
   }
 
   async undo(taskId: string): Promise<UndoOutcome | undefined> {
-    const entry = this.history.get(taskId);
-    if (entry === undefined || !entry.undoable) {
+    this.requireTrusted('undo file changes');
+    const entries = this.history
+      .listForTask(taskId)
+      .filter((entry) => entry.undoable)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (entries.length === 0) {
       return undefined;
     }
 
-    const fs = this.createFs(taskId);
-    const outcome = await undoHistoryEntry(entry, fs);
-    const status = outcome.conflicts > 0 ? 'partial' : 'undone';
-    await this.history.update(taskId, {
-      status,
-      undoable: outcome.conflicts > 0,
-    });
+    const results: UndoResult[] = [];
+    let restored = 0;
+    let conflicts = 0;
+    for (const entry of [...entries].reverse()) {
+      const fs = this.createApplyFs(taskId, entry.applyId);
+      const outcome = await undoHistoryEntry(entry, fs);
+      results.push(...outcome.results);
+      restored += outcome.restored;
+      conflicts += outcome.conflicts;
+      await this.history.update(entry.applyId, {
+        status: outcome.conflicts > 0 ? 'partial' : 'undone',
+        undoable: outcome.conflicts > 0,
+      });
+    }
     this.logger.info(
-      `change set ${taskId} undo: restored=${outcome.restored} conflicts=${outcome.conflicts}`,
+      `change set ${taskId} undo: restored=${restored} conflicts=${conflicts}`,
     );
-    return outcome;
+    return { results, restored, conflicts };
   }
 
   async undoWithFiles(
@@ -190,5 +225,10 @@ export class ChangeService {
       undoable: outcome.conflicts > 0,
     });
     return outcome;
+  }
+
+  /** Lists all change-set history entries, most recent first. */
+  listHistory(): readonly import('./history').HistoryEntry[] {
+    return this.history.list();
   }
 }

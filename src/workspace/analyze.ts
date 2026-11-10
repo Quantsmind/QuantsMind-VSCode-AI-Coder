@@ -1,4 +1,4 @@
-export interface WorkspaceEntry {
+﻿export interface WorkspaceEntry {
   readonly path: string;
   readonly size?: number;
 }
@@ -65,6 +65,7 @@ const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
   ex: 'Elixir',
   exs: 'Elixir',
   zig: 'Zig',
+  kark: 'Karkain',
 };
 
 interface Marker {
@@ -99,6 +100,10 @@ const MARKERS: readonly Marker[] = [
   { test: (p) => /(^|\/)(jest|vitest)\.config\.[cm]?[jt]s$/i.test(p), name: 'JavaScript tests', kind: 'tooling' },
   { test: (p) => /(^|\/)(\.eslintrc|eslint\.config\.)/i.test(p), name: 'ESLint', kind: 'tooling' },
   { test: (p) => /(^|\/)playwright\.config\.[cm]?[jt]s$/i.test(p), name: 'Playwright', kind: 'tooling' },
+  { test: (p) => baseName(p) === 'manage.py' || baseName(p) === 'settings.py', name: 'Django', kind: 'framework' },
+  { test: (p) => baseName(p) === 'angular.json', name: 'Angular', kind: 'framework' },
+  { test: (p) => baseName(p) === 'karkain.toml', name: 'Karkain project', kind: 'tooling' },
+  { test: (p) => /^(?:pnpm-workspace\.ya?ml|turbo\.json|nx\.json|lerna\.json)$/i.test(baseName(p)), name: 'Monorepo', kind: 'tooling' },
 ];
 
 const ENTRY_POINT_PATHS: readonly string[] = [
@@ -116,6 +121,7 @@ const ENTRY_POINT_PATHS: readonly string[] = [
   'app.py',
   'manage.py',
   'main.go',
+  'main.kark',
   'src/main.rs',
   'src/main.go',
   'Program.cs',
@@ -226,15 +232,89 @@ export function detectTechnologies(entries: readonly WorkspaceEntry[]): Technolo
   return [...languageEntries, ...toolingEntries].slice(0, 16);
 }
 
+interface FrameworkMarker {
+  readonly name: string;
+  readonly pattern: RegExp;
+}
+
+const FRAMEWORK_MARKERS: readonly FrameworkMarker[] = [
+  { name: 'Spring Boot', pattern: /spring-boot|springframework/i },
+  { name: 'Angular', pattern: /@angular\/(?:core|cli|common)/i },
+  { name: 'React', pattern: /(?:^|["'\s])react(?:-dom)?(?=["'\s@])/i },
+  { name: 'Vue', pattern: /(?:^|["'\s])vue(?=["'\s@])/i },
+  { name: 'Svelte', pattern: /(?:^|["'\s])svelte(?=["'\s@])/i },
+  { name: 'Django', pattern: /\bdjango\b/i },
+  { name: 'FastAPI', pattern: /\bfastapi\b/i },
+  { name: 'Flask', pattern: /\bflask\b/i },
+  { name: 'Express', pattern: /\bexpress\b/i },
+  { name: 'NestJS', pattern: /@nestjs\//i },
+  { name: 'Gin', pattern: /gin-gonic\/gin/i },
+  { name: 'Pytest', pattern: /\bpytest\b/i },
+  { name: 'JUnit', pattern: /\bjunit\b/i },
+  { name: 'GoogleTest', pattern: /gtest|googletest/i },
+];
+
+/**
+ * Detects frameworks from manifest contents. A framework is only reported when
+ * the workspace actually contains the language that ecosystem uses, so a
+ * `react` string in an unrelated file does not invent a frontend framework.
+ */
+export function detectFrameworks(
+  entries: readonly WorkspaceEntry[],
+  configContents: Readonly<Record<string, string>> = {},
+): Technology[] {
+  const languages = new Set(
+    entries
+      .map((entry) => LANGUAGE_BY_EXTENSION[extensionOf(normalizeWorkspacePath(entry.path))])
+      .filter((language): language is string => language !== undefined),
+  );
+  const found = new Map<string, Technology>();
+  for (const [path, content] of Object.entries(configContents)) {
+    if (content === undefined || content.length > 200_000) {
+      continue;
+    }
+    const normalizedPath = normalizeWorkspacePath(path);
+    for (const marker of FRAMEWORK_MARKERS) {
+      if (found.has(marker.name) || !marker.pattern.test(content)) {
+        continue;
+      }
+      const ecosystemOk =
+        marker.name === 'Spring Boot' || marker.name === 'JUnit'
+          ? languages.has('Java')
+          : marker.name === 'Django' || marker.name === 'FastAPI' || marker.name === 'Flask' || marker.name === 'Pytest'
+            ? languages.has('Python')
+            : marker.name === 'Gin'
+              ? languages.has('Go')
+              : marker.name === 'GoogleTest'
+                ? languages.has('C') || languages.has('C++')
+                : languages.has('TypeScript') || languages.has('JavaScript');
+      if (!ecosystemOk) {
+        continue;
+      }
+      found.set(marker.name, {
+        name: marker.name,
+        kind: 'framework',
+        evidence: normalizedPath,
+        files: 1,
+      });
+    }
+  }
+  return [...found.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export function buildWorkspaceSummary(
   rootName: string,
   entries: readonly WorkspaceEntry[],
+  configContents: Readonly<Record<string, string>> = {},
 ): WorkspaceSummary {
   const normalized = entries.map((entry) => ({
     path: normalizeWorkspacePath(entry.path),
     size: entry.size,
   }));
-  const technologies = detectTechnologies(normalized);
+  const detected = detectTechnologies(normalized);
+  const frameworks = detectFrameworks(normalized, configContents);
+  const seen = new Set(detected.map((technology) => technology.name));
+  const technologies = [...detected, ...frameworks.filter((framework) => !seen.has(framework.name))];
   const entryPoints = entryPointsOf(normalized);
 
   const topLevelCounts = new Map<string, number>();

@@ -48,10 +48,12 @@ npm run test:unit
 src/
   extension.ts                 activation, commands, status bar
   api.ts                       narrow exported API
-  agent/                       staged agent task runner
+  agent/                       session orchestrator, state machine, planning, scheduler, diagnostics
+  project/                     local project intelligence
+  sessions/                    versioned agent-session repository
   changes/                     change model, diffs, review, apply, undo, history
   chat/                        webview provider, HTML, protocol, prompts, session, persistence
-  commands/                    command identifiers and approved command runner
+  commands/                    command identifiers, risk policy, approved command runner
   config/                      defaults, resolution, VS Code settings adapter
   context/                     explicit file access and filtering
   providers/                   provider contract, registry, OpenAI-compatible adapter
@@ -78,9 +80,13 @@ docs/                          architecture, guides, and release reports
 5. Run **QuantsMind: Set API Key** with a disposable key.
 6. Set `quantsmind.provider.baseUrl` to a provider you control.
 7. Attach a selection or file, ask a question, and press Send.
-8. To exercise the change workflow, run **QuantsMind: Start Agent Task**, review
-   the diffs, and approve a file you are willing to modify. Undo restores it.
-9. To exercise validation, run an allowlisted command from the task panel.
+8. To exercise the agent workflow, run **QuantsMind: Start Agent Session**,
+   approve the plan, review the per-file diffs, and approve a file you are
+   willing to modify. Undo restores it.
+9. To exercise validation, run the task's allowlisted command from the control
+   center after apply.
+10. Use the session controls to pause, resume, cancel, restore, or delete a
+    session. Restore re-checks the workspace before resuming.
 
 The extension has no automatic activation of a webview request and no automatic
 file write. Sending and applying are always manual.
@@ -144,7 +150,7 @@ executable is available, so set `VSCODE_EXECUTABLE` in that case.
 npm run package
 ```
 
-Output: `quantsmind-vscode-ai-coder-0.2.0.vsix`.
+Output: `quantsmind-vscode-ai-coder-0.3.0.vsix`.
 
 `.vscodeignore` excludes source, tests, docs, scripts, CI, source maps, and
 TypeScript declarations. `vsce` includes the compiled `out/src` tree, `media`,

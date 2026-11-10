@@ -17,7 +17,8 @@ suite('extension activation and manifest', () => {
     const api = await ext.activate();
 
     expect(ext.isActive).to.equal(true);
-    expect(api.version).to.equal('1.0.0');
+    expect(api.version).to.equal(ext.packageJSON.version);
+    expect(api.version).to.match(/^\d+\.\d+\.\d+/);
     expect(api.getProviderStatus).to.be.a('function');
     expect(api.revealChat).to.be.a('function');
     expect(Object.keys(api).sort()).to.deep.equal(['getProviderStatus', 'revealChat', 'version']);
@@ -38,12 +39,12 @@ suite('extension activation and manifest', () => {
 
     expect(manifest.activationEvents).to.deep.equal(['onStartupFinished']);
     expect(manifest.main).to.equal('./out/src/extension.js');
-    expect(manifest.preview).to.equal(false);
+    expect(manifest.preview).to.equal(true);
 
     const capabilities = manifest.capabilities as Record<string, unknown>;
     const untrusted = capabilities.untrustedWorkspaces as Record<string, unknown>;
     expect(untrusted.supported).to.equal(true);
-    expect(capabilities.virtualWorkspaces).to.equal(true);
+    expect(capabilities.virtualWorkspaces).to.equal(false);
 
     const containers = contributes.viewsContainers as {
       activitybar: { id: string }[];

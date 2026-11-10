@@ -115,8 +115,9 @@ suite('provider switching and completion service profiles', () => {
       new Logger(new MemoryLogSink()),
     );
     const profiles = service.getProfiles();
-    expect(profiles).to.have.length(9);
+    expect(profiles).to.have.length(10);
     expect(profiles.map((p) => p.id)).to.contain('ollama');
     expect(profiles.map((p) => p.id)).to.contain('gemini');
+    expect(profiles.map((p) => p.id)).to.contain('pollinations');
   });
 });

@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { extensionId, vsixPath as defaultVsixPath, version as projectVersion } from './project-meta.mjs';
 
-const vsixPath = resolve(process.argv[2] ?? 'quantsmind-vscode-ai-coder-1.0.0.vsix');
-const expected = 'quantsmind.quantsmind-vscode-ai-coder@1.0.0';
+const vsixPath = resolve(process.argv[2] ?? defaultVsixPath);
+const expected = `${extensionId}@${projectVersion}`;
 
 function cliFromInstallationRoot(root) {
   const scripts = [

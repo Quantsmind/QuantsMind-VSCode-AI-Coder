@@ -5,6 +5,290 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-08
+
+Release bundling the agentic coding work merged on top of 1.3.0 and
+the Gate 3 qualification remediation.
+
+### Added
+- Permanent regression coverage for the agent orchestrator and the bounded
+  provider retry loop (62 tests, D5): session lifecycle, plan/change/
+  validation/repair approvals, exact-operation-set guards, scheduler bounds,
+  cancellation and recovery, and the documented retry cap.
+- Native tool-calling cycle integrity and capability gating (D1): tool
+  transcripts, per-profile tool support, and Gemini tool-message handling.
+- Execution-time (not construction-time) configuration for validation
+  commands: allowlist, credential resolver, timeout and output limit are read
+  when the command runs; trust is rechecked at every boundary (D3).
+- Quota-exhaustion classification (HTTP 402, 403/429 `insufficient_quota`)
+  separate from rate limiting (D6); retry metadata agreement (D8) and
+  Retry-After passthrough with a bounded single retry (D7/D9).
+- Provider-switch model planning: an explicit incompatible model prompts for a
+  choice with the target default offered; approval-modal detail rendering and
+  secret-change detection were refreshed (D10).
+- Workspace-root consistency across every consumer (indexing, retrieval,
+  change service, agent, diagnostics) with a multi-root scoring policy (D4).
+- `validating` is a pausable, user-controlled resting state (D7): nothing is
+  in flight until the user runs the approved validation command.
+- Session recovery reporting and approval bookkeeping hardening (task consent
+  is bound to the exact request the user saw).
+
+### Fixed
+- Rejected change sets are now marked `rejected` instead of staying `pending`,
+  so they cannot be re-approved; pending approvals are always consumed
+  atomically with the user's decision.
+- Cancelling an in-flight task no longer strands the session in a working
+  state with nothing in flight: the session is settled (completed, failed, or
+  parked in `ready`) so pause stays truthful (D7).
+- Pausing no longer reports "work is still in progress" for a resting
+  `validating` session or a session whose tasks are all terminal.
+- The diagnostics report shows the selected workspace root instead of the
+  arbitrary first folder (multi-root consistency, D4).
+- The integration suite no longer runs twice concurrently in two extension
+  hosts (a stale multi-root window in the test profile was restored on every
+  run), which caused shared-state races; integration runs are now
+  deterministic.
+
+### Tests
+- Unit suite: 733 passing, 0 failing.
+- Integration suite: 65 passing on a single extension host, reproducibly.
+- `npm run verify` passes end to end (package, VSIX inspection, packaged-host
+  tests, install verification).
+
+## [Unreleased]
+
+### Added
+
+Milestone work layered on top of the 2.0.0 release commit (see the
+implementation reports at the repository root for qualification evidence):
+
+- **v2.2.0 — project and Karkain intelligence.** Framework detection
+  (Spring Boot, Angular, React, Next.js, Vue, Svelte, Django, Flask,
+  FastAPI, Express, NestJS, Gin, Pytest, JUnit, GoogleTest), backend /
+  frontend / shared layering with explicit unknowns, role inference, an
+  evidence-based component relationship graph, monorepo detection
+  (pnpm/turbo/nx/lerna/nested manifests), syntax-aware Karkain `.kark`
+  project detection, module resolution, cycle reporting, multi-file
+  context collection and agent tools (`get_architecture`,
+  `get_karkain_project`, `get_karkain_context`); the repository card in
+  the chat sidebar renders the architecture analysis and Karkain module
+  graph. The real Karkain compiler cannot execute on this machine;
+  analysis is built from the compiler's grammar and fixtures.
+- **v2.3.0 — execution, build and test integration.** Bounded in-memory
+  execution history with duplicate-invocation protection, cancellation
+  and timeouts; 22 build-system adapters (npm/pnpm/yarn, Maven, Gradle,
+  Go, Cargo, CMake, Make, Ninja, pip/Poetry/uv/Hatch, dotnet, MSBuild,
+  Composer, Bundler, Dart, Flutter, Swift, Karkain) with local detection
+  and toolchain probing; `run_build`, `run_tests`, `detect_build_system`
+  and `get_toolchain` agent tools that execute through the shared
+  approved command runner; conservative test-output parsing (JUnit,
+  pytest, mocha/jest/vitest, go test, cargo test, dotnet test, CTest,
+  RSpec); compiler diagnostics extraction feeding the bounded repair loop.
+- **v2.4.0 — Git, GitHub and change management.** Local Git service
+  (repository detection, branch/HEAD, staged/unstaged/untracked/deleted/
+  renamed/conflict detection, porcelain v1 `-z` parsing, merge/rebase
+  state, credential-stripped remotes, detached HEAD, recent history);
+  content-snapshot checkpoints bound to task IDs with conflict-safe
+  restore that never overwrites diverging user edits; agent tools
+  `git_status`, `git_diff`, `git_log`, `git_branch_list`, `git_remotes`,
+  `git_stage`, `git_unstage`, `git_commit`, `git_create_branch`,
+  `git_switch_branch`, `git_delete_branch`, `create_checkpoint`,
+  `restore_checkpoint`, `list_checkpoints`; explicit approval required
+  for every mutation; broad staging (`git add .`, `-a`, `*`) refused;
+  commits only from staged files with the user-approved message and SHA
+  reporting; GitHub REST integration for issues and pull requests via the
+  VS Code GitHub session token (`github_list_issues`,
+  `github_create_issue`, `github_list_pull_requests`,
+  `github_create_pull_request`), fixture-tested against a mocked REST API
+  and never verified against the live GitHub API; GitHub is optional and
+  ordinary local Git features work without it; a **Git status** card in
+  the chat sidebar shows branch, HEAD, remote, counts, in-progress
+  merge/rebase flags, recent commits, checkpoints and (when authenticated)
+  open issue/PR counts.
+
+### Fixed
+
+- Deleting a conversation no longer promotes an empty one as the new active chat; the
+  next conversation that actually holds messages is selected, and an all-empty store
+  falls back to a fresh chat.
+- `src/extension.ts` contained raw Windows-1252 separator bytes, so the compiled status
+  bar rendered a replacement character instead of the intended separator. The file is
+  now valid UTF-8 end to end.
+- The CI release job uploaded `quantsmind-vscode-ai-coder-0.3.0.vsix`, a name no build
+  has produced since 0.3.0, with `if-no-files-found: error` — so the job could only ever
+  fail on a current release.
+
+### Changed
+
+- Release verification is version-agnostic: artefact names, the installed-extension
+  identity check and the VSIX identity marker are derived from `package.json`, so a
+  version bump no longer requires editing scripts, test configs and assertions.
+- New `npm run verify:release` guard fails the chain when an artefact name, extension id
+  or user-agent is pinned to a literal version; new `npm run release` performs the
+  package.json and lockfile bump and prints the follow-up steps without committing,
+  tagging or publishing; new `npm run sha256` records artefact checksums.
+- The provider `User-Agent` reports the version supplied at activation instead of a
+  string baked into the source, which would otherwise keep shipping the previous
+  release's number.
+- CI now also runs on `release/**` branches and manual dispatch, executes the literal
+  guard, reports (without blocking on) `npm audit --audit-level=high`, and publishes the
+  VSIX plus its SHA-256 checksum as build artifacts.
+
+## [1.1.0] - 2026-11-07
+
+### Added
+
+- Bounded coding-agent runtime with a tool registry and read-only workspace tools.
+- Safe file-change tools using the existing ChangeService, approval, backup, diff,
+  and undo mechanisms.
+- Approved, allowlisted command execution for validation.
+- Repository context tools for overview, context selection, symbol search, and
+  change-impact analysis.
+- Native OpenAI-compatible tool-call support and tool-result feedback.
+- Chat persistence for coding-agent runs and tool results.
+- Tool progress and result rendering in the chat view.
+
+### Changed
+
+- Agent system prompt now guides propose, apply, validate, repair, and revalidate.
+- Provider messages now carry assistant tool calls and tool result messages.
+
+### Tests
+
+- Unit and integration suites pass after the agent runtime changes.
+
+## [1.2.0] - 2026-11-07
+
+### Added
+
+- Validation diagnostics as a standalone tool: `diagnose_validation_failure`.
+- Validation command results now include structured diagnostics and plan binding.
+- Change preparation output now includes the full plan for validation binding.
+- Richer chat tool-result rendering for diffs and command output.
+
+### Changed
+
+- Agent system prompt now guides the model through validate, repair, and revalidate.
+- Command validation output now exposes diagnostics for failed runs.
+
+### Tests
+
+- Unit and integration suites pass after the v1.2.0 validation and UX changes.
+
+## [1.3.0] - 2026-11-07
+
+### Changed
+
+- Coding-agent prompts now restore provider history from the persisted conversation.
+- Provider history restoration excludes local-only tool-result messages, so tool output is preserved in the transcript without being replayed to the model.
+- Version bumped to 1.3.0.
+
+### Tests
+
+- Compile, lint, unit tests, and integration tests pass after the history-restoration changes.
+
+## [0.3.4] - 2026-11-04
+
+### Added
+
+- Conversation history visibility: the chat sidebar now shows whether history was
+  restored, how many previous messages the provider will receive, and a per-request
+  breakdown that separates system instructions, replayed history, the current prompt
+  and attached-file context.
+- Attachment context persistence: the context actually supplied to the provider is
+  captured with each user turn (schema v2, bounded, already redacted) and replayed
+  verbatim when the conversation is restored, instead of only storing file names.
+- Read-only freshness audit for restored attachments: captured context is compared
+  with the file on disk and any difference is reported. Disk content is never
+  substituted for the original captured context.
+- `Clear` and `Restore` conversation actions; destructive conversation operations now
+  require an explicit native confirmation.
+- Sanitized provider-request diagnostics in the Output channel: provider id, model,
+  message counts, size of each request part, streaming state, duration, finish reason
+  and failure category. No prompt text, file content, keys or headers are logged.
+
+### Changed
+
+- Conversation records carry a schema marker; older (pre-0.3.4) conversations are read,
+  ordered and upgraded in place without data loss. Unreadable records are salvaged
+  before the list is rewritten.
+- Local-only assistant output (workspace summaries) is marked as never sent and is
+  excluded from provider history.
+
+### Fixed
+
+- `Restore` now opens the conversation selected in the history dropdown instead of
+  the most recently updated record; without a selection it falls back to the newest
+  conversation that still has messages, so it can no longer land on an empty chat.
+- Empty conversations are no longer offered as history entries. The dropdown keeps the
+  conversation currently open and labels it `New chat — current, empty`, so a New Chat
+  placeholder can no longer be mistaken for the `New chat` action row.
+- Saving a conversation with no messages keeps its previous `updatedAt`, so clearing a
+  conversation or re-saving a placeholder no longer moves it to the top of the history.
+
+## [0.3.2] - 2026-11-03
+
+### Added
+
+- Visible extension version badge in the QuantsMind chat sidebar (sourced from package.json).
+- `QuantsMind: About QuantsMind / Version` command (Command Palette) showing product name, version, extension ID, and provider status.
+- Version included in diagnostic/support reporting via the About command.
+
+### Changed
+
+- Extension manifest version bumped to 0.3.2.
+
+## [0.3.0] - 2026-11-03
+
+Agentic development and execution preview. This is an alpha build and is **not**
+a general availability release.
+
+### Added
+
+- Agent sessions with an explicit lifecycle: requirement, inspection, planning,
+  plan approval, task scheduling, implementation, change review, apply,
+  validation, diagnosis, repair, revalidation and completion report.
+- A typed development plan with tasks, dependencies, acceptance criteria,
+  suggested files and allowlisted validation commands.
+- A deterministic dependency scheduler with blocked-task handling, duplicate
+  execution guards and bounded provider-call budgets.
+- Project intelligence that derives languages, package manager, scripts,
+  configuration files and modules locally, reading only `package.json` content.
+- Session control-center UI: session list, state and stage timeline, plan card,
+  task cards, per-file diff approvals, repair approvals, validation evidence,
+  diagnostics and completion report.
+- Pause, resume, cancel, restore and delete for persisted sessions.
+- Versioned session storage with schema migration, validation on read, event
+  caps and `needs-review` recovery instead of automatic resume.
+- Applied-file SHA-256 revalidation when a stored session is restored.
+- Session undo that restores the backups of the most recent applied change set.
+- Command risk policy that classifies validation, read-only, destructive and
+  unknown commands; destructive commands are always rejected.
+- Diagnostic extraction from real validation output, with bounded repair
+  proposals that require fresh per-file approval and revalidation.
+- Evidence-based completion reports with `completed`, `failed`, `cancelled` or
+  `rejected` outcomes and unresolved-item lists.
+- Capability descriptors for the provider layer; native tool calling remains
+  disabled and the model receives no executable tool channel.
+- Unit coverage for the state machine, scheduler, planning parser, command
+  policy, session repository, project intelligence, protocol and orchestrator;
+  integration coverage for the full session approval flow.
+
+### Changed
+
+- The chat view now uses a session protocol (`session`, `sessions`,
+  `sessionError`) instead of the v0.2.0 single-task message.
+- **Start Agent Task** is now **Start Agent Session**; the command id remains
+  `quantsmind.startAgentTask` for compatibility.
+- The mode label is **Agent session (plan -> execute)**.
+- Version, packaging, verification scripts and tests target 0.3.0.
+
+### Preserved
+
+- All v0.2.0 provider, context, workspace, change, command and security
+  behavior, including approval-first writes, backups, hash preflight, undo,
+  SecretStorage credentials and webview CSP.
+
 ## [0.2.0] - 2026-11-03
 
 Approval-first workspace assistant preview. This is an alpha build and is **not**

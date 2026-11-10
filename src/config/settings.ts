@@ -75,11 +75,14 @@ export class SettingsService {
       .update('provider.model', model, vscode.ConfigurationTarget.Global);
   }
 
-  async updateProviderType(type: string, baseUrl?: string): Promise<void> {
+  async updateProviderType(type: string, baseUrl?: string, model?: string): Promise<void> {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     await config.update('provider.type', type, vscode.ConfigurationTarget.Global);
     if (baseUrl !== undefined) {
       await config.update('provider.baseUrl', baseUrl, vscode.ConfigurationTarget.Global);
+    }
+    if (model !== undefined) {
+      await config.update('provider.model', model, vscode.ConfigurationTarget.Global);
     }
   }
 

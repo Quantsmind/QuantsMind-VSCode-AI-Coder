@@ -29,12 +29,21 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = Object.freeze([
   'npm run lint',
   'npm test',
   'npm run test:unit',
-  'npm run verify',
 ]);
 
 export const MAX_CONVERSATIONS = 30;
 export const MAX_CONVERSATION_CHARS = 120_000;
 export const CONVERSATION_STORAGE_KEY = 'quantsmind.chat.conversations.v1';
+export const CONVERSATION_SCHEMA_VERSION = 2;
+
+/** Captured attachment context budgets. Storage stays bounded so a long
+ * conversation can never grow the extension memento without limit. */
+export const MAX_ATTACHMENT_CONTEXT_CHARS_PER_MESSAGE = 24_000;
+export const MAX_ATTACHMENT_CONTEXT_CHARS_PER_CONVERSATION = 96_000;
+export const MAX_ATTACHMENTS_PER_MESSAGE = 50;
+export const ATTACHMENT_TRUNCATION_MARKER =
+  '\n\n[QuantsMind: captured attachment truncated to fit the storage budget]';
+export const ATTACHMENT_DROPPED_MARKER = '[QuantsMind: attachment content not stored]';
 export const CHANGE_HISTORY_KEY = 'quantsmind.changes.history.v1';
 export const MAX_CHANGE_HISTORY = 50;
 

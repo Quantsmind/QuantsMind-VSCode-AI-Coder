@@ -1,7 +1,8 @@
 import { readFileSync, statSync } from 'node:fs';
 import { unzipSync } from 'fflate';
+import { vsixPath as defaultVsixPath, version as projectVersion } from './project-meta.mjs';
 
-const vsixPath = process.argv[2] ?? 'quantsmind-vscode-ai-coder-1.0.0.vsix';
+const vsixPath = process.argv[2] ?? defaultVsixPath;
 const failures = [];
 
 function ok(message) {
@@ -97,16 +98,19 @@ try {
 
 assert(manifest.name === 'quantsmind-vscode-ai-coder', 'name is quantsmind-vscode-ai-coder');
 assert(manifest.publisher === 'quantsmind', 'publisher is quantsmind');
-assert(manifest.version === '1.0.0', 'version is 1.0.0');
+assert(
+  manifest.version === projectVersion,
+  `version is ${projectVersion} (matches package.json)`,
+);
 assert(typeof manifest.engines?.vscode === 'string', 'declares an engines.vscode range');
 assert(manifest.main === './out/src/extension.js', 'main points at the compiled entry point');
-assert(manifest.preview === false, 'preview is disabled for GA');
+assert(manifest.preview === true, 'is marked as preview, not GA');
 assert(manifest.license === 'MIT', 'license is MIT');
 
 assert(names.includes(`extension/${manifest.main.replace(/^\.\//, '')}`), 'main file exists in archive');
 
 const commands = manifest.contributes?.commands;
-assert(Array.isArray(commands) && commands.length === 18, 'contributes 18 commands');
+assert(Array.isArray(commands) && commands.length === 21, 'contributes 21 commands');
 assert(
   manifest.contributes?.views?.quantsmind?.[0]?.id === 'quantsmind.chatView',
   'contributes the chat webview',
@@ -187,7 +191,11 @@ if (identity === undefined) {
 } else {
   ok('extension.vsixmanifest is present');
   assert(/<Identity[^>]*Publisher="quantsmind"/.test(identity), 'vsix identity publisher is quantsmind');
-  assert(/<Identity[^>]*Version="1\.0\.0"/.test(identity), 'vsix identity version is 1.0.0');
+  const escapedVersion = projectVersion.replace(/\./g, '\\.');
+  assert(
+    new RegExp(`<Identity[^>]*Version="${escapedVersion}"`).test(identity),
+    `vsix identity version is ${projectVersion}`,
+  );
 }
 
 if (failures.length > 0) {

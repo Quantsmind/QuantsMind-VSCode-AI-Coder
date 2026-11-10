@@ -1,0 +1,34 @@
+#!/bin/sh
+# POSIX fixture compiler for tests. Mirrors the contract of karkain.bat.
+# The real Karkain toolchain cannot run on this machine; this stub emits
+# the same diagnostics and PASS/FAIL markers deterministically.
+case "$1" in
+  --version)
+    echo karkain 1.1.0 linux/amd64
+    exit 0
+    ;;
+  build)
+    if [ "$2" = "broken.kark" ]; then
+      echo 'main.kark:5:9: error: unexpected token' 1>&2
+      exit 3
+    fi
+    echo "OK built $2"
+    exit 0
+    ;;
+  check)
+    echo 'main.kark:5:9: error: unexpected token' 1>&2
+    exit 3
+    ;;
+  test)
+    echo 'PASS test_square'
+    echo 'FAIL test_cube'
+    echo 'PASS test_main'
+    exit 4
+    ;;
+  lint)
+    echo 'main.kark:12:3: warning: unused variable n' 1>&2
+    exit 0
+    ;;
+esac
+echo 'unsupported command' 1>&2
+exit 2

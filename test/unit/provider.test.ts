@@ -2,7 +2,8 @@ import { expect } from 'chai';
 import { ProviderError } from '../../src/providers/errors';
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
-  USER_AGENT,
+  setUserAgentVersion,
+  userAgent,
   buildCompletionBody,
   buildRequestHeaders,
   createOpenAiCompatibleProvider,
@@ -136,7 +137,19 @@ suite('request construction', () => {
     expect(headers.Authorization).to.equal(`Bearer ${TEST_SECRET}`);
     expect(headers.Accept).to.equal('text/event-stream');
     expect(headers['Content-Type']).to.equal('application/json');
-    expect(headers['User-Agent']).to.equal(USER_AGENT);
+    expect(headers['User-Agent']).to.equal(userAgent());
+  });
+
+  test('reports the version handed in at activation, never a baked-in one', () => {
+    setUserAgentVersion('9.9.9');
+    try {
+      expect(userAgent()).to.equal('QuantsMind-VSCode-AI-Coder/9.9.9');
+      expect(buildRequestHeaders(undefined, false)['User-Agent']).to.equal(
+        'QuantsMind-VSCode-AI-Coder/9.9.9',
+      );
+    } finally {
+      setUserAgentVersion('dev');
+    }
   });
 
   test('omits authorization without a key and requests JSON when not streaming', () => {
@@ -173,7 +186,7 @@ suite('request construction', () => {
         expect(sent.method).to.equal('POST');
         expect(sent.url).to.equal('/v1/chat/completions');
         expect(sent.headers.authorization).to.equal(`Bearer ${TEST_SECRET}`);
-        expect(sent.headers['user-agent']).to.equal(USER_AGENT);
+        expect(sent.headers['user-agent']).to.equal(userAgent());
         expect(JSON.parse(sent.body)).to.deep.equal({
           model: 'test-model',
           messages: [{ role: 'user', content: 'Hello' }],
@@ -394,7 +407,7 @@ suite('provider error handling', () => {
         } catch (error) {
           failure = error;
         }
-        expect((failure as ProviderError).message).to.contain('Tool-call responses');
+        expect((failure as ProviderError).message).to.contain('did not contain message text');
       },
     );
   });
@@ -532,6 +545,7 @@ suite('provider registry', () => {
       'llama-cpp',
       'vllm',
       'gemini',
+      'pollinations',
     ]);
     expect(providerDisplayName(OPENAI_COMPATIBLE_PROVIDER_ID)).to.equal('OpenAI-compatible');
     expect(providerDisplayName('gemini')).to.equal('Google Gemini');

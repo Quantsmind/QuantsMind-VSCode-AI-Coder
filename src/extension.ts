@@ -1,17 +1,27 @@
 import * as vscode from 'vscode';
 import type { QuantsMindApi } from './api';
+import { createAgentRuntime } from './agent/runtime';
 import { ChatViewProvider } from './chat/chatViewProvider';
 import { ConversationStore } from './chat/persistence';
 import { ChangeHistoryStore } from './changes/history';
 import { ChangeService } from './changes/changeService';
 import { COMMANDS } from './commands/ids';
+import { planProviderModelSwitch } from './config/resolve';
+import {
+  providerAccessClass,
+  providerPricingMetadata,
+  type ProviderAccessClass,
+} from './providers/profiles';
 import { SettingsService } from './config/settings';
 import { ContextService } from './context/contextService';
 import { CompletionService } from './providers/completionService';
+import { setUserAgentVersion } from './providers/openaiCompatible';
 import { validateCredential } from './security/credential';
 import { Logger } from './security/logger';
 import { isProviderApiKeySecretKey, SecretStore } from './security/secretStore';
+import { FIRST_RUN_NOTICE_KEY, showFirstRunNotice } from './onboarding/firstRun';
 import { WorkspaceIndexService } from './workspace/indexService';
+import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
@@ -23,7 +33,8 @@ let activeRuntime: ActiveRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<QuantsMindApi> {
   const packageJson = context.extension.packageJSON as { version?: unknown };
-  const version = typeof packageJson.version === 'string' ? packageJson.version : '1.0.0';
+  const version = typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
+  setUserAgentVersion(version);
 
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
@@ -35,6 +46,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   const contextService = new ContextService(settings);
   const conversations = new ConversationStore(context.globalState);
   const workspaceIndex = new WorkspaceIndexService(settings, logger);
+  const selfDiagnostics = new SelfDiagnosticsService({
+    version,
+    completion,
+    settings,
+    secrets,
+    workspaceIndex,
+    logger,
+  });
   const changeHistory = new ChangeHistoryStore(context.globalState);
   const changeService = new ChangeService(
     settings,
@@ -42,6 +61,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     vscode.Uri.joinPath(context.globalStorageUri, 'backups'),
     logger,
   );
+  const agentRuntime = createAgentRuntime({
+    completion,
+    settings,
+    secrets,
+    logger,
+    workspaceIndex,
+    changeService,
+    sessionStore: context.globalState,
+  });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
     completion,
@@ -53,6 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     conversations,
     workspaceIndex,
     changeService,
+    agentRuntime,
   });
 
   context.subscriptions.push(output);
@@ -189,19 +218,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     );
   };
 
+  const accessLabel = (access: ProviderAccessClass | undefined): string => {
+    switch (access) {
+      case 'free-no-key':
+        return 'Free · no API key';
+      case 'free-tier-key':
+        return 'Free tier · API key required';
+      case 'paid':
+        return 'Paid · API key required';
+      case 'local':
+        return 'Local · self-hosted';
+      case 'custom-unknown':
+        return 'Custom endpoint · pricing unknown';
+      default:
+        return 'Pricing unknown';
+    }
+  };
+
   const selectProvider = async (): Promise<void> => {
     const current = settings.getProviderSettings().type;
     const profiles = completion.getProfiles();
-    const items = profiles.map((profile) => ({
-      label: profile.displayName,
-      description: profile.id,
-      detail:
-        profile.adapter === 'gemini'
-          ? 'Google Gemini endpoint (API key required)'
-          : `${profile.defaultBaseUrl ?? 'custom endpoint'}${profile.local ? ' · local, no API key required' : profile.credential === 'always' ? ' · API key required' : ' · API key required for remote endpoints'}`,
-      id: profile.id,
-      picked: profile.id === current,
-    }));
+    const items = profiles.map((profile) => {
+      const access = providerAccessClass(profile.id);
+      const pricing = providerPricingMetadata(profile.id);
+      let detail = `${profile.defaultBaseUrl ?? 'custom endpoint'}`;
+      if (profile.local) {
+        detail += ' (local, no API key required)';
+      } else if (profile.credential === 'always') {
+        detail += ` (API key required · ${accessLabel(access)})`;
+      } else if (access === 'free-no-key') {
+        detail += ' (no API key required · anonymous service, availability can change)';
+      } else {
+        detail += ` (${accessLabel(access)})`;
+      }
+      if (pricing?.anonymousNote) {
+        detail += ` · ${pricing.anonymousNote}`;
+      }
+      return {
+        label: profile.displayName,
+        description: profile.id,
+        detail,
+        id: profile.id,
+        picked: profile.id === current,
+      };
+    });
     const picked = await vscode.window.showQuickPick(items, {
       title: 'QuantsMind: Select Provider Profile',
       placeHolder: 'Choose a provider profile',
@@ -210,8 +270,50 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       return;
     }
     const profile = profiles.find((entry) => entry.id === picked.id);
+    const pricing = providerPricingMetadata(picked.id);
+    // Never silently switch to a paid provider; require explicit confirmation.
+    if (pricing?.access === 'paid') {
+      const confirm = await vscode.window.showWarningMessage(
+        `Switching to ${profile?.displayName ?? picked.id} (paid provider) may incur charges. ` +
+          `Review pricing at ${pricing.pricingSource}. ` +
+          'Selecting this provider does not start paid usage, but completions may be billed.',
+        { modal: true },
+        'Switch to paid provider',
+        'Cancel',
+      );
+      if (confirm !== 'Switch to paid provider') {
+        return;
+      }
+    }
     const baseUrl = profile?.defaultBaseUrl ?? undefined;
-    await settings.updateProviderType(picked.id, baseUrl);
+    const currentModel = settings.getProviderSettings().model;
+    const plan = planProviderModelSwitch(current, picked.id, currentModel);
+    let model = plan.model;
+    if (plan.requiresChoice) {
+      const choice = await vscode.window.showQuickPick(
+        [
+          {
+            label: `Use ${plan.profileDefaultModel}`,
+            description: `${profile?.displayName ?? picked.id} default`,
+            id: 'default',
+          },
+          {
+            label: `Keep ${currentModel}`,
+            description: 'May not be served by the new provider',
+            id: 'keep',
+          },
+        ],
+        {
+          title: 'QuantsMind: Model for the new provider',
+          placeHolder: `"${currentModel}" was selected for ${current}`,
+        },
+      );
+      if (choice === undefined) {
+        return;
+      }
+      model = choice.id === 'default' ? plan.profileDefaultModel : undefined;
+    }
+    await settings.updateProviderType(picked.id, baseUrl, model);
     await refreshAll();
   };
 
@@ -304,8 +406,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       { label: '$(trash) Clear API Key', command: COMMANDS.clearApiKey },
       { label: '$(settings-gear) Configure Provider', command: COMMANDS.configureProvider },
       { label: '$(symbol-method) Select Provider Profile', command: COMMANDS.selectProvider },
-      { label: '$(symbol-parameter) Select Model', command: COMMANDS.selectModel },
       { label: '$(plug) Test Provider Connection', command: COMMANDS.testConnection },
+      { label: '$(symbol-parameter) Select Model', command: COMMANDS.selectModel },
       { label: '$(output) Show Log', command: COMMANDS.showLog },
     ];
     const picked = await vscode.window.showQuickPick(items, {
@@ -430,7 +532,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.selectModel, selectModel);
   register(COMMANDS.testConnection, testConnection);
   register(COMMANDS.showLog, () => output.show());
+  const showVersion = async (): Promise<void> => {
+    let providerLine = 'Provider status: unavailable';
+    try {
+      const status = await completion.getStatus();
+      providerLine = `Provider: ${status.displayName} · ${status.model} @ ${status.endpointHost} · ${status.ready ? 'ready' : status.configurationError ?? (status.credentialRequired && !status.hasCredential ? 'API key required' : 'not ready')}`;
+    } catch (error) {
+      logger.error('version command provider status failed', error);
+    }
+    const message = [
+      'QuantsMind AI Coder',
+      `Version: ${version}`,
+      'Extension ID: quantsmind.quantsmind-vscode-ai-coder',
+      providerLine,
+    ].join('\n');
+    void vscode.window.showInformationMessage(message, { modal: true });
+  };
+
+  const inspectWorkspace = async (): Promise<void> => {
+    await chatProvider.summarizeWorkspaceAndReveal();
+  };
+
+  const runSelfDiagnostics = async (): Promise<void> => {
+    try {
+      const path = await selfDiagnostics.runAndSave(context);
+      void vscode.window.showInformationMessage(`QuantsMind: self-diagnostics report written to ${path}`);
+    } catch (error) {
+      logger.error('self-diagnostics failed', error);
+      void vscode.window.showErrorMessage('QuantsMind: self-diagnostics failed. See the log.');
+    }
+  };
+
   register(COMMANDS.showMenu, showMenu);
+  const runCodingAgent = async (): Promise<void> => {
+    const prompt = await vscode.window.showInputBox({
+      title: 'QuantsMind: Run Coding Agent',
+      prompt: 'Describe the coding task. The agent will inspect the workspace with read-only tools and return a result.',
+      ignoreFocusOut: true,
+      placeHolder: 'For example: find where provider errors are normalized',
+    });
+    if (prompt === undefined || prompt.trim().length === 0) {
+      return;
+    }
+    await chatProvider.runCodingAgentAndReveal(prompt.trim());
+  };
+  register('quantsmind.runCodingAgent', runCodingAgent);
+  register(COMMANDS.inspectWorkspace, inspectWorkspace);
+  register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
+  register(COMMANDS.showVersion, showVersion);
 
   const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
   const invalidateIndex = (): void => workspaceIndex.invalidate();
@@ -438,9 +587,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     workspaceWatcher,
     workspaceWatcher.onDidCreate(invalidateIndex),
     workspaceWatcher.onDidDelete(invalidateIndex),
+    workspaceWatcher.onDidChange((uri) => {
+      void workspaceIndex.updateIndexedFile(vscode.workspace.asRelativePath(uri, false));
+    }),
     vscode.workspace.onDidRenameFiles(invalidateIndex),
   );
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      workspaceIndex.invalidate();
+      void refreshAll();
+    }),
+  );
   context.subscriptions.push(
     settings.onDidChange(() => {
       // Prevent stale provider instances: an in-flight request was dispatched
@@ -452,8 +610,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     }),
   );
   context.subscriptions.push(
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      workspaceIndex.invalidate();
+      void refreshAll();
+      chatProvider.refreshWorkspaceTrust();
+    }),
+  );
+  context.subscriptions.push(
     context.secrets.onDidChange((event) => {
       if (isProviderApiKeySecretKey(event.key)) {
+        // A credential change must not let an in-flight request dispatched with
+        // the old credential finish and post its result as if it were fresh.
         chatProvider.cancelActiveIfBusy();
         void refreshAll();
       }
@@ -461,6 +628,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   );
 
   await refreshAll();
+
+  // Automation hosts activate the extension repeatedly against throwaway
+  // profiles; an onboarding toast there would be noise, not behaviour.
+  if (
+    context.extensionMode !== vscode.ExtensionMode.Test &&
+    context.extensionMode !== vscode.ExtensionMode.Development
+  ) {
+    void showFirstRunNotice({
+      isShown: () => context.globalState.get<boolean>(FIRST_RUN_NOTICE_KEY, false),
+      markShown: async () => context.globalState.update(FIRST_RUN_NOTICE_KEY, true),
+      getProvider: async () => completion.getStatus(),
+      show: async (message, items) => vscode.window.showInformationMessage(message, ...items),
+      runCommand: async (command) => vscode.commands.executeCommand(command),
+      onError: (message, error) => logger.error(message, error),
+    });
+  }
 
   activeRuntime = { chatProvider, statusBar, logger };
 

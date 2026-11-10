@@ -44,7 +44,7 @@ suite('packaged extension', () => {
 
     const api = await extension!.activate();
     expect(extension!.isActive).to.equal(true);
-    expect(api.version).to.equal('1.0.0');
+    expect(api.version).to.equal(extension!.packageJSON.version);
     expect(Object.keys(api).sort()).to.deep.equal(['getProviderStatus', 'revealChat', 'version']);
 
     const registered = await vscode.commands.getCommands(true);

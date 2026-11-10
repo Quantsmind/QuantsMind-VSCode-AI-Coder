@@ -31,6 +31,7 @@ export interface HistoryFile {
 }
 
 export interface HistoryEntry {
+  readonly applyId: string;
   readonly taskId: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -97,7 +98,12 @@ function parseEntry(value: unknown): HistoryEntry | undefined {
     });
   }
 
+  const applyId =
+    typeof value.applyId === 'string' && value.applyId.length > 0
+      ? value.applyId
+      : value.taskId;
   return {
+    applyId,
     taskId: value.taskId,
     createdAt: value.createdAt,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : value.createdAt,
@@ -123,25 +129,36 @@ export class ChangeHistoryStore {
   }
 
   get(taskId: string): HistoryEntry | undefined {
-    return this.list().find((entry) => entry.taskId === taskId);
+    const entries = this.list().filter((entry) => entry.taskId === taskId);
+    return entries[0];
+  }
+
+  getApply(applyId: string): HistoryEntry | undefined {
+    return this.list().find((entry) => entry.applyId === applyId);
+  }
+
+  listForTask(taskId: string): HistoryEntry[] {
+    return this.list().filter((entry) => entry.taskId === taskId);
   }
 
   async add(entry: HistoryEntry): Promise<void> {
-    const entries = this.list().filter((item) => item.taskId !== entry.taskId);
+    const entries = this.list().filter((item) => item.applyId !== entry.applyId);
     entries.unshift(entry);
     await this.memento.update(CHANGE_HISTORY_KEY, entries.slice(0, MAX_CHANGE_HISTORY));
   }
 
-  async update(taskId: string, patch: Partial<Omit<HistoryEntry, 'taskId'>>): Promise<void> {
+  async update(id: string, patch: Partial<Omit<HistoryEntry, 'taskId' | 'applyId'>>): Promise<void> {
     const entries = this.list();
-    const index = entries.findIndex((entry) => entry.taskId === taskId);
+    let index = entries.findIndex((entry) => entry.applyId === id);
+    if (index < 0) {
+      index = entries.findIndex((entry) => entry.taskId === id);
+    }
     if (index < 0) {
       return;
     }
     entries[index] = {
       ...entries[index],
       ...patch,
-      taskId,
       updatedAt: new Date().toISOString(),
     };
     await this.memento.update(CHANGE_HISTORY_KEY, entries);
@@ -149,6 +166,7 @@ export class ChangeHistoryStore {
 
   async fail(taskId: string, summary: string): Promise<void> {
     await this.add({
+      applyId: taskId,
       taskId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

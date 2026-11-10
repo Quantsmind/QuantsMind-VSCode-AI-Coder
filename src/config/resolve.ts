@@ -311,6 +311,42 @@ export function resolveCommandSettings(raw: RawCommandSettings): ResolvedCommand
   };
 }
 
+export interface ProviderModelSwitchPlan {
+  /** Model to persist alongside the new profile; undefined leaves the setting as it is. */
+  readonly model: string | undefined;
+  /** True when an explicit user model choice must be confirmed before it is replaced. */
+  readonly requiresChoice: boolean;
+  readonly profileDefaultModel: string | undefined;
+}
+
+/**
+ * A model id belongs to the profile it was chosen for, so switching profiles
+ * must not carry an explicit choice into a provider that cannot serve it.
+ * `currentModel` is the resolved model: when it still equals the outgoing
+ * profile default the user never chose it, and the incoming default is adopted
+ * without asking.
+ */
+export function planProviderModelSwitch(
+  fromType: string,
+  toType: string,
+  currentModel: string,
+): ProviderModelSwitchPlan {
+  const profileDefaultModel = getProviderProfile(toType)?.defaultModel;
+  if (fromType === toType || profileDefaultModel === undefined) {
+    return { model: undefined, requiresChoice: false, profileDefaultModel };
+  }
+  if (currentModel === profileDefaultModel) {
+    return { model: undefined, requiresChoice: false, profileDefaultModel };
+  }
+  const fromDefault = getProviderProfile(fromType)?.defaultModel;
+  const explicitChoice = currentModel.length > 0 && currentModel !== fromDefault;
+  return {
+    model: profileDefaultModel,
+    requiresChoice: explicitChoice,
+    profileDefaultModel,
+  };
+}
+
 export function resolveContextSettings(raw: RawContextSettings): ResolvedContextSettings {
   const maxFileSizeKb = numberValue(
     raw.maxFileSizeKb,

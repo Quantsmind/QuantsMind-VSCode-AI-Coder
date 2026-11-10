@@ -17,4 +17,7 @@ export const COMMANDS = Object.freeze({
   attachRelevantFiles: 'quantsmind.attachRelevantFiles',
   startAgentTask: 'quantsmind.startAgentTask',
   showChangeHistory: 'quantsmind.showChangeHistory',
+  showVersion: 'quantsmind.showVersion',
+  inspectWorkspace: 'quantsmind.inspectWorkspace',
+  runSelfDiagnostics: 'quantsmind.runSelfDiagnostics',
 });

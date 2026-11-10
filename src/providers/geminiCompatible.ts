@@ -10,6 +10,7 @@ import {
 } from './errors';
 import { parseServerSentEvents } from './sse';
 import { withProviderRetry } from './retry';
+import { userAgent } from './openaiCompatible';
 import type {
   AiProvider,
   ChatMessage,
@@ -17,18 +18,19 @@ import type {
   CompletionOptions,
   CompletionRequest,
   CompletionResult,
+  CompletionToolCall,
   CompletionUsage,
 } from './types';
 
 export const GEMINI_PROVIDER_ID = 'gemini';
-export const USER_AGENT = 'QuantsMind-VSCode-AI-Coder/1.0.0';
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_JSON_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_CHARS = 2_000_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
-const VALID_ROLES: ReadonlySet<ChatRole> = new Set(['system', 'user', 'assistant']);
+const VALID_ROLES: ReadonlySet<ChatRole> = new Set(['system', 'user', 'assistant', 'tool']);
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type FetchLike = typeof fetch;
 
@@ -113,6 +115,36 @@ function normalizeConfig(config: GeminiConfig): NormalizedGeminiConfig {
   };
 }
 
+function isSchemaRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateToolCalls(value: unknown): readonly CompletionToolCall[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new ProviderError('configuration', 'Assistant tool calls must be an array.');
+  }
+  return value.map((call) => {
+    if (!isSchemaRecord(call)) {
+      throw new ProviderError('configuration', 'The request contains an invalid tool call.');
+    }
+    const id = typeof call.id === 'string' ? call.id.trim() : '';
+    if (id.length === 0 || id.length > 200) {
+      throw new ProviderError('configuration', 'A tool call must carry a non-empty id.');
+    }
+    const name = typeof call.name === 'string' ? call.name.trim() : '';
+    if (!TOOL_NAME_PATTERN.test(name)) {
+      throw new ProviderError('configuration', 'A tool call must carry a valid tool name.');
+    }
+    if (!isSchemaRecord(call.arguments)) {
+      throw new ProviderError('configuration', 'Tool call arguments must be a JSON object.');
+    }
+    return { id, name, arguments: call.arguments };
+  });
+}
+
 function validateRequest(request: CompletionRequest): CompletionRequest {
   if (typeof request !== 'object' || request === null) {
     throw new ProviderError('configuration', 'The completion request is missing.');
@@ -127,7 +159,16 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
   if (typeof request.stream !== 'boolean') {
     throw new ProviderError('configuration', 'The streaming flag must be a boolean.');
   }
+  // The Gemini adapter implements the JSON tool-call protocol only. Dropping
+  // native definitions silently would misreport what was sent, so refuse them.
+  if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.length > 0)) {
+    throw new ProviderError(
+      'configuration',
+      'The Gemini adapter does not support native tool definitions. Use the JSON tool-call protocol instead.',
+    );
+  }
   let totalChars = 0;
+  const announcedCallIds = new Set<string>();
   const messages: ChatMessage[] = request.messages.map((message) => {
     if (
       typeof message !== 'object' ||
@@ -138,7 +179,46 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
       throw new ProviderError('configuration', 'The request contains an invalid chat message.');
     }
     totalChars += message.content.length;
-    return { role: message.role, content: message.content };
+
+    if (message.role !== 'assistant' && message.toolCalls !== undefined) {
+      throw new ProviderError('configuration', 'Only assistant messages may carry tool calls.');
+    }
+    if (message.role !== 'tool' && message.toolCallId !== undefined) {
+      throw new ProviderError('configuration', 'Only tool messages may carry a tool call id.');
+    }
+
+    const toolCalls = message.role === 'assistant' ? validateToolCalls(message.toolCalls) : undefined;
+    if (toolCalls !== undefined) {
+      for (const call of toolCalls) {
+        announcedCallIds.add(call.id);
+        totalChars += call.id.length + call.name.length + JSON.stringify(call.arguments).length;
+      }
+    }
+
+    let toolCallId = '';
+    if (message.role === 'tool') {
+      toolCallId = typeof message.toolCallId === 'string' ? message.toolCallId.trim() : '';
+      if (toolCallId.length === 0) {
+        throw new ProviderError(
+          'configuration',
+          'A tool message must reference the tool call id it answers.',
+        );
+      }
+      if (!announcedCallIds.has(toolCallId)) {
+        throw new ProviderError(
+          'configuration',
+          'A tool message must answer a tool call announced by a preceding assistant message.',
+        );
+      }
+      totalChars += toolCallId.length;
+    }
+
+    return {
+      role: message.role,
+      content: message.content,
+      ...(toolCalls !== undefined && toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(message.role === 'tool' ? { toolCallId } : {}),
+    };
   });
   if (totalChars > MAX_REQUEST_CHARS) {
     throw new ProviderError(
@@ -169,7 +249,7 @@ export function buildGeminiHeaders(apiKey: string | undefined, stream: boolean):
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
-    'User-Agent': USER_AGENT,
+    'User-Agent': userAgent(),
   };
   if (apiKey !== undefined && apiKey.length > 0) {
     headers['x-goog-api-key'] = apiKey;
@@ -183,11 +263,38 @@ export function buildGeminiBody(
 ): Record<string, unknown> {
   const systemTexts: string[] = [];
   const contents: Array<Record<string, unknown>> = [];
+  // Gemini has no tool_call_id field, so the JSON tool-call protocol carries the
+  // id and tool name in the text instead of dropping the correlation.
+  const toolNames = new Map<string, string>();
+  for (const message of request.messages) {
+    if (message.role === 'assistant' && Array.isArray(message.toolCalls)) {
+      for (const call of message.toolCalls) {
+        toolNames.set(call.id, call.name);
+      }
+    }
+  }
   for (const message of request.messages) {
     if (message.role === 'system') {
       systemTexts.push(message.content);
     } else if (message.role === 'assistant') {
-      contents.push({ role: 'model', parts: [{ text: message.content }] });
+      const calls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
+      const text =
+        message.content.length > 0 || calls.length === 0
+          ? message.content
+          : JSON.stringify({
+              tool_calls: calls.map((call) => ({
+                id: call.id,
+                name: call.name,
+                arguments: call.arguments,
+              })),
+            });
+      contents.push({ role: 'model', parts: [{ text }] });
+    } else if (message.role === 'tool') {
+      const callId = message.toolCallId ?? 'unknown';
+      const name = toolNames.get(callId);
+      const label =
+        name === undefined ? `Tool result for call ${callId}` : `Tool result for ${name} (call ${callId})`;
+      contents.push({ role: 'user', parts: [{ text: `${label}:\n${message.content}` }] });
     } else {
       contents.push({ role: 'user', parts: [{ text: message.content }] });
     }

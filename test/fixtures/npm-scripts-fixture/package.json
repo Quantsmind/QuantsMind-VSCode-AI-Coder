@@ -1,0 +1,8 @@
+{
+  "name": "fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node --version",
+    "test": "node -e \"console.log('3 passing'); console.log('1 failing'); process.exit(1)\""
+  }
+}

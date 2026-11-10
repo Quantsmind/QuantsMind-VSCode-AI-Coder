@@ -1,15 +1,18 @@
 import type { SettingsService } from '../config/settings';
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
-import { isLoopbackOrPrivateHost, normalizeBaseUrl } from './endpoint';
+import { modelSupportsNativeToolCalling } from './capabilities';
+import { describeEndpointHost, isLoopbackOrPrivateHost, normalizeBaseUrl } from './endpoint';
 import { ProviderError, isProviderError, normalizeThrownError } from './errors';
 import { listProviderModels, type ModelDiscoveryResult } from './modelDiscovery';
 import { testProviderConnection, type ConnectionTestResult } from './connectionTest';
+import { withProviderRetry } from './retry';
 import {
   credentialRequiredForProfile,
   getProviderCapabilities,
   getProviderProfile,
   listProviderProfiles,
+  providerAccessClass,
   type ProviderCapabilities,
   type ProviderProfile,
 } from './profiles';
@@ -26,6 +29,7 @@ export interface ProviderStatus {
   readonly ready: boolean;
   readonly configurationError?: string;
   readonly capabilities?: ProviderCapabilities;
+  readonly access?: string;
 }
 
 export interface ProviderServiceDependencies {
@@ -82,6 +86,7 @@ export class CompletionService {
       ready,
       configurationError,
       capabilities: getProviderCapabilities(config.type),
+      access: providerAccessClass(config.type),
     };
   }
 
@@ -139,6 +144,11 @@ export class CompletionService {
           allowInsecureLocalhost: config.allowInsecureLocalhost,
         });
     const loopback = isGemini ? false : isLoopbackOrPrivateHost(new URL(normalized).hostname);
+    if (!isGemini && normalized.startsWith('http:')) {
+      this.logger.warn(
+        `insecure transport provider=${config.type} host=${describeEndpointHost(normalized)} scheme=http allowInsecureLocalhost=${config.allowInsecureLocalhost} — this request and any stored secret reach the loopback host unencrypted`,
+      );
+    }
     const apiKey = await this.secrets.forProvider(config.type).get();
     const credentialRequired = credentialRequiredForProfile(config.type, loopback);
 
@@ -150,9 +160,24 @@ export class CompletionService {
     }
 
     // Respect capabilities: fall back to non-streaming when the selected
-    // provider does not advertise streaming support.
+    // provider does not advertise streaming support. Tool calls also require
+    // a non-streaming request in this implementation.
     const capabilities = getProviderCapabilities(config.type);
-    const effectiveStream = capabilities?.streaming === false ? false : config.stream;
+    const requestedTools = options.tools;
+    const nativeToolCalling = modelSupportsNativeToolCalling(config.type, config.model);
+    const tools = nativeToolCalling ? requestedTools : undefined;
+    if (!nativeToolCalling && requestedTools !== undefined && requestedTools.length > 0) {
+      // The caller keeps working through the JSON tool-call protocol; native
+      // definitions are withheld rather than sent to a model that rejects them.
+      this.logger.info(
+        `native tools withheld provider=${config.type} model=${config.model} count=${requestedTools.length} reason=adapter-or-model-unsupported`,
+      );
+    }
+    const requestedStream = options.stream ?? config.stream;
+    const effectiveStream =
+      capabilities?.streaming === false || (Array.isArray(tools) && tools.length > 0)
+        ? false
+        : requestedStream;
 
     const provider = createProvider(config.type, {
       apiKey,
@@ -171,16 +196,51 @@ export class CompletionService {
       `completion start provider=${config.type} model=${config.model} messages=${messages.length} chars=${requestChars} stream=${config.stream} timeoutMs=${config.timeoutMs}`,
     );
 
+    const controller = new AbortController();
+    const cancellation = options.token;
+    const abortFromToken = (): void => {
+      if (cancellation?.isCancellationRequested) {
+        controller.abort();
+      }
+    };
+    abortFromToken();
+    const disposable = cancellation?.onCancellationRequested(() => {
+      controller.abort();
+    });
+
+    let streamStarted = false;
+    const wrappedOnDelta = options.onDelta === undefined
+      ? undefined
+      : (delta: string) => {
+          streamStarted = true;
+          options.onDelta?.(delta);
+        };
+
     try {
-      const result = await provider.complete(
-        {
-          model: config.model,
-          messages,
-          temperature: config.temperature,
-          maxOutputTokens: config.maxOutputTokens,
-          stream: effectiveStream,
+      const result = await withProviderRetry(
+        async (signal) => {
+          void signal;
+          return await provider.complete(
+            {
+              model: config.model,
+              messages,
+              temperature: config.temperature,
+              maxOutputTokens: config.maxOutputTokens,
+              stream: effectiveStream,
+              tools,
+            },
+            {
+              ...options,
+              token: options.token,
+              onDelta: wrappedOnDelta,
+            },
+          );
         },
-        options,
+        {
+          token: options.token,
+          streamStarted: () => streamStarted,
+        },
+        controller.signal,
       );
       this.logger.info(
         `completion success durationMs=${Date.now() - started} chars=${result.text.length} finishReason=${result.finishReason ?? 'unknown'}`,
@@ -195,6 +255,8 @@ export class CompletionService {
         normalizedError,
       );
       throw normalizedError;
+    } finally {
+      disposable?.dispose();
     }
   }
 }

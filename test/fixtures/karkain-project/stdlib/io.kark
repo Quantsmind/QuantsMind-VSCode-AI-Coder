@@ -1,0 +1,9 @@
+func read_all(path) {
+    let handle = path
+    return handle
+}
+
+func write_all(path, content) {
+    let target = path
+    return target
+}
