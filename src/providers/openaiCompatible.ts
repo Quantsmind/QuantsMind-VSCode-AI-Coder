@@ -17,6 +17,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   CompletionToolCall,
+  CompletionToolDefinition,
   CompletionUsage,
 } from './types';
 
@@ -41,7 +42,9 @@ export function userAgent(): string {
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_JSON_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_CHARS = 2_000_000;
-const VALID_ROLES: ReadonlySet<ChatRole> = new Set(['system', 'user', 'assistant']);
+const VALID_ROLES: ReadonlySet<ChatRole> = new Set(['system', 'user', 'assistant', 'tool']);
+const MAX_TOOL_DEFINITIONS = 128;
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type FetchLike = typeof fetch;
 
@@ -110,6 +113,76 @@ function normalizeConfig(config: OpenAiCompatibleConfig): OpenAiCompatibleConfig
   };
 }
 
+function isSchemaRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateToolDefinitions(tools: unknown): readonly CompletionToolDefinition[] | undefined {
+  if (tools === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(tools)) {
+    throw new ProviderError('configuration', 'Tool definitions must be an array.');
+  }
+  if (tools.length > MAX_TOOL_DEFINITIONS) {
+    throw new ProviderError(
+      'configuration',
+      `The request declares too many tools (maximum ${MAX_TOOL_DEFINITIONS}).`,
+    );
+  }
+  const seen = new Set<string>();
+  return tools.map((tool) => {
+    if (!isSchemaRecord(tool)) {
+      throw new ProviderError('configuration', 'The request contains an invalid tool definition.');
+    }
+    const name = typeof tool.name === 'string' ? tool.name : '';
+    if (!TOOL_NAME_PATTERN.test(name)) {
+      throw new ProviderError(
+        'configuration',
+        'Tool names must use 1-64 characters from A-Z, a-z, 0-9, underscore or hyphen.',
+      );
+    }
+    if (seen.has(name)) {
+      throw new ProviderError('configuration', 'Tool definitions must have unique names.');
+    }
+    seen.add(name);
+    if (!isSchemaRecord(tool.parameters)) {
+      throw new ProviderError('configuration', 'Tool parameters must be a JSON schema object.');
+    }
+    return {
+      name,
+      description: typeof tool.description === 'string' ? tool.description : '',
+      parameters: tool.parameters,
+    };
+  });
+}
+
+function validateToolCalls(value: unknown): readonly CompletionToolCall[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new ProviderError('configuration', 'Assistant tool calls must be an array.');
+  }
+  return value.map((call) => {
+    if (!isSchemaRecord(call)) {
+      throw new ProviderError('configuration', 'The request contains an invalid tool call.');
+    }
+    const id = typeof call.id === 'string' ? call.id.trim() : '';
+    if (id.length === 0 || id.length > 200) {
+      throw new ProviderError('configuration', 'A tool call must carry a non-empty id.');
+    }
+    const name = typeof call.name === 'string' ? call.name.trim() : '';
+    if (!TOOL_NAME_PATTERN.test(name)) {
+      throw new ProviderError('configuration', 'A tool call must carry a valid tool name.');
+    }
+    if (!isSchemaRecord(call.arguments)) {
+      throw new ProviderError('configuration', 'Tool call arguments must be a JSON object.');
+    }
+    return { id, name, arguments: call.arguments };
+  });
+}
+
 function validateRequest(request: CompletionRequest): CompletionRequest {
   if (typeof request !== 'object' || request === null) {
     throw new ProviderError('configuration', 'The completion request is missing.');
@@ -126,7 +199,9 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
     throw new ProviderError('configuration', 'The streaming flag must be a boolean.');
   }
 
-  let totalChars = 0;
+  const tools = validateToolDefinitions(request.tools);
+  let totalChars = tools === undefined ? 0 : JSON.stringify(tools).length;
+  const announcedCallIds = new Set<string>();
   const messages: ChatMessage[] = request.messages.map((message) => {
     if (
       typeof message !== 'object' ||
@@ -137,7 +212,46 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
       throw new ProviderError('configuration', 'The request contains an invalid chat message.');
     }
     totalChars += message.content.length;
-    return { role: message.role, content: message.content };
+
+    if (message.role !== 'assistant' && message.toolCalls !== undefined) {
+      throw new ProviderError('configuration', 'Only assistant messages may carry tool calls.');
+    }
+    if (message.role !== 'tool' && message.toolCallId !== undefined) {
+      throw new ProviderError('configuration', 'Only tool messages may carry a tool call id.');
+    }
+
+    const toolCalls = message.role === 'assistant' ? validateToolCalls(message.toolCalls) : undefined;
+    if (toolCalls !== undefined) {
+      for (const call of toolCalls) {
+        announcedCallIds.add(call.id);
+        totalChars += call.id.length + call.name.length + JSON.stringify(call.arguments).length;
+      }
+    }
+
+    let toolCallId = '';
+    if (message.role === 'tool') {
+      toolCallId = typeof message.toolCallId === 'string' ? message.toolCallId.trim() : '';
+      if (toolCallId.length === 0) {
+        throw new ProviderError(
+          'configuration',
+          'A tool message must reference the tool call id it answers.',
+        );
+      }
+      if (!announcedCallIds.has(toolCallId)) {
+        throw new ProviderError(
+          'configuration',
+          'A tool message must answer a tool call announced by a preceding assistant message.',
+        );
+      }
+      totalChars += toolCallId.length;
+    }
+
+    return {
+      role: message.role,
+      content: message.content,
+      ...(toolCalls !== undefined && toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(message.role === 'tool' ? { toolCallId } : {}),
+    };
   });
 
   if (totalChars > MAX_REQUEST_CHARS) {
@@ -153,6 +267,7 @@ function validateRequest(request: CompletionRequest): CompletionRequest {
     stream: request.stream,
     temperature: request.temperature,
     maxOutputTokens: request.maxOutputTokens,
+    ...(tools !== undefined ? { tools } : {}),
   };
 }
 
@@ -559,7 +674,7 @@ class OpenAiCompatibleProvider implements AiProvider {
               MAX_ERROR_BODY_BYTES,
               'truncate',
             );
-            throw normalizeHttpError(response.status, errorBody, this.config.apiKey);
+            throw normalizeHttpError(response.status, errorBody, this.config.apiKey, response.headers);
           }
 
           const contentType = (response.headers.get('content-type') ?? '').toLowerCase();

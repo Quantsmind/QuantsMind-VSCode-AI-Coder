@@ -1,6 +1,4 @@
 import * as vscode from 'vscode';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { SettingsService } from '../config/settings';
 import {
   buildContext,
@@ -18,6 +16,13 @@ import type {
 import type { RepositoryOverview } from '../repository/discovery';
 import type { DependencyGraph } from '../repository/graph';
 import type { ChangeImpact } from '../repository/impact';
+import type { ArchitectureAnalysis } from '../project/architecture';
+import type {
+  KarkainContextOptions,
+  KarkainContextResult,
+  KarkainModuleGraph,
+  KarkainProjectSummary,
+} from '../project/karkain';
 import { RepositoryIntelligenceService } from '../repository/repositoryIntelligence';
 import {
   buildWorkspaceSummary,
@@ -29,6 +34,7 @@ import {
   type WorkspaceSummary,
 } from './analyze';
 import { createIgnoreMatcher } from './ignore';
+import { selectWorkspaceRoot } from './rootPolicy';
 
 export interface RetrievalResult {
   readonly summary: WorkspaceSummary;
@@ -187,6 +193,57 @@ export class WorkspaceIndexService {
     }
   }
 
+  async architectureAnalysis(): Promise<ArchitectureAnalysis | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().architecture();
+    } catch (error) {
+      this.logger.warn(`architecture analysis failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async karkainProject(): Promise<KarkainProjectSummary | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().karkainProject();
+    } catch (error) {
+      this.logger.warn(`Karkain project analysis failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async karkainGraph(): Promise<KarkainModuleGraph | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().karkainGraph();
+    } catch (error) {
+      this.logger.warn(`Karkain module graph failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  async karkainContext(
+    query: string,
+    options: KarkainContextOptions = {},
+  ): Promise<KarkainContextResult | undefined> {
+    if (!this.isTrusted()) {
+      return undefined;
+    }
+    try {
+      return await this.repositoryIntelligence().karkainContext(query, options);
+    } catch (error) {
+      this.logger.warn(`Karkain context analysis failed: ${String(error)}`);
+      return undefined;
+    }
+  }
+
   /** Incrementally re-analyzes a single changed source file. */
   async updateIndexedFile(filePath: string): Promise<void> {
     if (!this.isTrusted()) {
@@ -203,40 +260,8 @@ export class WorkspaceIndexService {
     this.repositoryService?.removeFile(filePath);
   }
 
-  private scoreRoot(folder: vscode.WorkspaceFolder): number {
-    const fsPath = folder.uri.fsPath;
-    let score = 0;
-    try {
-            if (fs.existsSync(path.join(fsPath, 'package.json'))) score += 5;
-      if (fs.existsSync(path.join(fsPath, 'src'))) score += 3;
-      if (fs.existsSync(path.join(fsPath, 'docs'))) score += 2;
-      if (fs.existsSync(path.join(fsPath, '.git'))) score += 2;
-      if (fs.existsSync(path.join(fsPath, 'README.md'))) score += 1;
-    } catch {
-      // Ignore filesystem scoring errors.
-    }
-    return score;
-  }
-
   private getRoot(): vscode.WorkspaceFolder | undefined {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-      return undefined;
-    }
-    if (folders.length === 1) {
-      return folders[0];
-    }
-    let best = folders[0];
-    let bestScore = this.scoreRoot(best);
-    for (let index = 1; index < folders.length; index += 1) {
-      const candidate = folders[index];
-      const score = this.scoreRoot(candidate);
-      if (score > bestScore) {
-        best = candidate;
-        bestScore = score;
-      }
-    }
-    return best;
+    return selectWorkspaceRoot(vscode.workspace.workspaceFolders);
   }
 
   listRoots(): readonly vscode.WorkspaceFolder[] {
@@ -271,8 +296,11 @@ export class WorkspaceIndexService {
     ]);
     const ignored = createIgnoreMatcher([gitignore, gitExclude]);
 
+    // Scope the glob to the selected root. An unscoped '**/*' searches every
+    // workspace folder, and asRelativePath then collapses files from different
+    // roots into colliding relative paths under a single root name.
     const uris = await vscode.workspace.findFiles(
-      '**/*',
+      new vscode.RelativePattern(root, '**/*'),
       undefined,
       workspaceSettings.maxIndexedFiles * 2,
     );

@@ -2,11 +2,12 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
   "preview": true,
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -122,6 +123,18 @@
         "title": "Select Model",
         "category": "QuantsMind",
         "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "quantsmind.selectProvider",
+        "title": "Select Provider Profile",
+        "category": "QuantsMind",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "quantsmind.testConnection",
+        "title": "Test Provider Connection",
+        "category": "QuantsMind",
+        "icon": "$(plug)"
       },
       {
         "command": "quantsmind.showLog",
@@ -245,10 +258,28 @@
         "quantsmind.provider.type": {
           "type": "string",
           "enum": [
-            "openai-compatible"
+            "openai-compatible",
+            "openai",
+            "groq",
+            "openrouter",
+            "ollama",
+            "lm-studio",
+            "llama-cpp",
+            "vllm",
+            "gemini",
+            "pollinations"
           ],
           "enumDescriptions": [
-            "Any provider exposing an OpenAI-compatible /chat/completions API."
+            "Any provider exposing an OpenAI-compatible /chat/completions API.",
+            "Paid provider; API key required. See https://openai.com/api/pricing/.",
+            "Free tier available; API key required. See https://groq.com/pricing/.",
+            "Paid / pay-as-you-go. See https://openrouter.ai/pricing.",
+            "Local, self-hosted; no provider fees.",
+            "Local, self-hosted; no provider fees.",
+            "Local, self-hosted; no provider fees.",
+            "Self-hosted; no provider fees.",
+            "Free tier available; API key required. See https://ai.google.dev/gemini-api/docs/pricing.",
+            "Free, no API key required by default. Anonymous service; availability and rate limits can change without notice. See https://text.pollinations.ai/openai/models."
           ],
           "default": "openai-compatible",
           "scope": "application",

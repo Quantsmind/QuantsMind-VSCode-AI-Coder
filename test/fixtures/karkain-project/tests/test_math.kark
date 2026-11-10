@@ -1,0 +1,9 @@
+import mathutils
+
+func test_square() {
+    assert_eq(square(4), 16)
+}
+
+func test_cube() {
+    assert_eq(cube(3), 27)
+}

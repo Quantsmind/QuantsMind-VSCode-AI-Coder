@@ -1,4 +1,4 @@
-﻿import { expect } from 'chai';
+import { expect } from 'chai';
 // Focused tests for the coding-agent runtime. Filesystem access is injected.
 import {
   runCodingAgent,
@@ -344,3 +344,167 @@ suite('coding agent repair workflow', () => {
     expect(result.toolResults[5].ok).to.equal(true);
   });
 });
+
+suite('coding agent lifecycle and safety controls', () => {
+  test('cancellation during tool execution stops the loop', async () => {
+    const controller = new AbortController();
+    const model = {
+      async complete() {
+        return {
+          text: '{"tool_calls":[{"name":"read_file","arguments":{"path":"a.txt"}}]}',
+        };
+      },
+    };
+    const fs = {
+      async readFile() {
+        // Simulate a slow tool that gets cancelled.
+        return new Promise<string>((_resolve) => {
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              // No-op: the caller will not await this promise after abort.
+            },
+            { once: true },
+          );
+        });
+      },
+      async listDirectory() {
+        return [];
+      },
+    };
+    const tools = new WorkspaceTools('/workspace', fs).toAgentTools();
+    // Abort before the first model request.
+    controller.abort();
+    const result = await runCodingAgent({
+      task: 'cancelled task',
+      model,
+      tools,
+      signal: controller.signal,
+      maxIterations: 5,
+    });
+    expect(result.status).to.equal('cancelled');
+    expect(result.iterations).to.equal(0);
+  });
+
+  test('iteration limit stops the loop with limit status', async () => {
+    const model = {
+      async complete() {
+        return {
+          text: '{"tool_calls":[{"name":"list_files","arguments":{"path":""}}]}',
+        };
+      },
+    };
+    const fs = {
+      async readFile() {
+        return '';
+      },
+      async listDirectory() {
+        return [];
+      },
+    };
+    const tools = new WorkspaceTools('/workspace', fs).toAgentTools();
+    const result = await runCodingAgent({
+      task: 'loop forever',
+      model,
+      tools,
+      maxIterations: 2,
+    });
+    expect(result.status).to.equal('limit');
+    expect(result.iterations).to.equal(2);
+    expect(result.toolResults).to.have.length(2);
+  });
+
+  test('model error returns error status with message', async () => {
+    const model = {
+      async complete() {
+        throw new Error('provider connection lost');
+      },
+    };
+    const fs = {
+      async readFile() {
+        return '';
+      },
+      async listDirectory() {
+        return [];
+      },
+    };
+    const tools = new WorkspaceTools('/workspace', fs).toAgentTools();
+    const result = await runCodingAgent({
+      task: 'fail',
+      model,
+      tools,
+      maxIterations: 2,
+    });
+    expect(result.status).to.equal('error');
+    expect(result.finalText).to.equal('provider connection lost');
+    expect(result.iterations).to.equal(1);
+  });
+
+  test('repeated identical failing operations are recorded but do not crash', async () => {
+    let failures = 0;
+    const model = {
+      async complete() {
+        failures += 1;
+        if (failures <= 2) {
+          return {
+            text: '{"tool_calls":[{"name":"read_file","arguments":{"path":"missing.txt"}}]}',
+          };
+        }
+        return { text: '{"final":"gave up"}' };
+      },
+    };
+    const fs = {
+      async readFile() {
+        throw new Error('file not found');
+      },
+      async listDirectory() {
+        return [];
+      },
+    };
+    const tools = new WorkspaceTools('/workspace', fs).toAgentTools();
+    const result = await runCodingAgent({
+      task: 'read missing file',
+      model,
+      tools,
+      maxIterations: 5,
+    });
+    expect(result.status).to.equal('completed');
+    expect(result.finalText).to.equal('gave up');
+    expect(result.toolResults).to.have.length(2);
+    for (const r of result.toolResults) {
+      expect(r.ok).to.equal(false);
+      expect(r.error).to.contain('file not found');
+    }
+  });
+
+  test('get_workspace_context returns combined listing and search', async () => {
+    const fs = {
+      async readFile(path: string) {
+        if (path === 'src/index.ts') {
+          return 'export function main() { return 1; }';
+        }
+        return '';
+      },
+      async listDirectory(path: string) {
+        if (path === '') {
+          return [
+            { name: 'src', type: 'directory' as const },
+            { name: 'README.md', type: 'file' as const },
+          ];
+        }
+        if (path === 'src') {
+          return [{ name: 'index.ts', type: 'file' as const }];
+        }
+        return [];
+      },
+    };
+    const tools = new WorkspaceTools('/workspace', fs);
+    const result = await tools.getWorkspaceContext('main');
+    expect(result.ok).to.equal(true);
+    expect(result.output).to.contain('src/index.ts');
+    expect(result.output).to.contain('README.md');
+    expect(result.output).to.contain('Workspace root: /workspace');
+  });
+});
+
+

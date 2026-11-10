@@ -3,8 +3,8 @@
 A standalone Visual Studio Code extension that turns your AI provider into an
 **agentic, project-aware development assistant** with explicit context control,
 **approval-first file changes**, allowlisted validation, bounded repair and
-**evidence-based completion reports**. Version **0.3.0** is an **alpha preview**:
-it is not a Marketplace release and is not general availability.
+**evidence-based completion reports**. The extension version is the one shown in
+`package.json` and the About command.
 
 This product is completely independent. It does not depend on QuantsMind-Agent,
 another QuantsMind repository, a shared source folder, a common SDK, a shared
@@ -91,6 +91,33 @@ requirement
 - When repair is exhausted or rejected, the session fails with the real
   diagnostics attached, not a fabricated success.
 
+### Build, test and Git
+
+- Build systems are detected locally with 22 adapters (npm/pnpm/yarn, Maven,
+  Gradle, Go, Cargo, CMake, pip/Poetry/uv/Hatch, dotnet, MSBuild, Composer,
+  Bundler, Dart, Flutter, Swift and Karkain `.kark`). Detection is
+  path/manifest-based and executes nothing.
+- `detect_build_system`, `get_toolchain`, `run_build` and `run_tests` run the
+  adapter's commands **through the shared approved command runner** — builds
+  and tests require the same explicit approval as every other command, stop at
+  the first failing step, and return structured diagnostics and parsed test
+  counts.
+- Git status, diffs, log, branches, remotes (credentials stripped), and
+  staged/unstaged/untracked/deleted/conflict detection are available to the
+  agent and in a **Git status** card in the chat sidebar. Read-only Git
+  operations need no prompts.
+- **Checkpoints** capture file contents bound to a task and restore them
+  later. Diverging user edits are never overwritten — they are reported as
+  conflicts and left in place.
+- Staging, unstaging, branch operations and commits all require explicit
+  approval. `git add .`, `-a` and broad patterns are refused; nothing pushes,
+  merges or releases automatically.
+- GitHub issues and pull requests can be listed and created through the
+  connected GitHub account (`repo` scope) when you approve the write. The
+  integration is fixture-tested against a mocked REST API; it has **not** been
+  verified against the live GitHub API on this machine. Local Git features
+  work without a GitHub account.
+
 ### Evidence and security
 
 - Every session appends ordered events; the completion report is derived from
@@ -108,12 +135,15 @@ requirement
   approval.
 - It does not run arbitrary shell commands; only exact allowlisted validation
   commands can run, and only after you approve them.
-- It does not expose a model-to-tool channel. The model proposes JSON; the local
-  controller performs every side effect after validation.
+- The model can call read-only and approval-gated tools through the tool
+  registry; every side effect is validated locally and still requires explicit
+  user approval. No tool call can apply its own changes.
 - It does not approve or apply its own plans, repairs or commands.
 - It does not scan or upload your workspace automatically. The index is local.
 - It does not include a backend service, database, or telemetry.
-- It does not support native tool calls, image inputs, or multimodal content.
+- Native tool calling is supported by OpenAI-compatible profiles on model ids
+  that advertise tool use; the Gemini profile does not support it. Images and
+  multimodal content are not supported.
 - It does not publish, tag, or deploy anything.
 
 ## Requirements
@@ -309,6 +339,8 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 
 - [Agent workflow](docs/AGENT_WORKFLOW.md)
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)
+- [Execution, build and test integration](docs/BUILD_AND_TEST.md)
+- [Git, GitHub and change management](docs/GIT_AND_CHANGES.md)
 - [Planning and tasks](docs/PLANNING_AND_TASKS.md)
 - [Change review](docs/CHANGE_REVIEW.md)
 - [Command execution](docs/COMMAND_EXECUTION.md)
@@ -334,6 +366,9 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 - [Testing guide](docs/TESTING.md)
 - [Live provider validation](docs/LIVE_PROVIDER_VALIDATION.md)
 - [v0.3.0 implementation report](docs/reports/V030_IMPLEMENTATION_REPORT.md)
+- [v2.2.0 implementation report](V2.2.0_IMPLEMENTATION_REPORT.md)
+- [v2.3.0 implementation report](V2.3.0_IMPLEMENTATION_REPORT.md)
+- [v2.4.0 implementation report](V2.4.0_IMPLEMENTATION_REPORT.md)
 - [v0.3.0 completion report](docs/reports/V030_COMPLETION_REPORT.md)
 - [v0.3.0 test and validation report](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
 - [v0.3.0 security report](docs/reports/V030_SECURITY_REPORT.md)

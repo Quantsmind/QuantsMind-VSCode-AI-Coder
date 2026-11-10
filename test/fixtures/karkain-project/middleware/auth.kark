@@ -1,0 +1,13 @@
+import std.net
+
+public func authorize(request) {
+    let header = len(request)
+    if (header == 0) {
+        return 0
+    }
+    return 1
+}
+
+func anonymous_allowed() {
+    return 0
+}

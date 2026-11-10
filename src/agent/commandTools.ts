@@ -1,33 +1,68 @@
 import { evaluateCommand } from '../commands/policy';
 import { runApprovedCommand, type CommandResult } from '../commands/runner';
 import { analyzeValidationFailure } from './diagnostics';
+import { parseTestOutput, type TestOutputFormat } from '../build/testOutput';
 import type { AgentTool, AgentToolResult } from './codingAgent';
 import type { Diagnostic, ValidationEvidence } from './models';
 import { hashContent, type ChangePlan } from '../changes/model';
+import type { ExecutionKind, ExecutionService } from '../execution/service';
 
 export interface CommandToolApproval {
   (request: { readonly command: string; readonly cwd: string; readonly risk: string }): Promise<boolean>;
 }
 
+/** A fixed value, or a resolver read at execution time so settings stay live. */
+export type LiveValue<T> = T | (() => T);
+
+export function resolveLive<T>(value: LiveValue<T>): T {
+  return typeof value === 'function' ? (value as () => T)() : value;
+}
+
 export interface CommandToolEnvironment {
+  readonly cwd: LiveValue<string>;
+  readonly workspaceRoot: LiveValue<string>;
+  readonly allowlist: LiveValue<readonly string[]>;
+  readonly timeoutMs: LiveValue<number>;
+  readonly maxOutputChars?: LiveValue<number | undefined>;
+  readonly secret?: string | (() => Promise<string | undefined>);
+  readonly trusted: LiveValue<boolean>;
+  readonly approval: CommandToolApproval;
+  /** Optional execution tracker; when present every run is recorded for the current task. */
+  readonly executionService?: ExecutionService;
+}
+
+interface CommandToolSnapshot {
   readonly cwd: string;
   readonly workspaceRoot: string;
   readonly allowlist: readonly string[];
   readonly timeoutMs: number;
-  readonly maxOutputChars?: number;
-  readonly secret?: string | (() => Promise<string | undefined>);
+  readonly maxOutputChars: number | undefined;
   readonly trusted: boolean;
-  readonly approval: CommandToolApproval;
 }
 
 export class CommandTools {
   constructor(private readonly env: CommandToolEnvironment) {}
 
+  /**
+   * Read at execution time, never at construction: workspace trust can be
+   * granted or revoked and the allowlist edited without a window reload.
+   */
+  private snapshot(): CommandToolSnapshot {
+    return {
+      cwd: resolveLive(this.env.cwd),
+      workspaceRoot: resolveLive(this.env.workspaceRoot),
+      allowlist: resolveLive(this.env.allowlist),
+      timeoutMs: resolveLive(this.env.timeoutMs),
+      maxOutputChars: resolveLive(this.env.maxOutputChars),
+      trusted: resolveLive(this.env.trusted),
+    };
+  }
+
   async checkCommand(command: unknown): Promise<AgentToolResult> {
     if (typeof command !== 'string') {
       return { ok: false, tool: 'check_command', error: 'Command must be text.', durationMs: 0 };
     }
-    const policy = evaluateCommand(command, this.env.allowlist);
+    const policy = evaluateCommand(command, this.snapshot().allowlist);
     return {
       ok: policy.allowed,
       tool: 'check_command',
@@ -36,15 +71,25 @@ export class CommandTools {
     };
   }
 
-  async runCommand(command: unknown, boundPlan?: ChangePlan): Promise<AgentToolResult> {
+  async runCommand(
+    command: unknown,
+    boundPlan?: ChangePlan,
+    signal?: AbortSignal,
+    execution?: { readonly kind?: ExecutionKind; readonly testFormat?: TestOutputFormat },
+  ): Promise<AgentToolResult> {
     if (typeof command !== 'string') {
       return { ok: false, tool: 'run_command', error: 'Command must be text.', durationMs: 0 };
     }
-    const policy = evaluateCommand(command, this.env.allowlist);
+    const isAborted = (): boolean => signal?.aborted === true;
+    const requested = this.snapshot();
+    const policy = evaluateCommand(command, requested.allowlist);
     if (!policy.allowed || policy.normalized === undefined) {
       return { ok: false, tool: 'run_command', error: policy.reason, output: JSON.stringify(policy, null, 2), durationMs: 0 };
     }
-    const approved = await this.env.approval({ command: policy.normalized, cwd: this.env.cwd, risk: policy.risk });
+    if (isAborted()) {
+      return { ok: false, tool: 'run_command', error: 'The command was cancelled before it started.', durationMs: 0 };
+    }
+    const approved = await this.env.approval({ command: policy.normalized, cwd: requested.cwd, risk: policy.risk });
     if (!approved) {
       return {
         ok: false,
@@ -54,15 +99,85 @@ export class CommandTools {
         durationMs: 0,
       };
     }
+    if (isAborted()) {
+      return { ok: false, tool: 'run_command', error: 'The command was cancelled while awaiting approval.', durationMs: 0 };
+    }
+    // The approval modal can stay open while trust is revoked or the allowlist
+    // changes, so the runner receives a freshly resolved, fail-closed snapshot.
+    const current = this.snapshot();
     const secret = typeof this.env.secret === 'function' ? await this.env.secret() : this.env.secret;
+    const executionKind: ExecutionKind = execution?.kind ?? 'command';
+
+    if (this.env.executionService !== undefined) {
+      const finished = await this.env.executionService.run(policy.normalized, {
+        cwd: current.cwd,
+        workspaceRoot: current.workspaceRoot,
+        allowlist: current.allowlist,
+        timeoutMs: current.timeoutMs,
+        maxOutputChars: current.maxOutputChars,
+        secret,
+        trusted: current.trusted,
+        signal,
+        kind: executionKind,
+      });
+      const diagnostics: readonly Diagnostic[] =
+        finished.status === 'succeeded'
+          ? []
+          : analyzeValidationFailure({
+              id: 'validation-1',
+              taskId: 'coding-agent',
+              command: finished.command,
+              startedAt: finished.startedAt,
+              finishedAt: finished.finishedAt ?? new Date().toISOString(),
+              outcome: 'failed',
+              evidence: {
+                command: finished.command,
+                exitCode: finished.exitCode,
+                passed: false,
+                timedOut: finished.timedOut,
+                cancelled: finished.cancelled,
+                truncated: finished.truncated,
+                durationMs: finished.durationMs ?? 0,
+                output: finished.output,
+                error: finished.error,
+              } as ValidationEvidence,
+            });
+      const tests =
+        executionKind === 'test'
+          ? parseTestOutput(finished.output, execution?.testFormat ?? 'node')
+          : undefined;
+      this.env.executionService.update(finished.id, {
+        diagnostics,
+        ...(tests !== undefined ? { tests } : {}),
+      });
+      const binding =
+        boundPlan !== undefined
+          ? { planId: boundPlan.id, planHash: hashContent(JSON.stringify(boundPlan)) }
+          : undefined;
+      const enriched = {
+        ...finished,
+        diagnostics,
+        ...(tests !== undefined ? { tests } : {}),
+        binding,
+      };
+      return {
+        ok: finished.status === 'succeeded',
+        tool: 'run_command',
+        output: JSON.stringify(enriched, null, 2),
+        error: finished.error,
+        durationMs: finished.durationMs ?? 0,
+      };
+    }
+
     const result: CommandResult = await runApprovedCommand(policy.normalized, {
-      cwd: this.env.cwd,
-      workspaceRoot: this.env.workspaceRoot,
-      allowlist: this.env.allowlist,
-      timeoutMs: this.env.timeoutMs,
-      maxOutputChars: this.env.maxOutputChars,
+      cwd: current.cwd,
+      workspaceRoot: current.workspaceRoot,
+      allowlist: current.allowlist,
+      timeoutMs: current.timeoutMs,
+      maxOutputChars: current.maxOutputChars,
       secret,
-      trusted: this.env.trusted,
+      trusted: current.trusted,
+      signal,
     });
     const diagnostics: readonly Diagnostic[] =
       result.exitCode === 0 && result.error === undefined
@@ -100,8 +215,8 @@ export class CommandTools {
     };
   }
 
-  async runValidationCommand(command: unknown): Promise<AgentToolResult> {
-    const result = await this.runCommand(command);
+  async runValidationCommand(command: unknown, signal?: AbortSignal): Promise<AgentToolResult> {
+    const result = await this.runCommand(command, undefined, signal);
     return { ...result, tool: 'run_validation_command' };
   }
 
@@ -149,16 +264,22 @@ export class CommandTools {
         name: 'run_command',
         description: 'Run an allowlisted validation command after explicit approval.',
         parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
-        async execute(args) {
-          return self.runCommand(args.command);
+        get timeoutMs() {
+          return resolveLive(self.env.timeoutMs);
+        },
+        async execute(args, context) {
+          return self.runCommand(args.command, undefined, context?.signal);
         },
       },
       {
         name: 'run_validation_command',
         description: 'Run an allowlisted validation command after explicit approval and return structured validation evidence.',
         parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
-        async execute(args) {
-          return self.runValidationCommand(args.command);
+        get timeoutMs() {
+          return resolveLive(self.env.timeoutMs);
+        },
+        async execute(args, context) {
+          return self.runValidationCommand(args.command, context?.signal);
         },
       },
       {

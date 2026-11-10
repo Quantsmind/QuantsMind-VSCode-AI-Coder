@@ -110,7 +110,7 @@ assert(manifest.license === 'MIT', 'license is MIT');
 assert(names.includes(`extension/${manifest.main.replace(/^\.\//, '')}`), 'main file exists in archive');
 
 const commands = manifest.contributes?.commands;
-assert(Array.isArray(commands) && commands.length === 19, 'contributes 19 commands');
+assert(Array.isArray(commands) && commands.length === 21, 'contributes 21 commands');
 assert(
   manifest.contributes?.views?.quantsmind?.[0]?.id === 'quantsmind.chatView',
   'contributes the chat webview',

@@ -6,6 +6,7 @@ import type { AgentSessionView } from '../agent/models';
 import { AgentSessionError } from '../agent/orchestrator';
 import type { ChangeService } from '../changes/changeService';
 import type { WorkspaceIndexService } from '../workspace/indexService';
+import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 import { COMMANDS } from '../commands/ids';
 import { LIMITS } from '../config/defaults';
 import type { SettingsService } from '../config/settings';
@@ -67,6 +68,16 @@ import { ChatSession } from './session';
 import { architectureSummary } from '../repository/discovery';
 import { explainContextSelection } from '../repository/contextSelection';
 import { renderChatHtml } from './webviewHtml';
+import type { ExecutionRecord } from '../execution/service';
+import {
+  repoInfo,
+  status,
+  log,
+  listRemotes,
+  inProgressState,
+} from '../git/gitService';
+import { parseRemote } from '../github/githubService';
+import type { ExecutionView, GitStatusView } from './protocol';
 
 /** Upper bound on disk comparisons a single restoration may trigger. */
 const FRESHNESS_AUDIT_LIMIT = 12;
@@ -123,6 +134,35 @@ export interface ChatViewDependencies {
   readonly isTrusted?: TrustCheck;
 }
 
+function toExecutionView(record: ExecutionRecord): ExecutionView {
+  return {
+    id: record.id,
+    kind: record.kind,
+    command: record.command,
+    cwd: record.cwd,
+    state: record.status === 'running' ? 'running' : 'finished',
+    startedAt: record.startedAt,
+    ...(record.status !== 'running' ? { status: record.status } : {}),
+    ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
+    exitCode: record.exitCode,
+    ...(record.status !== 'running' ? { output: record.output } : {}),
+    ...(record.truncated ? { truncated: true } : {}),
+    ...(record.timedOut ? { timedOut: true } : {}),
+    ...(record.cancelled ? { cancelled: true } : {}),
+    ...(record.diagnostics !== undefined ? { diagnostics: record.diagnostics.length } : {}),
+    ...(record.tests !== undefined
+      ? {
+          tests: {
+            ...(record.tests.passed !== undefined ? { passed: record.tests.passed } : {}),
+            ...(record.tests.failed !== undefined ? { failed: record.tests.failed } : {}),
+            ...(record.tests.skipped !== undefined ? { skipped: record.tests.skipped } : {}),
+            ...(record.tests.total !== undefined ? { total: record.tests.total } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'quantsmind.chatView';
 
@@ -146,11 +186,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private history: HistoryState = EMPTY_HISTORY;
   private restoreWarnings: string[] = [];
   private readonly sessionSubscription: { dispose(): void };
+  private readonly executionSubscription: { dispose(): void };
   private readonly trustCheck: TrustCheck;
 
   constructor(private readonly deps: ChatViewDependencies) {
     this.sessionSubscription = deps.agentRuntime.subscribe((view) => this.onSessionUpdate(view));
+    this.executionSubscription = deps.agentRuntime.executionService.subscribe((record) =>
+      this.onExecution(record),
+    );
     this.trustCheck = deps.isTrusted ?? (() => vscode.workspace.isTrusted);
+  }
+
+  private onExecution(record: ExecutionRecord): void {
+    this.post({ type: 'execution', execution: toExecutionView(record) });
   }
 
   /**
@@ -171,7 +219,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private workspaceRoot(): vscode.WorkspaceFolder | undefined {
-    return vscode.workspace.workspaceFolders?.[0];
+    return selectWorkspaceRoot(vscode.workspace.workspaceFolders);
   }
 
   resolveWebviewView(
@@ -228,6 +276,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.view?.show?.(true);
   }
 
+  cancelActiveRequest(): void {
+    this.cancelActive();
+  }
+
   async runCodingAgentAndReveal(task: string): Promise<void> {
     const trimmed = task.trim();
     if (trimmed.length === 0) {
@@ -253,7 +305,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         maxIterations: 8,
         onEvent: (event: AgentRunEvent) => {
           this.deps.logger.info(`coding agent ${event.type}: ${event.message}`);
-          if (event.type === 'tool') {
+          if (event.type === 'model') {
+            // Agent thinking/progress state without exposing hidden reasoning.
+            this.post({
+              type: 'notice',
+              level: 'info',
+              message: event.message,
+            });
+          } else if (event.type === 'tool') {
             this.post({
               type: 'notice',
               level: event.ok === false ? 'warn' : 'info',
@@ -278,7 +337,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               typeof event.output === 'string'
             ) {
               try {
-                const result = JSON.parse(event.output) as {
+                const commandResult = JSON.parse(event.output) as {
                   command?: string;
                   cwd?: string;
                   exitCode?: number | null;
@@ -288,17 +347,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 };
                 this.post({
                   type: 'commandOutput',
-                  command: result.command ?? event.tool,
-                  cwd: result.cwd ?? '',
-                  output: result.output ?? '',
-                  exitCode: result.exitCode ?? null,
-                  timedOut: result.timedOut === true,
-                  cancelled: result.cancelled === true,
+                  command: commandResult.command ?? event.tool,
+                  cwd: commandResult.cwd ?? '',
+                  output: commandResult.output ?? '',
+                  exitCode: commandResult.exitCode ?? null,
+                  timedOut: commandResult.timedOut === true,
+                  cancelled: commandResult.cancelled === true,
                 });
               } catch {
                 // The tool result was not a command result; leave the notice as the only UI update.
               }
             }
+          } else if (event.type === 'cancelled') {
+            this.post({
+              type: 'notice',
+              level: 'warn',
+              message: `Cancelled: ${event.message}`,
+            });
+          } else if (event.type === 'limit') {
+            this.post({
+              type: 'notice',
+              level: 'warn',
+              message: `Safety limit reached: ${event.message}`,
+            });
+          } else if (event.type === 'error') {
+            this.post({
+              type: 'error',
+              message: event.message,
+              hint: undefined,
+              code: undefined,
+            });
           }
         },
       });
@@ -459,11 +537,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  private postExecutionHistory(): void {
+    const executions = this.deps.agentRuntime.executionService
+      .list()
+      .slice(0, 20)
+      .map(toExecutionView);
+    this.post({ type: 'executionHistory', executions });
+  }
+
   dispose(): void {
     this.requestSeq += 1;
     this.cancelActive();
     this.cancelSessionStep();
     this.sessionSubscription.dispose();
+    this.executionSubscription.dispose();
     this.disposeViewListeners();
     this.session.clear();
     this.attachments = [];
@@ -1018,6 +1105,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         return;
       }
+      const [architecture, karkainSummary, karkainGraph] = await Promise.all([
+        this.deps.workspaceIndex.architectureAnalysis(),
+        this.deps.workspaceIndex.karkainProject(),
+        this.deps.workspaceIndex.karkainGraph(),
+      ]);
       const graph = await this.deps.workspaceIndex.dependencyGraph();
       const dependents = new Map<string, number>();
       const dependencies = new Map<string, number>();
@@ -1042,6 +1134,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const repository: RepositoryView = {
         overview,
         summary: architectureSummary(overview),
+        architecture,
+        karkain:
+          karkainSummary === undefined || karkainGraph === undefined
+            ? undefined
+            : { summary: karkainSummary, graph: karkainGraph },
         dependencies: {
           nodeCount: graph?.stats.nodeCount ?? 0,
           edgeCount: graph?.stats.edgeCount ?? 0,
@@ -1068,6 +1165,114 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         message: 'Could not inspect the repository. See the QuantsMind log.',
       });
     }
+  }
+
+  private async inspectGitStatus(): Promise<void> {
+    if (!this.requireTrust('inspect Git status')) {
+      return;
+    }
+    const root = this.workspaceRoot();
+    if (root === undefined) {
+      this.notifyWarning('Open a workspace folder to inspect Git status.');
+      return;
+    }
+    const rootPath = root.uri.fsPath;
+    try {
+      const info = await repoInfo(rootPath);
+      if (!info.isRepository || info.root === undefined) {
+        this.notifyWarning('This workspace is not a Git repository.');
+        return;
+      }
+      const [entries, recent, state] = await Promise.all([
+        status(rootPath),
+        log(rootPath, 5),
+        inProgressState(rootPath),
+      ]);
+      const staged = entries.filter((entry) => entry.staged).length;
+      const modified = entries.filter((entry) => entry.unstaged).length;
+      const untracked = entries.filter((entry) => entry.untracked).length;
+      const deleted = entries.filter((entry) => entry.deleted).length;
+      const conflicts = entries.filter((entry) => entry.conflict).length;
+
+      // Best-effort GitHub counts. Local Git works without a credential; the GitHub
+      // section is simply omitted when unavailable.
+      let github: GitStatusView['github'] | undefined;
+      if (info.defaultRemote !== undefined) {
+        try {
+          const remotes = await listRemotes(rootPath);
+          const remoteUrl = remotes.find((remote) => remote.name === info.defaultRemote)?.url;
+          const parsed = remoteUrl === undefined ? undefined : parseRemote(remoteUrl);
+          const session = await vscode.authentication.getSession('github', ['repo', 'read:user'], {
+            createIfNone: false,
+          });
+          if (parsed !== undefined && session !== undefined) {
+            const [issues, pulls] = await Promise.all([
+              this.githubArrayCount(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/issues?state=open&per_page=100`),
+              this.githubArrayCount(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/pulls?state=open&per_page=100`),
+            ]);
+            github = { openIssues: issues, openPullRequests: pulls, connected: true };
+          }
+        } catch {
+          github = { openIssues: 0, openPullRequests: 0, connected: false };
+        }
+      }
+
+      const snapshot: GitStatusView = {
+        root: info.root,
+        branch: info.branch ?? '(detached HEAD)',
+        ...(info.headShort !== undefined ? { headShort: info.headShort } : {}),
+        ...(info.defaultRemote !== undefined ? { remote: info.defaultRemote } : {}),
+        staged,
+        modified,
+        untracked,
+        deleted,
+        conflicts,
+        clean: entries.length === 0,
+        mergeInProgress: state.merge,
+        rebaseInProgress: state.rebase,
+        entries: entries.map((entry) => ({ path: entry.path, state: entry.state })),
+        log: recent.map((entry) => ({
+          shortSha: entry.shortSha,
+          subject: entry.subject,
+          author: entry.author,
+          date: entry.date,
+        })),
+        checkpoints: this.deps.agentRuntime.checkpointService.list().slice(0, 10).map((checkpoint) => ({
+          id: checkpoint.id,
+          taskId: checkpoint.taskId,
+          ...(checkpoint.label !== undefined ? { label: checkpoint.label } : {}),
+          fileCount: checkpoint.files.length,
+          createdAt: checkpoint.createdAt,
+        })),
+        ...(github !== undefined ? { github } : {}),
+      };
+      this.post({ type: 'gitSnapshot', snapshot });
+    } catch (error) {
+      this.deps.logger.error('git status inspection failed', error);
+      this.post({
+        type: 'notice',
+        level: 'error',
+        message: 'Could not inspect Git status. See the QuantsMind log.',
+      });
+    }
+  }
+
+  private async githubArrayCount(url: string): Promise<number> {
+    const session = await vscode.authentication.getSession('github', ['repo', 'read:user'], {
+      createIfNone: false,
+    });
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'QuantsMind-VSCode-AI-Coder',
+        ...(session !== undefined ? { Authorization: `Bearer ${session.accessToken}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      return 0;
+    }
+    const body = (await response.json().catch(() => [])) as unknown;
+    return Array.isArray(body) ? body.length : 0;
   }
 
   private async explainRepositoryContext(query: string): Promise<void> {
@@ -1271,6 +1476,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.ready = true;
         await this.sendInit();
         this.sendDraft();
+        this.postExecutionHistory();
         break;
       case 'send':
         await this.handleSend(message.prompt, message.mode);
@@ -1335,6 +1541,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand(COMMANDS.showLog);
         break;
       case 'refreshStatus':
+        await this.refreshStatus();
+        break;
+      case 'selectProvider':
+        await vscode.commands.executeCommand(COMMANDS.selectProvider);
+        await this.refreshStatus();
+        break;
+      case 'selectModel':
+        await vscode.commands.executeCommand(COMMANDS.selectModel);
         await this.refreshStatus();
         break;
       case 'startSession':
@@ -1480,6 +1694,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'summarizeWorkspace':
         await this.summarizeWorkspace();
+        break;
+      case 'inspectGitStatus':
+        await this.inspectGitStatus();
         break;
       case 'inspectRepository':
         await this.inspectRepository();
@@ -2105,7 +2322,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleSend(rawPrompt: string, mode: ChatMode): Promise<void> {
     if (isAgentMode(mode)) {
-      await this.startSession(rawPrompt);
+      await this.runCodingAgentAndReveal(rawPrompt);
       return;
     }
     if (this.busy) {

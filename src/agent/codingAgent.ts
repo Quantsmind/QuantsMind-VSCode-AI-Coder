@@ -1,6 +1,8 @@
 // Agent runtime for QuantsMind. Provider and workspace integrations are injected
 // by callers; this module intentionally has no VS Code dependency.
 
+import type { ChatMessage } from '../providers/types';
+
 export interface AgentToolCall {
   readonly id: string;
   readonly name: string;
@@ -15,18 +17,60 @@ export interface AgentToolResult {
   readonly durationMs: number;
 }
 
+export interface AgentToolExecutionContext {
+  /** Aborts when the run is cancelled or the tool deadline expires. */
+  readonly signal?: AbortSignal;
+}
+
 export interface AgentTool {
   readonly name: string;
   readonly description: string;
   readonly parameters: Readonly<Record<string, unknown>>;
-  execute(args: Readonly<Record<string, unknown>>): Promise<AgentToolResult>;
+  /**
+   * The tool's own bounded execution time, when it enforces one (command
+   * execution does). The registry adds a grace margin so the tool's own
+   * timeout and diagnostics win instead of being preempted.
+   */
+  readonly timeoutMs?: number;
+  execute(
+    args: Readonly<Record<string, unknown>>,
+    context?: AgentToolExecutionContext,
+  ): Promise<AgentToolResult>;
+}
+
+export interface AgentToolExecutionOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface AgentToolRegistryLike {
   get(name: string): AgentTool | undefined;
   list(): readonly AgentTool[];
-  execute(call: AgentToolCall): Promise<AgentToolResult>;
+  execute(call: AgentToolCall, options?: AgentToolExecutionOptions): Promise<AgentToolResult>;
 }
+
+export const DEFAULT_AGENT_TOOL_TIMEOUT_MS = 120_000;
+const MIN_AGENT_TOOL_TIMEOUT_MS = 1_000;
+const MAX_AGENT_TOOL_TIMEOUT_MS = 900_000;
+const TOOL_TIMEOUT_GRACE_MS = 5_000;
+
+function boundedToolTimeout(value: number | undefined, tool: AgentTool): number {
+  const candidate =
+    value ??
+    (tool.timeoutMs === undefined
+      ? DEFAULT_AGENT_TOOL_TIMEOUT_MS
+      : tool.timeoutMs + TOOL_TIMEOUT_GRACE_MS);
+  if (!Number.isFinite(candidate)) {
+    return DEFAULT_AGENT_TOOL_TIMEOUT_MS;
+  }
+  return Math.max(MIN_AGENT_TOOL_TIMEOUT_MS, Math.min(Math.round(candidate), MAX_AGENT_TOOL_TIMEOUT_MS));
+}
+
+type ToolOutcome =
+  | { readonly kind: 'result'; readonly result: AgentToolResult }
+  | { readonly kind: 'error'; readonly error: unknown }
+  | { readonly kind: 'timeout' }
+  | { readonly kind: 'cancelled' };
 
 export class AgentToolRegistry implements AgentToolRegistryLike {
   private readonly tools = new Map<string, AgentTool>();
@@ -50,7 +94,10 @@ export class AgentToolRegistry implements AgentToolRegistryLike {
     return [...this.tools.values()];
   }
 
-  async execute(call: AgentToolCall): Promise<AgentToolResult> {
+  async execute(
+    call: AgentToolCall,
+    options: AgentToolExecutionOptions = {},
+  ): Promise<AgentToolResult> {
     const startedAt = Date.now();
     const tool = this.tools.get(call.name);
     if (tool === undefined) {
@@ -69,16 +116,91 @@ export class AgentToolRegistry implements AgentToolRegistryLike {
         durationMs: Date.now() - startedAt,
       };
     }
-    try {
-      return await tool.execute(call.arguments);
-    } catch (error) {
+
+    const timeoutMs = boundedToolTimeout(options.timeoutMs, tool);
+    const runSignal = options.signal;
+    if (runSignal?.aborted === true) {
       return {
         ok: false,
         tool: call.name,
-        error: error instanceof Error ? error.message : 'Tool execution failed.',
+        error: `Tool "${call.name}" was cancelled before it started.`,
         durationMs: Date.now() - startedAt,
       };
     }
+
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onRunAbort: (() => void) | undefined;
+    const cleanup = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (runSignal !== undefined && onRunAbort !== undefined) {
+        runSignal.removeEventListener('abort', onRunAbort);
+        onRunAbort = undefined;
+      }
+    };
+
+    // Handlers are attached before the deadline race so a tool that settles
+    // late can neither report success nor raise an unhandled rejection.
+    const toolOutcome: Promise<ToolOutcome> = Promise.resolve()
+      .then(() => tool.execute(call.arguments, { signal: controller.signal }))
+      .then(
+        (result): ToolOutcome => ({ kind: 'result', result }),
+        (error: unknown): ToolOutcome => ({ kind: 'error', error }),
+      );
+
+    const outcome = await new Promise<ToolOutcome>((resolve) => {
+      let done = false;
+      const finish = (value: ToolOutcome): void => {
+        if (done) {
+          return;
+        }
+        done = true;
+        cleanup();
+        resolve(value);
+      };
+      timer = setTimeout(() => {
+        controller.abort();
+        finish({ kind: 'timeout' });
+      }, timeoutMs);
+      if (runSignal !== undefined) {
+        onRunAbort = (): void => {
+          controller.abort();
+          finish({ kind: 'cancelled' });
+        };
+        runSignal.addEventListener('abort', onRunAbort, { once: true });
+      }
+      void toolOutcome.then(finish);
+    });
+
+    const durationMs = Date.now() - startedAt;
+    if (outcome.kind === 'result') {
+      return outcome.result;
+    }
+    if (outcome.kind === 'error') {
+      return {
+        ok: false,
+        tool: call.name,
+        error: outcome.error instanceof Error ? outcome.error.message : 'Tool execution failed.',
+        durationMs,
+      };
+    }
+    if (outcome.kind === 'timeout') {
+      return {
+        ok: false,
+        tool: call.name,
+        error: `Tool "${call.name}" timed out after ${timeoutMs} ms. It was signalled to stop and any later result is ignored.`,
+        durationMs,
+      };
+    }
+    return {
+      ok: false,
+      tool: call.name,
+      error: `Tool "${call.name}" was cancelled.`,
+      durationMs,
+    };
   }
 }
 
@@ -197,7 +319,7 @@ export interface AgentModelResponse {
 
 export interface AgentModelClient {
   complete(
-    messages: readonly { role: string; content: string }[],
+    messages: readonly ChatMessage[],
     options?: { readonly tools?: readonly AgentTool[]; readonly signal?: AbortSignal },
   ): Promise<AgentModelResponse>;
 }
@@ -216,7 +338,7 @@ export interface AgentRunResult {
   readonly finalText: string;
   readonly iterations: number;
   readonly toolResults: readonly AgentToolResult[];
-  readonly messages: readonly { role: string; content: string }[];
+  readonly messages: readonly ChatMessage[];
 }
 
 export interface RunCodingAgentOptions {
@@ -224,12 +346,21 @@ export interface RunCodingAgentOptions {
   readonly model: AgentModelClient;
   readonly tools: readonly AgentTool[];
   readonly maxIterations?: number;
+  readonly toolTimeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onEvent?: (event: AgentRunEvent) => void;
   readonly systemPrompt?: string;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are QuantsMind AI Coder, a coding agent with access to workspace tools.
+
+Planning:
+- Inspect the workspace before changing it (read_file, list_files, search_files, get_workspace_context).
+- Use get_architecture to understand backend/frontend layers, controllers, services, repositories, models, DTOs, database access and component relationships before planning a cross-layer change.
+- Use get_karkain_project and get_karkain_context when the workspace contains .kark sources, so module imports and cross-file Karkain relationships are considered.
+- Use detect_build_system to discover the project's build system (npm, mvn, gradle, go, cargo, cmake, dotnet, python, karkain, ...) and get_toolchain to probe toolchain availability.
+- Use run_build and run_tests for builds and test suites; their commands run only after per-command approval and their output reports structured diagnostics and test counts.
+- State a short plan before the first mutation, then execute it step by step.
 
 Use tools only when they are needed to inspect or change the workspace. When you need a tool, respond with JSON only:
 {"tool_calls":[{"name":"tool_name","arguments":{"key":"value"}}]}
@@ -238,9 +369,10 @@ When you have enough information, respond with JSON only:
 {"final":"your final answer"}
 
 Mutation rules:
-- Use prepare_file_change to propose changes. Nothing is written until apply_prepared_change is approved.
+- Use write_file to create or replace one file, or prepare_file_change for a multi-file change set. Nothing is written until the change is approved.
+- Use create_folder for directories, rename_path to move files or folders, and delete_path to remove them. Destructive operations require approval.
 - Use run_validation_command after applying changes.
-- If validation fails, analyze the returned output and propose a repair with prepare_file_change.
+- If validation fails, analyze the returned output and propose a repair with prepare_file_change or write_file.
 - Use undo_file_change to restore a failed or unwanted change set.
 - Never claim that files were modified unless an apply tool succeeded.`;
 
@@ -258,7 +390,7 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
     options.systemPrompt ??
     `${DEFAULT_SYSTEM_PROMPT}\n\nAvailable tools:\n${toolDescriptions || '(none)'}`;
 
-  const messages: import('../providers/types').ChatMessage[] = [
+  const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: options.task },
   ];
@@ -314,7 +446,10 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
         options.onEvent?.({ type: 'cancelled', message: 'Cancelled before tool execution.', iteration });
         return { status: 'cancelled', finalText: '', iterations: iteration, toolResults, messages };
       }
-      const result = await registry.execute(call);
+      const result = await registry.execute(call, {
+        signal: options.signal,
+        timeoutMs: options.toolTimeoutMs,
+      });
       toolResults.push(result);
       options.onEvent?.({
         type: 'tool',
@@ -338,6 +473,10 @@ export async function runCodingAgent(options: RunCodingAgentOptions): Promise<Ag
           2,
         ),
       });
+      if (options.signal?.aborted) {
+        options.onEvent?.({ type: 'cancelled', message: 'Cancelled during tool execution.', iteration });
+        return { status: 'cancelled', finalText: '', iterations: iteration, toolResults, messages };
+      }
     }
   }
 

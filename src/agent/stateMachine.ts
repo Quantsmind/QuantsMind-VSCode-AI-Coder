@@ -57,6 +57,7 @@ const MAIN_TRANSITIONS: readonly AgentTransition[] = [
   { from: 'validating', to: 'executing', event: 'validate' },
   { from: 'validating', to: 'completed', event: 'complete' },
   { from: 'validating', to: 'diagnosing', event: 'validate' },
+  { from: 'validating', to: 'ready', event: 'implement' },
   { from: 'diagnosing', to: 'awaiting-repair-approval', event: 'repair' },
   { from: 'awaiting-repair-approval', to: 'repairing', event: 'approveRepair' },
   { from: 'awaiting-repair-approval', to: 'failed', event: 'rejectRepair' },
@@ -64,12 +65,17 @@ const MAIN_TRANSITIONS: readonly AgentTransition[] = [
   { from: 'repairing', to: 'completed', event: 'complete' },
 ];
 
+// 'validating' is a resting, user-controlled state: the user is asked whether
+// to run an allowlisted validation command, and nothing is in flight until
+// they decide. Pausing here pauses the session truthfully instead of
+// reporting phantom work in progress (D7).
 export const PAUSABLE_STATES: readonly AgentState[] = [
   'ready',
   'awaiting-plan-approval',
   'awaiting-change-approval',
   'awaiting-repair-approval',
   'diagnosing',
+  'validating',
 ];
 
 export const RESUMABLE_STATES: readonly AgentState[] = PAUSABLE_STATES;

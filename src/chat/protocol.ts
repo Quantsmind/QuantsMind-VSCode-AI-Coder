@@ -7,6 +7,8 @@ import type {
 import type { ProviderStatus } from '../providers/completionService';
 import type { SelectedContextFile } from '../repository/contextSelection';
 import type { RepositoryOverview } from '../repository/discovery';
+import type { ArchitectureAnalysis } from '../project/architecture';
+import type { KarkainModuleGraph, KarkainProjectSummary } from '../project/karkain';
 import type { AttachmentDisplay } from './attachmentContext';
 import { isChatMode, type ChatMode } from './prompts';
 
@@ -100,10 +102,17 @@ export interface RepositoryDependencyView {
   }[];
 }
 
+export interface KarkainProjectView {
+  readonly summary: KarkainProjectSummary;
+  readonly graph: KarkainModuleGraph;
+}
+
 export interface RepositoryView {
   readonly overview: RepositoryOverview;
   readonly summary: string;
   readonly dependencies: RepositoryDependencyView;
+  readonly architecture?: ArchitectureAnalysis;
+  readonly karkain?: KarkainProjectView;
 }
 
 export type WebviewToHostMessage =
@@ -122,6 +131,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'openSettings' }
   | { readonly type: 'showLog' }
   | { readonly type: 'refreshStatus' }
+  | { readonly type: 'selectProvider' }
+  | { readonly type: 'selectModel' }
   | { readonly type: 'startSession'; readonly requirement: string }
   | { readonly type: 'approvePlan'; readonly sessionId: string; readonly requestId: string }
   | { readonly type: 'rejectPlan'; readonly sessionId: string; readonly requestId: string }
@@ -158,8 +169,61 @@ export type WebviewToHostMessage =
   | { readonly type: 'deleteConversation'; readonly id: string }
   | { readonly type: 'summarizeWorkspace' }
   | { readonly type: 'inspectRepository' }
+  | { readonly type: 'inspectGitStatus' }
   | { readonly type: 'explainRepositoryContext'; readonly query: string }
   | { readonly type: 'attachRelevantFiles'; readonly query: string };
+
+export interface ExecutionView {
+  readonly id: string;
+  readonly kind: 'command' | 'build' | 'test';
+  readonly command: string;
+  readonly cwd: string;
+  readonly state: 'running' | 'finished';
+  readonly startedAt: string;
+  readonly status?: 'succeeded' | 'failed' | 'cancelled' | 'timed-out';
+  readonly durationMs?: number;
+  readonly exitCode?: number | null;
+  readonly output?: string;
+  readonly truncated?: boolean;
+  readonly timedOut?: boolean;
+  readonly cancelled?: boolean;
+  readonly diagnostics?: number;
+  readonly tests?: { readonly passed?: number; readonly failed?: number; readonly skipped?: number; readonly total?: number };
+}
+
+export interface GitCheckpointView {
+  readonly id: string;
+  readonly taskId: string;
+  readonly label?: string;
+  readonly fileCount: number;
+  readonly createdAt: string;
+}
+
+export interface GitStatusView {
+  readonly root?: string;
+  readonly branch: string;
+  readonly headShort?: string;
+  readonly remote?: string;
+  readonly staged: number;
+  readonly modified: number;
+  readonly untracked: number;
+  readonly deleted: number;
+  readonly conflicts: number;
+  readonly clean: boolean;
+  readonly mergeInProgress: boolean;
+  readonly rebaseInProgress: boolean;
+  readonly entries: readonly {
+    readonly path: string;
+    readonly state: 'staged' | 'modified' | 'staged-modified' | 'added' | 'deleted' | 'staged-deleted' | 'renamed' | 'copied' | 'untracked' | 'conflict';
+  }[];
+  readonly log: readonly { readonly shortSha: string; readonly subject: string; readonly author: string; readonly date: string }[];
+  readonly checkpoints: readonly GitCheckpointView[];
+  readonly github?: {
+    readonly openIssues: number;
+    readonly openPullRequests: number;
+    readonly connected: boolean;
+  };
+}
 
 export type HostToWebviewMessage =
   | {
@@ -284,7 +348,10 @@ export type HostToWebviewMessage =
       readonly exitCode: number | null;
       readonly timedOut: boolean;
       readonly cancelled: boolean;
-    };
+    }
+  | { readonly type: 'execution'; readonly execution: ExecutionView }
+  | { readonly type: 'executionHistory'; readonly executions: readonly ExecutionView[] }
+  | { readonly type: 'gitSnapshot'; readonly snapshot: GitStatusView };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null
@@ -331,9 +398,12 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
     case 'showLog':
     case 'refreshStatus':
     case 'refreshSessions':
+    case 'selectProvider':
+    case 'selectModel':
     case 'newConversation':
     case 'clearConversation':
     case 'summarizeWorkspace':
+    case 'inspectGitStatus':
     case 'inspectRepository':
       return { type: record.type };
     case 'explainRepositoryContext':

@@ -21,6 +21,7 @@ suite('webview message parsing', () => {
       'newConversation',
       'summarizeWorkspace',
       'inspectRepository',
+      'inspectGitStatus',
     ] as const;
 
     for (const type of types) {

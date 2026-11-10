@@ -50,9 +50,13 @@ export interface WorkspaceToolResult {
 
 export class WorkspaceTools {
   constructor(
-    private readonly rootPath: string,
+    private readonly rootPath: string | (() => string),
     private readonly fileSystem: AgentFileSystem,
   ) {}
+
+  private currentRootPath(): string {
+    return typeof this.rootPath === 'function' ? this.rootPath() : this.rootPath;
+  }
 
   async readFile(requestedPath: unknown): Promise<WorkspaceToolResult> {
     const path = normalizeWorkspacePath(requestedPath);
@@ -129,7 +133,7 @@ export class WorkspaceTools {
     }
     return {
       ok: true,
-      output: `Workspace root: ${this.rootPath || '(workspace)'}\nFiles:\n${listing || '(empty)'}\n\nSearch results:\n${searchOutput}`,
+      output: `Workspace root: ${this.currentRootPath() || '(workspace)'}\nFiles:\n${listing || '(empty)'}\n\nSearch results:\n${searchOutput}`,
     };
   }
 

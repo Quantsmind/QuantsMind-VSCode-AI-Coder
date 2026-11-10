@@ -25,6 +25,19 @@ import {
   type ContextSelectionOptions,
   type RepositoryContextSelection,
 } from './contextSelection';
+import {
+  analyzeArchitecture,
+  type ArchitectureAnalysis,
+} from '../project/architecture';
+import {
+  buildKarkainModuleGraph,
+  collectKarkainContext,
+  summarizeKarkainProject,
+  type KarkainContextOptions,
+  type KarkainContextResult,
+  type KarkainModuleGraph,
+  type KarkainProjectSummary,
+} from '../project/karkain';
 
 export interface RepositoryWorkspaceSource {
   readonly rootName: () => string;
@@ -72,7 +85,7 @@ function configBaseName(path: string): string {
 }
 
 function isConfigPath(path: string): boolean {
-  return /^(?:package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|tsconfig(?:\.[^/]+)?\.json|jsconfig\.json|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|poetry\.lock|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Cargo\.toml|Cargo\.lock|CMakeLists\.txt|Makefile|Gemfile|composer\.json|Dockerfile|docker-compose\.ya?ml)$/i.test(
+  return /^(?:package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|pnpm-workspace\.ya?ml|tsconfig(?:\.[^/]+)?\.json|jsconfig\.json|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|poetry\.lock|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Cargo\.toml|Cargo\.lock|CMakeLists\.txt|Makefile|Gemfile|composer\.json|Dockerfile|docker-compose\.ya?ml|karkain\.toml)$/i.test(
     configBaseName(path),
   ) || /\.(?:csproj|sln)$/i.test(path);
 }
@@ -94,6 +107,10 @@ function manifestModuleName(path: string, content: string | undefined): string |
   }
   if (configBaseName(path) === 'go.mod') {
     const match = /^\s*module\s+(\S+)\s*$/m.exec(content.slice(0, 20_000));
+    return match?.[1];
+  }
+  if (configBaseName(path) === 'karkain.toml') {
+    const match = /^\s*name\s*=\s*"([^"]{1,120})"/m.exec(content.slice(0, 20_000));
     return match?.[1];
   }
   return undefined;
@@ -408,6 +425,43 @@ export class RepositoryIntelligenceService {
         validationCommands,
       },
     );
+  }
+
+  /** Source-based architecture view: layers, roles and relationships. */
+  async architecture(): Promise<ArchitectureAnalysis> {
+    await this.ensureLoaded();
+    const overview = await this.overview();
+    const graph = this.builder.snapshot();
+    return analyzeArchitecture([...this.analyses.values()], overview, graph);
+  }
+
+  /** Karkain module graph for the analyzed `.kark` files. */
+  async karkainGraph(): Promise<KarkainModuleGraph> {
+    await this.ensureLoaded();
+    return buildKarkainModuleGraph(this.karkainAnalyses());
+  }
+
+  /** Karkain project summary, or undefined when no `.kark` source was analyzed. */
+  async karkainProject(): Promise<KarkainProjectSummary | undefined> {
+    await this.ensureLoaded();
+    const analyses = this.karkainAnalyses();
+    if (analyses.length === 0) {
+      return undefined;
+    }
+    return summarizeKarkainProject(this.source.rootName(), analyses, buildKarkainModuleGraph(analyses));
+  }
+
+  /** Relevant multi-file Karkain context for a task query. */
+  async karkainContext(
+    query: string,
+    options: KarkainContextOptions = {},
+  ): Promise<KarkainContextResult> {
+    await this.ensureLoaded();
+    return collectKarkainContext(query, this.karkainAnalyses(), options);
+  }
+
+  private karkainAnalyses(): FileAnalysis[] {
+    return [...this.analyses.values()].filter((analysis) => analysis.language === 'karkain');
   }
 
   /** Test/diagnostic access to analyzed languages without exposing content. */

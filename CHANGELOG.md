@@ -5,7 +5,106 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-08
+
+Release bundling the agentic coding work merged on top of 1.3.0 and
+the Gate 3 qualification remediation.
+
+### Added
+- Permanent regression coverage for the agent orchestrator and the bounded
+  provider retry loop (62 tests, D5): session lifecycle, plan/change/
+  validation/repair approvals, exact-operation-set guards, scheduler bounds,
+  cancellation and recovery, and the documented retry cap.
+- Native tool-calling cycle integrity and capability gating (D1): tool
+  transcripts, per-profile tool support, and Gemini tool-message handling.
+- Execution-time (not construction-time) configuration for validation
+  commands: allowlist, credential resolver, timeout and output limit are read
+  when the command runs; trust is rechecked at every boundary (D3).
+- Quota-exhaustion classification (HTTP 402, 403/429 `insufficient_quota`)
+  separate from rate limiting (D6); retry metadata agreement (D8) and
+  Retry-After passthrough with a bounded single retry (D7/D9).
+- Provider-switch model planning: an explicit incompatible model prompts for a
+  choice with the target default offered; approval-modal detail rendering and
+  secret-change detection were refreshed (D10).
+- Workspace-root consistency across every consumer (indexing, retrieval,
+  change service, agent, diagnostics) with a multi-root scoring policy (D4).
+- `validating` is a pausable, user-controlled resting state (D7): nothing is
+  in flight until the user runs the approved validation command.
+- Session recovery reporting and approval bookkeeping hardening (task consent
+  is bound to the exact request the user saw).
+
+### Fixed
+- Rejected change sets are now marked `rejected` instead of staying `pending`,
+  so they cannot be re-approved; pending approvals are always consumed
+  atomically with the user's decision.
+- Cancelling an in-flight task no longer strands the session in a working
+  state with nothing in flight: the session is settled (completed, failed, or
+  parked in `ready`) so pause stays truthful (D7).
+- Pausing no longer reports "work is still in progress" for a resting
+  `validating` session or a session whose tasks are all terminal.
+- The diagnostics report shows the selected workspace root instead of the
+  arbitrary first folder (multi-root consistency, D4).
+- The integration suite no longer runs twice concurrently in two extension
+  hosts (a stale multi-root window in the test profile was restored on every
+  run), which caused shared-state races; integration runs are now
+  deterministic.
+
+### Tests
+- Unit suite: 733 passing, 0 failing.
+- Integration suite: 65 passing on a single extension host, reproducibly.
+- `npm run verify` passes end to end (package, VSIX inspection, packaged-host
+  tests, install verification).
+
 ## [Unreleased]
+
+### Added
+
+Milestone work layered on top of the 2.0.0 release commit (see the
+implementation reports at the repository root for qualification evidence):
+
+- **v2.2.0 — project and Karkain intelligence.** Framework detection
+  (Spring Boot, Angular, React, Next.js, Vue, Svelte, Django, Flask,
+  FastAPI, Express, NestJS, Gin, Pytest, JUnit, GoogleTest), backend /
+  frontend / shared layering with explicit unknowns, role inference, an
+  evidence-based component relationship graph, monorepo detection
+  (pnpm/turbo/nx/lerna/nested manifests), syntax-aware Karkain `.kark`
+  project detection, module resolution, cycle reporting, multi-file
+  context collection and agent tools (`get_architecture`,
+  `get_karkain_project`, `get_karkain_context`); the repository card in
+  the chat sidebar renders the architecture analysis and Karkain module
+  graph. The real Karkain compiler cannot execute on this machine;
+  analysis is built from the compiler's grammar and fixtures.
+- **v2.3.0 — execution, build and test integration.** Bounded in-memory
+  execution history with duplicate-invocation protection, cancellation
+  and timeouts; 22 build-system adapters (npm/pnpm/yarn, Maven, Gradle,
+  Go, Cargo, CMake, Make, Ninja, pip/Poetry/uv/Hatch, dotnet, MSBuild,
+  Composer, Bundler, Dart, Flutter, Swift, Karkain) with local detection
+  and toolchain probing; `run_build`, `run_tests`, `detect_build_system`
+  and `get_toolchain` agent tools that execute through the shared
+  approved command runner; conservative test-output parsing (JUnit,
+  pytest, mocha/jest/vitest, go test, cargo test, dotnet test, CTest,
+  RSpec); compiler diagnostics extraction feeding the bounded repair loop.
+- **v2.4.0 — Git, GitHub and change management.** Local Git service
+  (repository detection, branch/HEAD, staged/unstaged/untracked/deleted/
+  renamed/conflict detection, porcelain v1 `-z` parsing, merge/rebase
+  state, credential-stripped remotes, detached HEAD, recent history);
+  content-snapshot checkpoints bound to task IDs with conflict-safe
+  restore that never overwrites diverging user edits; agent tools
+  `git_status`, `git_diff`, `git_log`, `git_branch_list`, `git_remotes`,
+  `git_stage`, `git_unstage`, `git_commit`, `git_create_branch`,
+  `git_switch_branch`, `git_delete_branch`, `create_checkpoint`,
+  `restore_checkpoint`, `list_checkpoints`; explicit approval required
+  for every mutation; broad staging (`git add .`, `-a`, `*`) refused;
+  commits only from staged files with the user-approved message and SHA
+  reporting; GitHub REST integration for issues and pull requests via the
+  VS Code GitHub session token (`github_list_issues`,
+  `github_create_issue`, `github_list_pull_requests`,
+  `github_create_pull_request`), fixture-tested against a mocked REST API
+  and never verified against the live GitHub API; GitHub is optional and
+  ordinary local Git features work without it; a **Git status** card in
+  the chat sidebar shows branch, HEAD, remote, counts, in-progress
+  merge/rebase flags, recent commits, checkpoints and (when authenticated)
+  open issue/PR counts.
 
 ### Fixed
 

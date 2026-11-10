@@ -80,6 +80,49 @@ suite('webview HTML', () => {
     expect(missing).to.deep.equal([]);
   });
 
+  test('renders architecture and Karkain analysis sections from host messages', () => {
+    const source = script();
+    expect(source).to.contain('function renderArchitectureHtml(');
+    expect(source).to.contain('function renderKarkainHtml(');
+    expect(source).to.contain('renderArchitectureHtml(repository.architecture)');
+    expect(source).to.contain('renderKarkainHtml(repository.karkain)');
+    expect(source).to.contain("'<div class=\"impact-section\"><span class=\"impact-label\">Architecture</span>'");
+    expect(source).to.contain("'<div class=\"impact-section\"><span class=\"impact-label\">Karkain project</span>'");
+    expect(source).to.contain('<strong>Monorepo:</strong>');
+    expect(source).to.contain('Framework');
+  });
+
+  test('exposes the agent inspection buttons the architecture UI relies on', () => {
+    const html = render();
+    expect(html).to.contain('data-action="inspect-repository"');
+    expect(html).to.contain('data-action="summarize-workspace"');
+    const source = script();
+    expect(source).to.contain("post({ type: 'inspectRepository' })");
+  });
+
+  test('renders Git status inspection action and handler', () => {
+    const html = render();
+    expect(html).to.contain('data-action="inspect-git"');
+    const source = script();
+    expect(source).to.contain("case 'inspect-git'");
+    expect(source).to.contain("post({ type: 'inspectGitStatus' })");
+    expect(source).to.contain("case 'gitSnapshot'");
+    expect(source).to.contain('renderGitStatusHtml(');
+    expect(source).to.contain('Checkpoints');
+    expect(source).to.contain('Git status');
+  });
+
+  test('renders execution cards with status, tests and diagnostics', () => {
+    const source = script();
+    expect(source).to.contain('function upsertExecutionCard(');
+    expect(source).to.contain('case \'execution\'');
+    expect(source).to.contain("case 'execution':");
+    expect(source).to.contain("case 'executionHistory':");
+    expect(source).to.contain('execution-badge');
+    expect(source).to.contain('Tests:');
+    expect(source).to.contain('Diagnostic');
+  });
+
   test('handles every host message the extension can post about history and context', () => {
     const source = script();
     for (const type of ['history', 'requestContext', 'init', 'conversation', 'clear']) {

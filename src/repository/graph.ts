@@ -111,6 +111,7 @@ const SOURCE_EXTENSIONS: readonly string[] = [
   '.hxx',
   '.cs',
   '.rb',
+  '.kark',
 ];
 
 function normalize(path: string): string {
@@ -225,6 +226,8 @@ interface ResolutionContext {
   readonly from: string;
   readonly specifier: string;
   readonly kind: ImportKind;
+  /** Names imported with `from X import a, b` (Python) or equivalent. */
+  readonly names?: readonly string[];
   readonly language: SupportedLanguage;
   readonly knownPaths: ReadonlySet<string>;
   readonly topLevelDirectories: ReadonlySet<string>;
@@ -324,11 +327,51 @@ function resolvePythonReference(context: ResolutionContext): ResolvedReference |
   }
   const modulePath = raw.replace(/\./g, '/');
   const first = raw.split('.')[0] ?? raw;
+  const submoduleSuffixes = (context.names ?? [])
+    .filter((name) => name !== '*' && name.length > 0)
+    .flatMap((name) => [`/${modulePath}/${name}.py`, `/${modulePath}/${name}/__init__.py`]);
   const localLooking =
     context.topLevelDirectories.has(first) ||
-    context.moduleNames.some((name) => raw === name || raw.startsWith(`${name}.`));
+    context.moduleNames.some((name) => raw === name || raw.startsWith(`${name}.`)) ||
+    [...context.knownPaths].some(
+      (candidate) =>
+        candidate.endsWith(`/${modulePath}.py`) ||
+        candidate.endsWith(`/${modulePath}/__init__.py`) ||
+        candidate === `${modulePath}.py` ||
+        candidate === `${modulePath}/__init__.py` ||
+        submoduleSuffixes.some((suffix) => candidate.endsWith(suffix)),
+    );
   if (!localLooking) {
     return undefined;
+  }
+  // `from app.routers import users` imports the submodule app.routers.users.
+  for (const name of context.names ?? []) {
+    if (name === '*' || name.length === 0) {
+      continue;
+    }
+    const subPath = `${modulePath}/${name}`;
+    const sub =
+      exactCandidate(subPath, context.knownPaths, 'python') ??
+      exactCandidate(`${subPath}/__init__`, context.knownPaths, 'python');
+    if (sub !== undefined) {
+      return {
+        targets: [sub],
+        confidence: 'confirmed',
+        evidence: `Python module ${raw}.${name}`,
+        localLooking: true,
+        ambiguous: false,
+      };
+    }
+    const heuristic = suffixCandidate(`${subPath}.py`, context.knownPaths, ['.py']);
+    if (heuristic !== undefined) {
+      return {
+        targets: [heuristic],
+        confidence: 'heuristic',
+        evidence: `suffix match for Python module ${raw}.${name}`,
+        localLooking: true,
+        ambiguous: false,
+      };
+    }
   }
   const direct =
     exactCandidate(modulePath, context.knownPaths, 'python') ??
@@ -481,6 +524,93 @@ function resolveIncludeReference(context: ResolutionContext): ResolvedReference 
   };
 }
 
+function resolveKarkainReference(context: ResolutionContext): ResolvedReference | undefined {
+  const raw = context.specifier;
+  if (raw.length === 0 || raw.includes('/')) {
+    return undefined;
+  }
+  const fromDir = dirName(context.from);
+  const known = [...context.knownPaths];
+
+  // Standard-library modules live under stdlib/<module> or stdlib/<module>.kark.
+  if (raw.startsWith('std.')) {
+    const sub = raw.slice('std.'.length);
+    const matches = known
+      .filter((path) => {
+        const normalized = normalize(path);
+        return (
+          normalized === `stdlib/${sub}.kark` ||
+          normalized.endsWith(`/stdlib/${sub}.kark`) ||
+          normalized.startsWith(`stdlib/${sub}/`) ||
+          normalized.includes(`/stdlib/${sub}/`)
+        );
+      })
+      .sort((left, right) => left.localeCompare(right));
+    if (matches.length > 0) {
+      return {
+        targets: matches.slice(0, 12),
+        confidence: 'confirmed',
+        evidence: `Karkain standard-library module ${raw}`,
+        localLooking: true,
+        ambiguous: matches.length > 1,
+      };
+    }
+    return {
+      targets: [],
+      confidence: 'heuristic',
+      evidence: `Karkain standard-library module ${raw} was not found`,
+      localLooking: true,
+      ambiguous: false,
+    };
+  }
+
+  // Sibling file <name>.kark, then sibling directory <name>/.
+  const siblingFile = joinPath(fromDir, `${raw}.kark`);
+  if (context.knownPaths.has(siblingFile)) {
+    return {
+      targets: [siblingFile],
+      confidence: 'confirmed',
+      evidence: `sibling Karkain module ${raw}.kark`,
+      localLooking: true,
+      ambiguous: false,
+    };
+  }
+  const siblingDir = joinPath(fromDir, raw);
+  const directoryFiles = known
+    .filter((path) => path.startsWith(`${siblingDir}/`) && path.endsWith('.kark'))
+    .sort((left, right) => left.localeCompare(right));
+  if (directoryFiles.length > 0) {
+    return {
+      targets: directoryFiles.slice(0, 12),
+      confidence: 'confirmed',
+      evidence: `sibling Karkain module directory ${raw}/`,
+      localLooking: true,
+      ambiguous: directoryFiles.length > 1,
+    };
+  }
+  if (context.knownPaths.has(`${raw}.kark`)) {
+    return {
+      targets: [`${raw}.kark`],
+      confidence: 'confirmed',
+      evidence: `Karkain module ${raw}.kark`,
+      localLooking: true,
+      ambiguous: false,
+    };
+  }
+
+  const suffix = suffixCandidate(`${raw}.kark`, context.knownPaths, ['.kark']);
+  return {
+    targets: suffix === undefined ? [] : [suffix],
+    confidence: 'heuristic',
+    evidence:
+      suffix === undefined
+        ? `Karkain module ${raw} has no matching file`
+        : `suffix match for Karkain module ${raw}`,
+    localLooking: true,
+    ambiguous: false,
+  };
+}
+
 function resolveReference(context: ResolutionContext): ResolvedReference | undefined {
   switch (context.language) {
     case 'typescript':
@@ -495,6 +625,8 @@ function resolveReference(context: ResolutionContext): ResolvedReference | undef
     case 'c':
     case 'cpp':
       return resolveIncludeReference(context);
+    case 'karkain':
+      return resolveKarkainReference(context);
   }
 }
 
@@ -633,6 +765,7 @@ export class DependencyGraphBuilder {
         from: path,
         specifier: reference.specifier,
         kind: reference.kind,
+        names: reference.names,
         language,
         knownPaths,
         topLevelDirectories,

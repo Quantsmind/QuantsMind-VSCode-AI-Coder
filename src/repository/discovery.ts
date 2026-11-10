@@ -68,6 +68,14 @@ export interface RepositoryModule {
   readonly languages: readonly SupportedLanguage[];
 }
 
+export interface RepositoryMonorepo {
+  readonly isMonorepo: boolean;
+  readonly packages: readonly string[];
+  readonly workspaces: readonly string[];
+  readonly evidence: readonly string[];
+  readonly confidence: Confidence;
+}
+
 export interface RepositoryOverview {
   readonly rootName: string;
   readonly summary: WorkspaceSummary;
@@ -82,6 +90,7 @@ export interface RepositoryOverview {
   readonly entryPoints: readonly string[];
   readonly configFiles: readonly string[];
   readonly modules: readonly RepositoryModule[];
+  readonly monorepo: RepositoryMonorepo;
   readonly ignored: {
     readonly files: number;
     readonly directories: number;
@@ -150,6 +159,7 @@ const LANGUAGE_NAMES: Readonly<Record<SupportedLanguage, string>> = {
   go: 'Go',
   c: 'C',
   cpp: 'C++',
+  karkain: 'Karkain',
 };
 
 const SOURCE_EXTENSIONS: Readonly<Record<SupportedLanguage, readonly string[]>> = {
@@ -160,6 +170,7 @@ const SOURCE_EXTENSIONS: Readonly<Record<SupportedLanguage, readonly string[]>> 
   go: ['go'],
   c: ['c', 'h'],
   cpp: ['cc', 'cpp', 'cxx', 'hpp', 'hh', 'hxx'],
+  karkain: ['kark'],
 };
 
 const MANIFESTS: readonly {
@@ -168,6 +179,7 @@ const MANIFESTS: readonly {
   readonly ecosystem: string;
 }[] = [
   { test: (path) => baseName(path) === 'package.json', kind: 'package', ecosystem: 'Node.js' },
+  { test: (path) => baseName(path) === 'karkain.toml', kind: 'package', ecosystem: 'Karkain' },
   { test: (path) => baseName(path) === 'package-lock.json', kind: 'lockfile', ecosystem: 'npm' },
   { test: (path) => baseName(path) === 'yarn.lock', kind: 'lockfile', ecosystem: 'Yarn' },
   { test: (path) => baseName(path) === 'pnpm-lock.yaml', kind: 'lockfile', ecosystem: 'pnpm' },
@@ -215,6 +227,7 @@ const CONFIG_PATTERNS: readonly RegExp[] = [
   /^\.github\/workflows\/[^/]+\.ya?ml$/i,
   /(^|\/)\.vscode\/[^/]+\.json$/i,
   /(^|\/)(pytest|tox|mypy|ruff)\.(?:ini|toml)$/i,
+  /^karkain\.toml$/i,
   /(^|\/)conftest\.py$/i,
   /(^|\/)(\.?phpunit[^/]*|phpstan[^/]*|psalm[^/]*)\.(?:xml|neon|json)$/i,
   /(^|\/)(checkstyle|spotbugs|pmd)[^/]*\.xml$/i,
@@ -249,7 +262,7 @@ const FRAMEWORK_KEYWORDS: readonly {
   { name: 'SQLAlchemy', kind: 'tooling', pattern: /\bsqlalchemy\b/i, ecosystem: 'Python' },
   { name: 'pytest', kind: 'test', pattern: /\bpytest\b/i, ecosystem: 'Python' },
   { name: 'Ruff', kind: 'tooling', pattern: /\bruff\b/i, ecosystem: 'Python' },
-  { name: 'Spring', kind: 'framework', pattern: /\bspring(?:-boot|-framework)?\b/i, ecosystem: 'Java' },
+  { name: 'Spring Boot', kind: 'framework', pattern: /spring-boot|springframework[._]boot/i, ecosystem: 'Java' },
   { name: 'JUnit', kind: 'test', pattern: /\bjunit\b/i, ecosystem: 'Java' },
   { name: 'Gradle', kind: 'build', pattern: /\bgradle\b/i, ecosystem: 'Java' },
   { name: 'Maven', kind: 'build', pattern: /<artifactId>\s*maven/i, ecosystem: 'Java' },
@@ -459,6 +472,96 @@ function buildModules(paths: readonly string[], limit: number): RepositoryModule
     }))
     .sort((left, right) => right.files - left.files || left.name.localeCompare(right.name))
     .slice(0, limit);
+}
+
+const MONOREPO_MANIFESTS: readonly string[] = [
+  'pnpm-workspace.yaml',
+  'pnpm-workspace.yml',
+  'turbo.json',
+  'nx.json',
+  'lerna.json',
+];
+
+const MULTI_MODULE_MANIFESTS: readonly string[] = [
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'settings.gradle',
+  'settings.gradle.kts',
+  'go.mod',
+  'Cargo.toml',
+  'CMakeLists.txt',
+];
+
+function workspaceGlobs(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === 'string').slice(0, 20);
+  }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const packages = (value as Record<string, unknown>).packages;
+    if (Array.isArray(packages)) {
+      return packages.filter((entry): entry is string => typeof entry === 'string').slice(0, 20);
+    }
+  }
+  return [];
+}
+
+/**
+ * Detects monorepositories and multi-module builds from manifests alone. A
+ * single root manifest is not a monorepo; two or more package manifests, a
+ * workspace manifest, or declared workspaces are.
+ */
+export function detectMonorepo(
+  paths: readonly string[],
+  configContents: Readonly<Record<string, string>>,
+): RepositoryMonorepo {
+  const evidence: string[] = [];
+  const packagePaths = paths.filter((path) => baseName(path) === 'package.json');
+  const packageDirs = [
+    ...new Set(packagePaths.map((path) => (dirName(path) === '' ? '.' : dirName(path)))),
+  ].sort();
+  const workspaceManifests = paths.filter((path) => MONOREPO_MANIFESTS.includes(baseName(path)));
+  const workspaces: string[] = [];
+
+  const rootPackage =
+    packagePaths.find((path) => dirName(path) === '') ??
+    (packagePaths.length === 1 ? packagePaths[0] : undefined);
+  if (rootPackage !== undefined) {
+    const parsed = readJsonRecord(configContents[rootPackage]);
+    const globs = workspaceGlobs(parsed?.workspaces);
+    workspaces.push(...globs);
+    if (globs.length > 0) {
+      evidence.push(`${rootPackage} declares ${globs.length} workspace(s)`);
+    }
+  }
+
+  if (packagePaths.length >= 2) {
+    evidence.push(`${packagePaths.length} package.json manifests`);
+  }
+  for (const manifest of workspaceManifests) {
+    evidence.push(`${manifest} workspace manifest`);
+  }
+
+  const moduleManifests = paths.filter((path) => MULTI_MODULE_MANIFESTS.includes(baseName(path)));
+  const moduleDirs = [
+    ...new Set(moduleManifests.map((path) => (dirName(path) === '' ? '.' : dirName(path)))),
+  ];
+  if (moduleDirs.length >= 2) {
+    evidence.push(`${moduleDirs.length} nested build manifests`);
+  }
+
+  const isMonorepo =
+    packagePaths.length >= 2 || workspaceManifests.length > 0 || workspaces.length > 0;
+  return {
+    isMonorepo,
+    packages: packageDirs,
+    workspaces: workspaces.sort(),
+    evidence: [...new Set(evidence)].slice(0, 8),
+    confidence: isMonorepo ? 'confirmed' : 'heuristic',
+  };
 }
 
 function buildManifests(paths: readonly string[]): RepositoryManifest[] {
@@ -702,6 +805,7 @@ export function discoverRepository(input: DiscoverRepositoryInput): RepositoryOv
     entryPoints: entryPointsWithManifest(paths, packageJson),
     configFiles: configFilesOf(paths, maxConfigFiles),
     modules: buildModules(paths, maxModules),
+    monorepo: detectMonorepo(paths, configContents),
     ignored: {
       files: ignoredFiles,
       directories: ignoredDirectories.size,

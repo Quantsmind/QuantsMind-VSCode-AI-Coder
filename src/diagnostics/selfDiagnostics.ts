@@ -4,6 +4,7 @@ import type { SettingsService } from '../config/settings';
 import type { SecretStore } from '../security/secretStore';
 import type { WorkspaceIndexService } from '../workspace/indexService';
 import type { Logger } from '../security/logger';
+import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 
 export interface SelfDiagnosticsDeps {
   readonly version: string;
@@ -28,8 +29,16 @@ export class SelfDiagnosticsService {
 
     lines.push('## Environment');
     lines.push(`- Workspace folders: ${vscode.workspace.workspaceFolders?.length ?? 0}`);
-    const root = vscode.workspace.workspaceFolders?.[0];
-    lines.push(`- First workspace folder: ${root?.name ?? '(none)'}`);
+    // Same root policy as indexing, retrieval and edits (D4): report the folder
+    // the extension actually treats as the root, never an arbitrary first folder.
+    const root = selectWorkspaceRoot(
+      (vscode.workspace.workspaceFolders ?? []).map((folder, index) => ({
+        name: folder.name,
+        index,
+        uri: folder.uri,
+      })),
+    );
+    lines.push(`- Selected workspace root: ${root?.name ?? '(none)'}`);
     lines.push(`- Trusted: ${vscode.workspace.isTrusted}`);
     lines.push('');
 

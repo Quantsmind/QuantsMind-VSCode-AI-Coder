@@ -2,6 +2,12 @@ import type { RepositoryOverview } from '../repository/discovery';
 import type { RepositoryContextSelection } from '../repository/contextSelection';
 import type { ContextSelectionOptions } from '../repository/contextSelection';
 import type { FileChange } from '../changes/model';
+import type { ArchitectureAnalysis } from '../project/architecture';
+import type {
+  KarkainContextOptions,
+  KarkainContextResult,
+  KarkainProjectSummary,
+} from '../project/karkain';
 import type { AgentTool, AgentToolResult } from './codingAgent';
 
 export interface RepositoryIntelligenceLike {
@@ -9,6 +15,9 @@ export interface RepositoryIntelligenceLike {
   selectContext(query: string, options: ContextSelectionOptions): Promise<RepositoryContextSelection>;
   analyzeChanges(changes: readonly FileChange[], validationCommands?: readonly string[]): Promise<unknown>;
   findSymbols(query: string, limit?: number): Promise<readonly { readonly path: string; readonly name: string; readonly kind: string; readonly line: number; readonly exported: boolean; readonly confidence: string }[]>;
+  architecture?(): Promise<ArchitectureAnalysis>;
+  karkainContext?(query: string, options?: KarkainContextOptions): Promise<KarkainContextResult>;
+  karkainProject?(): Promise<KarkainProjectSummary | undefined>;
 }
 
 export class RepositoryTools {
@@ -105,6 +114,76 @@ export class RepositoryTools {
     }
   }
 
+  async getArchitecture(): Promise<AgentToolResult> {
+    if (this.intelligence.architecture === undefined) {
+      return { ok: false, tool: 'get_architecture', error: 'Architecture analysis is unavailable.', durationMs: 0 };
+    }
+    try {
+      const architecture = await this.intelligence.architecture();
+      const summary = {
+        layers: architecture.layers,
+        frameworks: architecture.frameworks,
+        backend: architecture.backend.slice(0, 40),
+        frontend: architecture.frontend.slice(0, 40),
+        shared: architecture.shared.slice(0, 40),
+        components: architecture.components.slice(0, 40).map((component) => ({
+          path: component.path,
+          name: component.name,
+          layer: component.layer,
+          roles: component.roles,
+          language: component.language,
+          confidence: component.confidence,
+          evidence: component.evidence,
+          symbols: component.symbols.slice(0, 12),
+          dependencies: component.dependencies.slice(0, 12),
+        })),
+        relationships: architecture.relationships.slice(0, 80).map((relationship) => ({
+          from: relationship.from,
+          to: relationship.to,
+          kind: relationship.kind,
+          confidence: relationship.confidence,
+          evidence: relationship.evidence,
+        })),
+        summaryText: architecture.summaryText,
+        truncated: architecture.truncated,
+      };
+      return { ok: true, tool: 'get_architecture', output: JSON.stringify(summary, null, 2), durationMs: 0 };
+    } catch (error) {
+      return { ok: false, tool: 'get_architecture', error: error instanceof Error ? error.message : 'Unable to inspect architecture.', durationMs: 0 };
+    }
+  }
+
+  async getKarkainProject(): Promise<AgentToolResult> {
+    if (this.intelligence.karkainProject === undefined) {
+      return { ok: false, tool: 'get_karkain_project', error: 'Karkain analysis is unavailable.', durationMs: 0 };
+    }
+    try {
+      const project = await this.intelligence.karkainProject();
+      if (project === undefined) {
+        return { ok: false, tool: 'get_karkain_project', error: 'No Karkain (.kark) sources were found in the workspace.', durationMs: 0 };
+      }
+      return { ok: true, tool: 'get_karkain_project', output: JSON.stringify(project, null, 2), durationMs: 0 };
+    } catch (error) {
+      return { ok: false, tool: 'get_karkain_project', error: error instanceof Error ? error.message : 'Unable to inspect the Karkain project.', durationMs: 0 };
+    }
+  }
+
+  async getKarkainContext(query: unknown, maxFiles = 8): Promise<AgentToolResult> {
+    if (this.intelligence.karkainContext === undefined) {
+      return { ok: false, tool: 'get_karkain_context', error: 'Karkain analysis is unavailable.', durationMs: 0 };
+    }
+    if (typeof query !== 'string' || query.trim().length === 0) {
+      return { ok: false, tool: 'get_karkain_context', error: 'A query is required.', durationMs: 0 };
+    }
+    const files = Math.max(1, Math.min(Number(maxFiles) || 8, 40));
+    try {
+      const context = await this.intelligence.karkainContext(query.trim(), { maxFiles: files });
+      return { ok: true, tool: 'get_karkain_context', output: JSON.stringify(context, null, 2), durationMs: 0 };
+    } catch (error) {
+      return { ok: false, tool: 'get_karkain_context', error: error instanceof Error ? error.message : 'Unable to collect Karkain context.', durationMs: 0 };
+    }
+  }
+
   toAgentTools(): readonly AgentTool[] {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
@@ -146,6 +225,40 @@ export class RepositoryTools {
         },
         async execute(args) {
           return self.findSymbols(args.query, Number(args.limit));
+        },
+      },
+      {
+        name: 'get_architecture',
+        description:
+          'Inspect the source-based architecture: backend/frontend/shared layers, controllers, services, repositories, models, DTOs, database access, frontend components and routing relationships.',
+        parameters: { type: 'object', properties: {} },
+        async execute() {
+          return self.getArchitecture();
+        },
+      },
+      {
+        name: 'get_karkain_project',
+        description:
+          'Inspect a Karkain (.kark) project: modules, imports, cross-file relationships, types and entry points.',
+        parameters: { type: 'object', properties: {} },
+        async execute() {
+          return self.getKarkainProject();
+        },
+      },
+      {
+        name: 'get_karkain_context',
+        description:
+          'Collect relevant multi-file Karkain context for a query, expanded along module imports.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            maxFiles: { type: 'number' },
+          },
+          required: ['query'],
+        },
+        async execute(args) {
+          return self.getKarkainContext(args.query, Number(args.maxFiles));
         },
       },
       {

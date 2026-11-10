@@ -46,7 +46,7 @@ import {
 import { buildDevelopmentPlanMessages, buildTaskRequest, parseDevelopmentPlan } from './planning';
 import { buildCompletionReport } from './report';
 import { canTransitionTaskStatus, findTask, nextRunnableTasks, refreshBlockedTasks, schedule, updateTask } from './scheduler';
-import { canPause, deriveProgress, deriveStages, transitionSession } from './stateMachine';
+import { canPause, deriveProgress, deriveStages, transitionSession, STATE_LABELS } from './stateMachine';
 import { bindValidation, changeSetVersion, deriveValidationSuggestions, type ValidationBinding } from './validation';
 import type { ISessionRepository } from '../sessions/repository';
 import type { CheckpointRepository } from '../sessions/checkpointRepository';
@@ -59,7 +59,7 @@ export interface OrchestratorLogger {
 }
 
 export interface OrchestratorDependencies {
-  readonly workspaceRoot: string;
+  readonly workspaceRoot: string | (() => string);
   readonly complete: (
     messages: readonly ChatMessage[],
     token: CancellationTokenLike,
@@ -67,7 +67,7 @@ export interface OrchestratorDependencies {
   readonly inspect: (token: CancellationTokenLike) => Promise<ProjectContext>;
   readonly retrieve: (query: string, token: CancellationTokenLike) => Promise<RetrievalResult>;
   readonly changes: IFileChangeService;
-  readonly runCommand: (command: string, signal: AbortSignal) => Promise<CommandResult>;
+  readonly runCommand: (command: string, signal: AbortSignal, taskId?: string) => Promise<CommandResult>;
   readonly agentSettings: () => ResolvedAgentSettings;
   readonly commandSettings: () => ResolvedCommandSettings;
   /** Maximum number of tasks that may run per execution; defaults to 1 and is clamped to 1..3. */
@@ -217,6 +217,12 @@ export class AgentOrchestrator implements IAgentController {
 
   constructor(private readonly deps: OrchestratorDependencies) {
     this.maxConcurrentTasks = resolveMaxConcurrentTasks(deps.maxConcurrentTasks);
+  }
+
+  private currentWorkspaceRoot(): string {
+    return typeof this.deps.workspaceRoot === 'function'
+      ? this.deps.workspaceRoot()
+      : this.deps.workspaceRoot;
   }
 
   async detectInterruptedExecutions(): Promise<readonly string[]> {
@@ -881,7 +887,7 @@ export class AgentOrchestrator implements IAgentController {
     let session: AgentSession = {
       schemaVersion: SESSION_SCHEMA_VERSION,
       id,
-      workspaceRoot: this.deps.workspaceRoot,
+      workspaceRoot: this.currentWorkspaceRoot(),
       requirement,
       state: 'idle',
       needsReview: false,
@@ -1781,6 +1787,17 @@ export class AgentOrchestrator implements IAgentController {
     const request = this.requireRequest(session, 'change-set', requestId);
     const changeSet = session.changeSets.find((candidate) => candidate.id === request.subjectId);
     let current = this.withDecision(session, request, 'rejected', []);
+    if (changeSet !== undefined) {
+      // A rejected change set must never stay "pending": the guard in
+      // approveChanges treats 'rejected' as already decided, and leaving it
+      // pending would show the user an operation set that can be re-approved.
+      current = {
+        ...current,
+        changeSets: current.changeSets.map((candidate) =>
+          candidate.id === changeSet.id ? { ...candidate, status: 'rejected' as const } : candidate,
+        ),
+      };
+    }
     if (changeSet?.taskId !== undefined) {
       current = this.removeTaskApproval(sessionId, changeSet.taskId, current);
     }
@@ -1848,7 +1865,7 @@ export class AgentOrchestrator implements IAgentController {
       }
 
       const binding = this.bindingFor(this.require(sessionId), task.id);
-      const cwd = this.deps.workspaceRoot;
+      const cwd = this.currentWorkspaceRoot();
       const request: ApprovalRequest = {
         id: this.nextId('approval'),
         sessionId,
@@ -1931,7 +1948,7 @@ export class AgentOrchestrator implements IAgentController {
         'The approved request no longer names the applied task. Review the current request.',
       );
     }
-    if (request.cwd !== this.deps.workspaceRoot) {
+    if (request.cwd !== this.currentWorkspaceRoot()) {
       throw new AgentSessionError(
         'The approved request belongs to a different workspace folder.',
       );
@@ -1993,7 +2010,7 @@ export class AgentOrchestrator implements IAgentController {
 
       let result: CommandResult;
       try {
-        result = await this.deps.runCommand(policy.normalized, controller.signal);
+        result = await this.deps.runCommand(policy.normalized, controller.signal, task.id);
       } catch (error) {
         return this.failSession(sessionId, messageOf(error));
       } finally {
@@ -2459,6 +2476,14 @@ export class AgentOrchestrator implements IAgentController {
   async pause(sessionId: string): Promise<AgentSessionView> {
     this.requireIdle(sessionId, 'pause');
     const session = this.require(sessionId);
+    if (isTerminalAgentState(session.state)) {
+      throw new AgentSessionError(
+        `The session has already finished (${STATE_LABELS[session.state].toLowerCase()}) and cannot be paused. Start a new session instead.`,
+      );
+    }
+    if (session.state === 'paused') {
+      throw new AgentSessionError('The session is already paused. Resume it to continue.');
+    }
     if (!canPause(session.state)) {
       throw new AgentSessionError('The session cannot pause while work is in progress.');
     }
@@ -2564,8 +2589,56 @@ export class AgentOrchestrator implements IAgentController {
       };
       current = this.withEvent(current, 'task', `Task "${taskToCancel.title}" was cancelled.`, taskId);
       await this.checkpoint(current, taskId);
-      return this.record(current);
+      // Persist the cancellation first so the settle logic observes it.
+      const recorded = await this.record(current);
+      // A cancelled task must not strand the session in a working state with
+      // nothing in flight (D7). Settle remaining work so pause stays honest.
+      const settled = await this.settleAfterTaskCancellation(sessionId);
+      return settled ?? recorded;
     });
+  }
+
+  /**
+   * Settles a session whose tasks were just cancelled (D7). If tasks remain
+   * in flight nothing happens; otherwise blocked or finished work is resolved
+   * and the session is parked in `ready`, completed, or failed honestly. This
+   * is what keeps pause() truthful: a resting session never reports phantom
+   * work in progress.
+   */
+  private async settleAfterTaskCancellation(
+    sessionId: string,
+  ): Promise<AgentSessionView | undefined> {
+    let current = this.require(sessionId);
+    const refreshed = refreshBlockedTasks(current.tasks);
+    const blockedChanged = refreshed.some(
+      (task, index) => task.status !== current.tasks[index]?.status,
+    );
+    if (blockedChanged) {
+      current = this.setTasks(current, refreshed);
+      await this.record(current);
+    }
+    if (isTerminalAgentState(current.state) || current.state === 'paused') {
+      return this.viewOf(sessionId);
+    }
+    if (this.inFlightTaskIds(current).length > 0) {
+      return undefined;
+    }
+    const decision = schedule(current.tasks);
+    if (decision.reason === 'done') {
+      return this.completeSession(sessionId);
+    }
+    if (decision.reason === 'deadlock' || decision.reason === 'stopped') {
+      return this.failSession(sessionId, decision.detail ?? 'No runnable task remains.');
+    }
+    if (current.state === 'executing' || current.state === 'validating') {
+      const parked = transitionSession(current, 'ready', {
+        at: this.timestamp(),
+        eventId: this.nextId('event'),
+        message: 'Task cancelled; remaining work waits for the user.',
+      });
+      return this.record(parked);
+    }
+    return undefined;
   }
 
   private async cancelSession(sessionId: string, message: string): Promise<AgentSessionView> {
@@ -2899,7 +2972,7 @@ export class AgentOrchestrator implements IAgentController {
     if (session === undefined) {
       return undefined;
     }
-    if (session.workspaceRoot !== this.deps.workspaceRoot) {
+    if (session.workspaceRoot !== this.currentWorkspaceRoot()) {
       this.deps.logger?.warn(
         `Session ${sessionId} belongs to a different workspace and was not restored.`,
       );

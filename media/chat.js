@@ -29,6 +29,13 @@
     contextBudget: document.getElementById('context-budget'),
     sessionSelect: document.getElementById('session-select'),
     toast: document.getElementById('toast'),
+    providerSelectorRow: document.getElementById('provider-selector-row'),
+    providerName: document.getElementById('provider-name'),
+    modelName: document.getElementById('model-name'),
+    providerClass: document.getElementById('provider-class'),
+    switchProvider: document.getElementById('switch-provider'),
+    switchModel: document.getElementById('switch-model'),
+    setApiKeySelector: document.getElementById('set-api-key-selector'),
   };
 
   const state = {
@@ -192,7 +199,7 @@
     els.mode.disabled = busy;
     els.sessionSelect.disabled = busy;
     const buttons = document.querySelectorAll(
-      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="inspect-repository"], [data-action="explain-context"], [data-action="clear-attachments"], [data-action="clear-conversation"], [data-action="restore-conversation"]',
+      '.quick-button, [data-action="attach-selection"], [data-action="attach-active"], [data-action="attach-files"], [data-action="attach-relevant"], [data-action="summarize-workspace"], [data-action="inspect-repository"], [data-action="inspect-git"], [data-action="explain-context"], [data-action="clear-attachments"], [data-action="clear-conversation"], [data-action="restore-conversation"]',
     );
     buttons.forEach(function (button) {
       button.disabled = busy;
@@ -207,6 +214,7 @@
       els.statusPill.dataset.state = '';
       els.statusText.textContent = 'Loading provider…';
       els.statusPill.title = 'Loading QuantsMind provider status';
+      els.providerSelectorRow.hidden = true;
       return;
     }
 
@@ -214,6 +222,7 @@
       els.statusPill.dataset.state = 'error';
       els.statusText.textContent = 'Provider needs configuration';
       els.statusPill.title = status.configurationError + '\nClick to open provider settings.';
+      els.providerSelectorRow.hidden = true;
       return;
     }
 
@@ -222,6 +231,7 @@
       els.statusText.textContent = 'API key required';
       els.statusPill.title = 'No API key is stored. Click to set one securely.';
       els.emptySetKey.hidden = false;
+      els.providerSelectorRow.hidden = true;
       return;
     }
 
@@ -234,6 +244,22 @@
       status.hasCredential ? 'API key stored in VS Code SecretStorage' : 'No API key required',
       'Click to open provider settings.',
     ].join('\n');
+
+    // Provider / model selector row
+    els.providerSelectorRow.hidden = false;
+    els.providerName.textContent = status.displayName;
+    els.modelName.textContent = status.model;
+    const accessCls = status.access || 'custom-unknown';
+    els.providerClass.className = 'provider-class ' + accessCls;
+    const classLabels = {
+      'free-no-key': 'Free · no key',
+      'free-tier-key': 'Free tier · key required',
+      paid: 'Paid · key required',
+      local: 'Local · self-hosted',
+      'custom-unknown': 'Custom · pricing unknown',
+    };
+    els.providerClass.textContent = classLabels[accessCls] || 'Pricing unknown';
+    els.setApiKeySelector.hidden = status.credentialRequired && !status.hasCredential;
   }
 
   function renderWorkspace() {
@@ -1243,6 +1269,100 @@
     );
   }
 
+  function renderArchitectureHtml(architecture) {
+    if (!architecture || typeof architecture !== 'object') {
+      return '';
+    }
+    var layers = (architecture.layers || [])
+      .map(function (layer) {
+        return '<li><code>' + escapeHtml(layer.layer) + '</code>' +
+          '<span class="impact-meta">' + Number(layer.components || 0) + ' component(s), ' + Number(layer.files || 0) + ' file(s)</span></li>';
+      })
+      .join('');
+    var components = (architecture.components || [])
+      .slice(0, 20)
+      .map(function (component) {
+        return '<li><code>' + escapeHtml(component.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(component.name) + ' · ' + escapeHtml(component.layer) + ' · ' +
+          (component.roles || []).map(escapeHtml).join(', ') + ' · ' + escapeHtml(confidenceLabel(component.confidence)) + '</span>' +
+          (component.evidence && component.evidence.length
+            ? '<span class="impact-reason">' + component.evidence.map(escapeHtml).join(' · ') + '</span>'
+            : '') +
+          '</li>';
+      })
+      .join('');
+    var relationships = (architecture.relationships || [])
+      .slice(0, 20)
+      .map(function (relationship) {
+        return '<li><code>' + escapeHtml(relationship.from) + '</code> → <code>' + escapeHtml(relationship.to) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(relationship.kind) + ' · ' + escapeHtml(confidenceLabel(relationship.confidence)) + '</span></li>';
+      })
+      .join('');
+    var frameworks = (architecture.frameworks || [])
+      .map(function (framework) {
+        return '<li><code>' + escapeHtml(framework.name) + '</code><span class="impact-meta">' + escapeHtml(framework.layer) + '</span></li>';
+      })
+      .join('');
+    return (
+      '<div class="impact-section"><span class="impact-label">Architecture</span>' +
+      '<pre class="repository-summary">' + escapeHtml(architecture.summaryText || '') + '</pre>' +
+      (layers ? '<div class="impact-subsection">Layers</div><ul class="impact-list">' + layers + '</ul>' : '') +
+      (frameworks ? '<div class="impact-subsection">Frameworks by layer</div><ul class="impact-list">' + frameworks + '</ul>' : '') +
+      (components ? '<div class="impact-subsection">Components</div><ul class="impact-list">' + components + '</ul>' : '') +
+      (relationships ? '<div class="impact-subsection">Relationships</div><ul class="impact-list">' + relationships + '</ul>' : '') +
+      '</div>'
+    );
+  }
+
+  function renderKarkainHtml(karkain) {
+    if (!karkain || typeof karkain !== 'object') {
+      return '';
+    }
+    var summary = karkain.summary || {};
+    var graph = karkain.graph || {};
+    var types = (summary.types || [])
+      .map(function (type) {
+        return '<li><code>' + escapeHtml(type.name) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(type.kind) + ' · ' + escapeHtml(type.path) + '</span></li>';
+      })
+      .join('');
+    var modules = (graph.modules || [])
+      .map(function (module) {
+        return '<li><code>' + escapeHtml(module.path) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(module.name) + ' · ' + (module.symbols || []).length + ' symbol(s) · imports ' +
+          (module.dependencies || []).map(escapeHtml).join(', ') + '</span></li>';
+      })
+      .join('');
+    var edges = (graph.edges || [])
+      .slice(0, 30)
+      .map(function (edge) {
+        return '<li><code>' + escapeHtml(edge.fromPath) + '</code> → <code>' + escapeHtml(edge.toPath) + '</code>' +
+          '<span class="impact-meta">line ' + Number(edge.line || 0) + '</span></li>';
+      })
+      .join('');
+    var cycles = (graph.cycles || [])
+      .map(function (cycle) {
+        return '<li>' + cycle.map(function (node) { return '<code>' + escapeHtml(node) + '</code>'; }).join(' → ') + '</li>';
+      })
+      .join('');
+    var unresolved = (graph.unresolved || [])
+      .map(function (item) {
+        return '<li><code>' + escapeHtml(item.fromPath) + '</code> → <code>' + escapeHtml(item.name) + '</code>' +
+          '<span class="impact-meta">' + escapeHtml(item.reason) + '</span></li>';
+      })
+      .join('');
+    return (
+      '<div class="impact-section"><span class="impact-label">Karkain project</span>' +
+      '<pre class="repository-summary">' + escapeHtml(summary.summaryText || '') + '</pre>' +
+      (types ? '<div class="impact-subsection">Types</div><ul class="impact-list">' + types + '</ul>' : '') +
+      (modules ? '<div class="impact-subsection">Modules</div><ul class="impact-list">' + modules + '</ul>' : '') +
+      (edges ? '<div class="impact-subsection">Module imports</div><ul class="impact-list">' + edges + '</ul>' : '') +
+      (cycles ? '<div class="impact-subsection">Cycles</div><ul class="impact-list">' + cycles + '</ul>' : '') +
+      (unresolved ? '<div class="impact-subsection">Unresolved imports</div><ul class="impact-list">' + unresolved + '</ul>' : '') +
+      '</div>'
+    );
+  }
+
   function renderRepositoryHtml(repository) {
     if (!repository || typeof repository !== 'object' || !repository.overview) {
       return '<div class="text">No repository data is available.</div>';
@@ -1268,6 +1388,14 @@
       .join(', ');
     var entryPoints = (overview.entryPoints || []).slice(0, 10).map(escapeHtml).join(', ');
     var configFiles = (overview.configFiles || []).slice(0, 10).map(escapeHtml).join(', ');
+    var monorepo = overview.monorepo || null;
+    var monorepoText = monorepo
+      ? (monorepo.isMonorepo
+          ? 'Yes — ' + (monorepo.packages || []).slice(0, 6).map(escapeHtml).join(', ') +
+            (monorepo.workspaces && monorepo.workspaces.length ? ' (workspaces: ' + monorepo.workspaces.slice(0, 4).map(escapeHtml).join(', ') + ')' : '') +
+            ' [' + escapeHtml(confidenceLabel(monorepo.confidence)) + ']'
+          : 'No')
+      : '';
     var hotspots = (deps.hotspots || [])
       .slice(0, 10)
       .map(function (spot) {
@@ -1302,6 +1430,7 @@
       (buildSystems ? '<p><strong>Build/test:</strong> ' + buildSystems + '</p>' : '') +
       (entryPoints ? '<p><strong>Entry points:</strong> ' + entryPoints + '</p>' : '') +
       (configFiles ? '<p><strong>Config:</strong> ' + configFiles + '</p>' : '') +
+      (monorepoText ? '<p><strong>Monorepo:</strong> ' + monorepoText + '</p>' : '') +
       '</div>' +
       '<div class="impact-section"><span class="impact-label">Dependencies</span>' +
       '<p>' + Number(deps.nodeCount || 0) + ' node(s), ' + Number(deps.edgeCount || 0) + ' edge(s), ' + Number(deps.heuristicEdges || 0) + ' heuristic, ' + Number(deps.unresolvedCount || 0) + ' unresolved, ' + Number(deps.cycleCount || 0) + ' cycle(s)' + (deps.truncated ? ' · truncated' : '') + '.</p>' +
@@ -1309,6 +1438,150 @@
       '</div>' +
       (cycles ? '<div class="impact-section"><span class="impact-label">Cycles</span><ul class="impact-list">' + cycles + '</ul></div>' : '') +
       (unresolved ? '<div class="impact-section"><span class="impact-label">Unresolved local references</span><ul class="impact-list">' + unresolved + '</ul></div>' : '') +
+      renderArchitectureHtml(repository.architecture) +
+      renderKarkainHtml(repository.karkain) +
+      '</div>'
+    );
+  }
+
+  var executionNodes = {};
+
+  function executionStatusLabel(status) {
+    switch (status) {
+      case 'succeeded': return 'Passed';
+      case 'failed': return 'Failed';
+      case 'cancelled': return 'Cancelled';
+      case 'timed-out': return 'Timed out';
+      default: return 'Running';
+    }
+  }
+
+  function executionBadgeClass(status) {
+    switch (status) {
+      case 'succeeded': return 'execution-badge execution-ok';
+      case 'failed': return 'execution-badge execution-bad';
+      case 'cancelled': return 'execution-badge execution-warn';
+      case 'timed-out': return 'execution-badge execution-warn';
+      default: return 'execution-badge execution-run';
+    }
+  }
+
+  function cardBody(execution) {
+    var status = execution.state === 'running' && !execution.status ? 'running' : (execution.status || 'running');
+    var parts = [];
+    parts.push('<div class="execution-head">');
+    parts.push('<span class="section-label">Execution · ' + escapeHtml(execution.kind || 'command') + '</span>');
+    parts.push('<span class="' + escapeHtml(executionBadgeClass(status)) + '">' + escapeHtml(executionStatusLabel(status)) + '</span>');
+    parts.push('</div>');
+    parts.push('<p class="execution-command"><code>' + escapeHtml(execution.command || '') + '</code></p>');
+    var metaBits = ['<span class="impact-meta">' + escapeHtml(execution.cwd || '')];
+    if (execution.durationMs !== undefined) {
+      metaBits.push(' · ' + Number(execution.durationMs) + ' ms');
+    }
+    if (execution.exitCode !== null && execution.exitCode !== undefined) {
+      metaBits.push(' · exit ' + Number(execution.exitCode));
+    }
+    metaBits.push('</span>');
+    parts.push(metaBits.join(''));
+    if (execution.tests) {
+      var t = execution.tests;
+      var bits = [];
+      if (t.passed !== undefined) { bits.push(Number(t.passed) + ' passed'); }
+      if (t.failed !== undefined) { bits.push(Number(t.failed) + ' failed'); }
+      if (t.skipped !== undefined) { bits.push(Number(t.skipped) + ' skipped'); }
+      if (t.total !== undefined) { bits.push('of ' + Number(t.total)); }
+      if (bits.length) {
+        parts.push('<p class="impact-meta">Tests: ' + escapeHtml(bits.join(', ')) + '</p>');
+      }
+    }
+    if (execution.diagnostics !== undefined) {
+      parts.push('<p class="impact-meta">' + Number(execution.diagnostics) + ' diagnostic(s) reported</p>');
+    }
+    if (execution.output) {
+      var truncated = execution.output.length > 4000 ? execution.output.slice(execution.output.length - 4000) : execution.output;
+      parts.push('<pre class="execution-output">' + escapeHtml(truncated) + '</pre>');
+      if (execution.truncated) {
+        parts.push('<p class="change-warning">Output was truncated at the configured limit.</p>');
+      }
+      if (execution.timedOut) {
+        parts.push('<p class="change-warning">The command timed out and was terminated.</p>');
+      }
+      if (execution.cancelled) {
+        parts.push('<p class="change-warning">The command was cancelled.</p>');
+      }
+    }
+    return parts.join('');
+  }
+
+  function upsertExecutionCard(execution) {
+    var key = execution.id || 'execution';
+    var existing = executionNodes[key];
+    if (existing) {
+      existing.innerHTML = cardBody(execution);
+      return;
+    }
+    var article = document.createElement('article');
+    article.className = 'message assistant';
+    var label = document.createElement('div');
+    label.className = 'message-label';
+    label.textContent = 'Execution';
+    var card = document.createElement('div');
+    card.className = 'assistant-card execution-card';
+    var content = document.createElement('div');
+    content.className = 'message-content';
+    content.innerHTML = cardBody(execution);
+    card.append(content);
+    article.append(label, card);
+    els.messages.append(article);
+    executionNodes[key] = content;
+    setEmpty(false);
+    scrollToBottom(true);
+  }
+
+  function renderGitStatusHtml(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      return '<div class="text">No Git data is available.</div>';
+    }
+    var statusParts = [];
+    function entryRow(entry) {
+      var badge = entry.state === 'untracked' ? '?' : entry.state.charAt(0).toUpperCase();
+      return '<li><code>' + escapeHtml(entry.path) + '</code><span class="impact-meta">' + escapeHtml(entry.state) + '</span></li>';
+    }
+    var entries = (snapshot.entries || []).slice(0, 40).map(entryRow).join('');
+    var log = (snapshot.log || [])
+      .map(function (entry) {
+        return '<li><code>' + escapeHtml(entry.shortSha) + '</code> ' + escapeHtml(entry.subject) + '<span class="impact-meta">' + escapeHtml(entry.author) + ' · ' + escapeHtml(String(entry.date || '').slice(0, 10)) + '</span></li>';
+      })
+      .join('');
+    var checkpoints = (snapshot.checkpoints || [])
+      .map(function (checkpoint) {
+        return '<li><code>' + escapeHtml(checkpoint.id) + '</code><span class="impact-meta">' + Number(checkpoint.fileCount || 0) + ' file(s) · ' + escapeHtml(checkpoint.taskId) + (checkpoint.label ? ' · ' + escapeHtml(checkpoint.label) : '') + '</span></li>';
+      })
+      .join('');
+    var githubLine = '';
+    if (snapshot.github) {
+      githubLine = '<p><strong>GitHub:</strong> ' + Number(snapshot.github.openIssues || 0) + ' open issue(s) · ' + Number(snapshot.github.openPullRequests || 0) + ' open PR(s)' + (snapshot.github.connected ? '' : ' (counts unavailable)') + '</p>';
+    }
+    var stateFlags = [];
+    if (snapshot.mergeInProgress) { stateFlags.push('merge in progress'); }
+    if (snapshot.rebaseInProgress) { stateFlags.push('rebase in progress'); }
+    if (snapshot.conflicts > 0) { stateFlags.push(Number(snapshot.conflicts) + ' conflict(s)'); }
+    var statusText = snapshot.clean ? 'Clean working tree' : (Number(snapshot.staged || 0) + ' staged · ' + Number(snapshot.modified || 0) + ' modified · ' + Number(snapshot.untracked || 0) + ' untracked · ' + Number(snapshot.deleted || 0) + ' deleted');
+    return (
+      '<div class="repository-card">' +
+      '<div class="impact-head"><span class="section-label">Git status</span>' +
+      '<span class="impact-confidence">local analysis</span></div>' +
+      '<div class="impact-section"><span class="impact-label">Repository</span>' +
+      '<p><strong>Branch:</strong> ' + escapeHtml(snapshot.branch || '') + (snapshot.headShort ? ' (' + escapeHtml(snapshot.headShort) + ')' : '') + '</p>' +
+      (snapshot.root ? '<p><strong>Root:</strong> <code>' + escapeHtml(snapshot.root) + '</code></p>' : '') +
+      (snapshot.remote ? '<p><strong>Remote:</strong> ' + escapeHtml(snapshot.remote) + '</p>' : '') +
+      '<p>' + escapeHtml(statusText) + '</p>' +
+      (stateFlags.length ? '<p class="change-warning">' + escapeHtml(stateFlags.join(' · ')) + '</p>' : '') +
+      githubLine +
+      '</div>' +
+      (entries ? '<div class="impact-section"><span class="impact-label">Changes</span><ul class="impact-list">' + entries + '</ul></div>' : '') +
+      (log ? '<div class="impact-section"><span class="impact-label">Recent commits</span><ul class="impact-list">' + log + '</ul></div>' : '') +
+      (checkpoints ? '<div class="impact-section"><span class="impact-label">Checkpoints</span><ul class="impact-list">' + checkpoints + '</ul></div>' : '') +
       '</div>'
     );
   }
@@ -1959,6 +2232,10 @@
         showToast('Repository inspected locally. Nothing was sent to the provider.', 'info');
         break;
       }
+      case 'gitSnapshot': {
+        appendAssistantHtml(renderGitStatusHtml(message.snapshot), 'Git status');
+        break;
+      }
       case 'contextSelection': {
         appendAssistantHtml(renderContextSelectionHtml(message), 'Context selection');
         showToast('Context selection explained locally. Nothing was sent to the provider.', 'info');
@@ -1985,6 +2262,17 @@
                 : 'exit ' + (message.exitCode === null ? 'unknown' : message.exitCode)),
           message.timedOut || message.cancelled ? 'warn' : message.exitCode === 0 ? 'info' : 'warn',
         );
+        break;
+      }
+      case 'execution': {
+        upsertExecutionCard(message.execution || {});
+        break;
+      }
+      case 'executionHistory': {
+        var history = Array.isArray(message.executions) ? message.executions : [];
+        for (var i = 0; i < history.length; i += 1) {
+          upsertExecutionCard(history[i]);
+        }
         break;
       }
       default:
@@ -2181,6 +2469,16 @@
     }
   });
 
+  els.switchProvider.addEventListener('click', function () {
+    post({ type: 'selectProvider' });
+  });
+  els.switchModel.addEventListener('click', function () {
+    post({ type: 'selectModel' });
+  });
+  els.setApiKeySelector.addEventListener('click', function () {
+    post({ type: 'setApiKey' });
+  });
+
   els.attachmentBar.addEventListener('click', function (event) {
     const button = event.target.closest('button[data-remove]');
     if (button) {
@@ -2244,6 +2542,9 @@
         break;
       case 'inspect-repository':
         post({ type: 'inspectRepository' });
+        break;
+      case 'inspect-git':
+        post({ type: 'inspectGitStatus' });
         break;
       case 'explain-context':
         post({ type: 'explainRepositoryContext', query: els.prompt.value.trim() });

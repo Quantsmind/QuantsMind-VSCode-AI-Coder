@@ -1,0 +1,13 @@
+import middleware
+
+type User struct { name string; age int }
+
+enum Role {
+    Admin,
+    Member,
+}
+
+public func new_user(name) {
+    var user = User {name: name, age: 0}
+    return user
+}

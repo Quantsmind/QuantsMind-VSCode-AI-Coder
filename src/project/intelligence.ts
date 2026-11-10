@@ -51,6 +51,7 @@ const CONFIG_PATTERNS: readonly RegExp[] = [
   /^Pipfile$/i,
   /^Cargo\.toml$/i,
   /^go\.mod$/i,
+  /^karkain\.toml$/i,
   /^pom\.xml$/i,
   /^build\.gradle(?:\.kts)?$/i,
   /^settings\.gradle(?:\.kts)?$/i,
@@ -303,7 +304,7 @@ export function analyzeProject(input: AnalyzeProjectInput): ProjectContext {
 }
 
 export interface ProjectWorkspaceSource {
-  readonly rootName: string;
+  readonly rootName: string | (() => string);
   listEntries(): Promise<readonly WorkspaceEntry[]>;
   readText(path: string): Promise<string | undefined>;
   retrieve(query: string, token: CancellationTokenLike): Promise<RetrievalResult>;
@@ -322,10 +323,16 @@ export interface IProjectIntelligence {
 export class ProjectIntelligenceService implements IProjectIntelligence {
   constructor(private readonly source: ProjectWorkspaceSource) {}
 
+  private rootName(): string {
+    return typeof this.source.rootName === 'function'
+      ? this.source.rootName()
+      : this.source.rootName;
+  }
+
   async inspect(token: CancellationTokenLike): Promise<ProjectContext> {
     const entries = await this.source.listEntries();
     if (token.isCancellationRequested) {
-      return analyzeProject({ rootName: this.source.rootName, entries: [] });
+      return analyzeProject({ rootName: this.rootName(), entries: [] });
     }
     const configs = entries
       .map((entry) => normalizeWorkspacePath(entry.path))
@@ -343,7 +350,7 @@ export class ProjectIntelligenceService implements IProjectIntelligence {
       }
     }
     return analyzeProject({
-      rootName: this.source.rootName,
+      rootName: this.rootName(),
       entries,
       configFiles: configs.map((path) =>
         path === packagePath && packageContent !== undefined

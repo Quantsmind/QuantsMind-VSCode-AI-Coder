@@ -104,8 +104,11 @@ suite('agent state machine', () => {
     for (const state of pausable) {
       expect(canPause(state), state).to.equal(true);
     }
+    // D7: 'validating' is a user-controlled resting state (the user is asked
+    // whether to run the allowlisted validation command; nothing is in
+    // flight), so it is pausable like the other resting states.
     expect(canPause('executing')).to.equal(false);
-    expect(canPause('validating')).to.equal(false);
+    expect(canPause('validating')).to.equal(true);
     expect(canPause('applying')).to.equal(false);
   });
 

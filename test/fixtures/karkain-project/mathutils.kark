@@ -1,0 +1,13 @@
+// Math helpers used by the demo project.
+
+func square(n) {
+    return n * n
+}
+
+func cube(n) {
+    return n * n * n
+}
+
+public func magnitude(p) {
+    return p.x * p.x + p.y * p.y
+}

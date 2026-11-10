@@ -202,6 +202,46 @@ tests, and clean-install verification.
   approval, approves the file, verifies the exact content, undoes the change,
   and verifies the file is removed.
 
+### Git, GitHub and checkpoints (v2.4.0)
+
+- `test/unit/gitService.test.ts`: repository detection, porcelain v1 `-z`
+  parsing (staged/modified/untracked/renamed/conflict/MM), staging and
+  commit flow against real temporary repositories, broad-pattern refusal,
+  branch create/switch/delete, diff output and stats, credential-stripped
+  remotes, merge/rebase/conflict state.
+- `test/unit/gitCheckpoint.test.ts`: content-snapshot checkpoints —
+  roundtrip, user-edit preservation (never overwritten), workspace-escape
+  rejection, task scoping.
+- `test/unit/gitTools.test.ts`: agent Git tools — status, approval
+  enforcement for commit/restore, refusal of broad staging.
+- `test/unit/githubService.test.ts`: remote parsing (HTTPS/SSH), issue and
+  PR listing/creation against an injected fetch fixture, HTTP error
+  classification, token-never-in-output.
+- `test/unit/gitMultiLanguage.test.ts`: a 14-language repository fixture
+  (Java, Python/FastAPI, Django, Angular, React, Go, Rust, C, C++, C#,
+  PHP, Ruby, Flutter/Dart, Karkain) tracked end to end by the Git service.
+- `scripts/demo-git-workflow.cjs`: end-to-end demonstration against an
+  isolated temporary repository and a local mock GitHub REST API.
+
+### Execution and build integration (v2.3.0)
+
+- `test/unit/executionService.test.ts`: bounded history, cancellation,
+  timeouts, duplicate-invocation refusal.
+- `test/unit/buildAdapters.test.ts` / `test/unit/buildTools.test.ts`:
+  22-adapter detection, toolchain probing, command routing through the
+  approved runner.
+- `scripts/demo-build-tools.cjs`, `scripts/demo-diagnostic-repair.cjs`: live
+  fixture-based demonstrations.
+
+### Architecture and Karkain intelligence (v2.2.0)
+
+- `test/unit/karkainAnalysis.test.ts`, `test/unit/projectArchitecture.test.ts`:
+  syntax-aware `.kark` analysis (lexer/parser-verified grammar), module
+  graph and cycles; framework detection, layers, roles and component
+  relationships.
+- `scripts/demo-karkain-agent.cjs`, `scripts/demo-repository-webview.cjs`:
+  scripted-model agent and DOM-shim webview demonstrations.
+
 ## Mock provider server
 
 `test/unit/helpers.ts` starts a real `node:http` server on `127.0.0.1` with an

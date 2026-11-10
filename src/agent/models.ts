@@ -395,6 +395,7 @@ export interface Diagnostic {
   readonly message: string;
   readonly file?: string;
   readonly line?: number;
+  readonly column?: number;
   readonly command?: string;
 }
 

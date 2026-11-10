@@ -1,0 +1,10 @@
+import mathutils
+import middleware
+import std.io
+
+func main() {
+    let value = square(6)
+    let written = square(3)
+    print("square = " + str(value))
+    print("granted = " + str(written))
+}

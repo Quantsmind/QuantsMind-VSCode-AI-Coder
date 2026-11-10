@@ -12,6 +12,7 @@ import {
 } from './history';
 import { hashContent, withExpectedHash, type ChangePlan } from './model';
 import { buildReviewChanges, type ReviewChange } from './review';
+import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 
 export interface PreparedPlan {
   readonly plan: ChangePlan;
@@ -39,7 +40,8 @@ export class ChangeService {
   }
 
   createApplyFs(taskId: string, applyId: string): ChangeFs {
-    const root = vscode.workspace.workspaceFolders?.[0];
+    // Containment and writes must target the same root the index selected.
+    const root = selectWorkspaceRoot(vscode.workspace.workspaceFolders);
     if (root === undefined) {
       throw new Error('Open a workspace folder before applying changes.');
     }
@@ -223,5 +225,10 @@ export class ChangeService {
       undoable: outcome.conflicts > 0,
     });
     return outcome;
+  }
+
+  /** Lists all change-set history entries, most recent first. */
+  listHistory(): readonly import('./history').HistoryEntry[] {
+    return this.history.list();
   }
 }

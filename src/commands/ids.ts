@@ -9,6 +9,8 @@ export const COMMANDS = Object.freeze({
   clearApiKey: 'quantsmind.clearApiKey',
   configureProvider: 'quantsmind.configureProvider',
   selectModel: 'quantsmind.selectModel',
+  selectProvider: 'quantsmind.selectProvider',
+  testConnection: 'quantsmind.testConnection',
   showLog: 'quantsmind.showLog',
   showMenu: 'quantsmind.showMenu',
   summarizeWorkspace: 'quantsmind.summarizeWorkspace',

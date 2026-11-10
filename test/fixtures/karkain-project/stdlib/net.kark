@@ -1,0 +1,11 @@
+import std.io
+
+func receive(endpoint, payload) {
+    let connection = endpoint
+    return connection
+}
+
+func send(endpoint, payload) {
+    let connection = endpoint
+    return connection
+}

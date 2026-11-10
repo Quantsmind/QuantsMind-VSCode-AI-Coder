@@ -112,6 +112,40 @@ undocumented behavior.
 - Windows, macOS, and Linux CI jobs are configured. See the completion report
   for which platforms and commands were actually executed locally.
 
+## Build and test integration
+
+- Commands run through the same allowlist, approval and no-shell runner as
+  validation; there is no bypass for build or test tooling.
+- Toolchain probing reports what is executable on the machine; missing
+  executables are reported unavailable, never guessed.
+- Builds and tests stop at the first failing step in a sequence; multi-step
+  adapters (for example CMake) do not attempt later steps after a failure.
+- Test counts come from the runner's own output and are `undefined` when the
+  format is ambiguous; nothing is fabricated.
+- Karkain compiler behaviour is not executed by CI on this machine (the real
+  `karkain` toolchain fails to run there); Karkain build/check/test coverage
+  uses a fixture compiler matching the documented contract, so real Karkain
+  compilation and diagnostics are not verified end-to-end in this environment.
+- Java builds only work when the required Maven/Gradle toolchain is installed;
+  Gradle builds resolve plugins from the network or a local cache on first
+  use.
+- Diagnostics are pattern-matched from command output; they can miss errors
+  or misattribute locations.
+- Execution history is in-memory and bounded to the last 50 records; it is
+  not persisted across sessions.
+
+## Git, GitHub and change management
+
+- Git integration targets the workspace root only. Nested repositories and submodules are not fully managed.
+- Checkpoint snapshots are in-memory and capped at 50 entries; they are not persisted across sessions.
+- The checkpoint restore never overwrites diverging user edits; conflicting files are left in place and listed as conflicts.
+- Git read operations (status, diff, log) run without approval; every mutating operation requires explicit approval per action.
+- Branch creation, switching, staging, unstaging, committing and force-deleting all require approval; `git add .`, `-a` and broad patterns are refused.
+- Push, merge and release are not available in this milestone.
+- GitHub integration uses the stored GitHub session token (repo scope) and operates on the `origin` remote; when no token is present, GitHub tools fail clearly and ordinary local Git tools keep working.
+- GitHub and pull-request operations have not been tested against the real GitHub API in an automated way; fixture tests mock the REST API.
+- Git does not keep per-file change approval history outside the change-set approval flow.
+
 ## Security and operations
 
 - No telemetry, crash reporting, or update service exists.

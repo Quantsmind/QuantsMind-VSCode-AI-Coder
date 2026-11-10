@@ -27,16 +27,30 @@ function extractData(rawEvent: string): string | undefined {
  * Incremental server-sent-events parser. It accepts CRLF, LF, and CR line
  * endings, tolerates events split across network chunks, ignores comments and
  * non-data fields, and caps a single event to avoid unbounded memory growth.
+ *
+ * Reliability: the reader is cancelled (not merely released) on early exit
+ * (consumer `break`, exception, or `AbortSignal`), so no stream hangs after
+ * completion or failure. End-of-stream without a trailing blank line flushes
+ * the final buffered event in order.
  */
 export async function* parseServerSentEvents(
   stream: ReadableStream<Uint8Array>,
+  options?: { readonly signal?: AbortSignal },
 ): AsyncGenerator<string> {
   const reader = stream.getReader();
+  const signal = options?.signal;
+  const abortListener = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', abortListener);
   const decoder = new TextDecoder();
   let buffer = '';
 
   try {
     while (true) {
+      if (signal?.aborted) {
+        throw new ProviderError('cancelled', 'The request was cancelled.');
+      }
       const { done, value } = await reader.read();
       if (done) {
         break;
@@ -73,6 +87,15 @@ export async function* parseServerSentEvents(
       }
     }
   } finally {
+    signal?.removeEventListener('abort', abortListener);
+    try {
+      const cancelResult = reader.cancel();
+      if (cancelResult !== undefined) {
+        await cancelResult.catch(() => undefined);
+      }
+    } catch {
+      // best-effort cancel; releaseLock still runs below
+    }
     reader.releaseLock();
   }
 }

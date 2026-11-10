@@ -535,7 +535,18 @@ suite('provider cancellation and timeout', () => {
 
 suite('provider registry', () => {
   test('lists the built-in provider and resolves display names', () => {
-    expect(listProviderTypes()).to.deep.equal([OPENAI_COMPATIBLE_PROVIDER_ID]);
+    expect(listProviderTypes()).to.deep.equal([
+      'openai-compatible',
+      'openai',
+      'groq',
+      'openrouter',
+      'ollama',
+      'lm-studio',
+      'llama-cpp',
+      'vllm',
+      'gemini',
+      'pollinations',
+    ]);
     expect(providerDisplayName(OPENAI_COMPATIBLE_PROVIDER_ID)).to.equal('OpenAI-compatible');
     expect(providerDisplayName('unknown')).to.equal(undefined);
   });

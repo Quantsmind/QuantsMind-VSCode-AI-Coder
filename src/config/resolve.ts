@@ -1,4 +1,7 @@
 import {
+  getProviderProfile,
+} from '../providers/profiles';
+import {
   DEFAULT_AGENT_MAX_REPAIR_ITERATIONS,
   DEFAULT_AGENT_MAX_STEPS,
   DEFAULT_AGENT_TIMEOUT_MS,
@@ -116,10 +119,26 @@ function globList(value: unknown): string[] {
 }
 
 export function resolveProviderSettings(raw: RawProviderSettings): ResolvedProviderSettings {
+  const type = stringValue(raw.type, DEFAULT_PROVIDER_TYPE, 100);
+  const profile = getProviderProfile(type);
+
+  const rawBaseUrl = typeof raw.baseUrl === 'string' ? raw.baseUrl.trim() : '';
+  const rawModel = typeof raw.model === 'string' ? raw.model.trim() : '';
+  const profileBaseUrl =
+    profile?.defaultBaseUrl !== undefined &&
+    (rawBaseUrl.length === 0 || rawBaseUrl === DEFAULT_BASE_URL)
+      ? profile.defaultBaseUrl
+      : undefined;
+  const profileModel =
+    profile?.defaultModel !== undefined &&
+    (rawModel.length === 0 || rawModel === DEFAULT_MODEL)
+      ? profile.defaultModel
+      : undefined;
+
   return {
-    type: stringValue(raw.type, DEFAULT_PROVIDER_TYPE, 100),
-    baseUrl: stringValue(raw.baseUrl, DEFAULT_BASE_URL, 4096),
-    model: stringValue(raw.model, DEFAULT_MODEL, 200),
+    type,
+    baseUrl: profileBaseUrl ?? stringValue(raw.baseUrl, DEFAULT_BASE_URL, 4096),
+    model: profileModel ?? stringValue(raw.model, DEFAULT_MODEL, 200),
     timeoutMs: numberValue(
       raw.timeoutMs,
       DEFAULT_TIMEOUT_MS,
@@ -285,6 +304,42 @@ export function resolveCommandSettings(raw: RawCommandSettings): ResolvedCommand
       LIMITS.commandOutputMaxChars.max,
       true,
     ),
+  };
+}
+
+export interface ProviderModelSwitchPlan {
+  /** Model to persist alongside the new profile; undefined leaves the setting as it is. */
+  readonly model: string | undefined;
+  /** True when an explicit user model choice must be confirmed before it is replaced. */
+  readonly requiresChoice: boolean;
+  readonly profileDefaultModel: string | undefined;
+}
+
+/**
+ * A model id belongs to the profile it was chosen for, so switching profiles
+ * must not carry an explicit choice into a provider that cannot serve it.
+ * `currentModel` is the resolved model: when it still equals the outgoing
+ * profile default the user never chose it, and the incoming default is adopted
+ * without asking.
+ */
+export function planProviderModelSwitch(
+  fromType: string,
+  toType: string,
+  currentModel: string,
+): ProviderModelSwitchPlan {
+  const profileDefaultModel = getProviderProfile(toType)?.defaultModel;
+  if (fromType === toType || profileDefaultModel === undefined) {
+    return { model: undefined, requiresChoice: false, profileDefaultModel };
+  }
+  if (currentModel === profileDefaultModel) {
+    return { model: undefined, requiresChoice: false, profileDefaultModel };
+  }
+  const fromDefault = getProviderProfile(fromType)?.defaultModel;
+  const explicitChoice = currentModel.length > 0 && currentModel !== fromDefault;
+  return {
+    model: profileDefaultModel,
+    requiresChoice: explicitChoice,
+    profileDefaultModel,
   };
 }
 

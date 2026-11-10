@@ -1,5 +1,7 @@
 import { validateChangeInputs, type ChangePlan, type FileChangeInput } from '../changes/model';
 import type { PreparedPlan, ApplyReport } from '../changes/changeService';
+import type { HistoryEntry } from '../changes/history';
+import type { ReviewChange } from '../changes/review';
 import type { AgentTool, AgentToolResult } from './codingAgent';
 import { normalizeWorkspacePath } from './workspaceTools';
 
@@ -12,6 +14,11 @@ export interface ChangeApprovalService {
     summary: string,
   ): Promise<ApplyReport>;
   undo(taskId: string): Promise<{ restored: number; conflicts: number } | undefined>;
+  listHistory(): readonly HistoryEntry[];
+}
+
+interface PreparedReviewStore {
+  [taskId: string]: readonly ReviewChange[];
 }
 
 export interface ChangeToolApproval {
@@ -25,6 +32,7 @@ export interface ChangeToolApproval {
 export class ChangeTools {
   private pendingPlan: ChangePlan | undefined;
   private pendingTaskId: string | undefined;
+  private preparedReviews: PreparedReviewStore = {};
 
   constructor(
     private readonly changes: ChangeApprovalService,
@@ -53,6 +61,7 @@ export class ChangeTools {
       }
       this.pendingPlan = prepared.plan;
       this.pendingTaskId = taskId;
+      this.preparedReviews[taskId] = prepared.review;
       const files = prepared.review.map((change) => ({
         kind: change.kind,
         path: change.path,
@@ -133,6 +142,105 @@ export class ChangeTools {
     }
   }
 
+  async getChangeDiff(taskId: string): Promise<AgentToolResult> {
+    if (typeof taskId !== 'string' || taskId.trim().length === 0) {
+      return { ok: false, tool: 'get_change_diff', error: 'A task id is required.', durationMs: 0 };
+    }
+    const trimmed = taskId.trim();
+    const review = this.preparedReviews[trimmed];
+    if (review !== undefined) {
+      const files = review.map((change) => ({
+        id: change.id,
+        kind: change.kind,
+        path: change.path,
+        fromPath: change.fromPath,
+        summary: change.summary,
+        diff: change.diff,
+        additions: change.additions,
+        deletions: change.deletions,
+        diffTruncated: change.diffTruncated,
+        warning: change.warning,
+      }));
+      return {
+        ok: true,
+        tool: 'get_change_diff',
+        output: JSON.stringify({ taskId: trimmed, files }, null, 2),
+        durationMs: 0,
+      };
+    }
+    // Fall back to history entries which may have file status but not full diffs.
+    const history = this.changes.listHistory().filter((entry) => entry.taskId === trimmed);
+    if (history.length > 0) {
+      const files = history.flatMap((entry) =>
+        entry.files.map((file) => ({
+          id: file.changeId,
+          kind: file.kind,
+          path: file.path,
+          fromPath: file.fromPath,
+          summary: '',
+          diff: '',
+          additions: 0,
+          deletions: 0,
+          diffTruncated: false,
+          warning: `Status: ${file.status}`,
+        })),
+      );
+      return {
+        ok: true,
+        tool: 'get_change_diff',
+        output: JSON.stringify({ taskId: trimmed, files, fromHistory: true }, null, 2),
+        durationMs: 0,
+      };
+    }
+    return {
+      ok: false,
+      tool: 'get_change_diff',
+      error: `No prepared change set or history found for task id "${trimmed}".`,
+      durationMs: 0,
+    };
+  }
+
+  async getChangeHistory(): Promise<AgentToolResult> {
+    try {
+      const history = this.changes.listHistory();
+      const entries = history.map((entry) => ({
+        applyId: entry.applyId,
+        taskId: entry.taskId,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+        summary: entry.summary,
+        status: entry.status,
+        fileCount: entry.files.length,
+        appliedCount: entry.files.filter((f) => f.status === 'applied').length,
+        conflictCount: entry.files.filter((f) => f.status === 'conflict').length,
+        failedCount: entry.files.filter((f) => f.status === 'failed').length,
+        skippedCount: entry.files.filter((f) => f.status === 'skipped').length,
+        undoable: entry.undoable,
+        files: entry.files.map((f) => ({
+          changeId: f.changeId,
+          kind: f.kind,
+          path: f.path,
+          fromPath: f.fromPath,
+          status: f.status,
+          backupName: f.backupName,
+        })),
+      }));
+      return {
+        ok: true,
+        tool: 'get_change_history',
+        output: JSON.stringify({ entries }, null, 2),
+        durationMs: 0,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        tool: 'get_change_history',
+        error: error instanceof Error ? error.message : 'Unable to read change history.',
+        durationMs: 0,
+      };
+    }
+  }
+
   toAgentTools(): readonly AgentTool[] {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
@@ -190,6 +298,22 @@ export class ChangeTools {
         parameters: { type: 'object', properties: { taskId: { type: 'string' } }, required: ['taskId'] },
         async execute(args) {
           return self.undoChange(typeof args.taskId === 'string' ? args.taskId : '');
+        },
+      },
+      {
+        name: 'get_change_diff',
+        description: 'Show the prepared diff for a pending change set, or file status from history.',
+        parameters: { type: 'object', properties: { taskId: { type: 'string' } }, required: ['taskId'] },
+        async execute(args) {
+          return self.getChangeDiff(typeof args.taskId === 'string' ? args.taskId : '');
+        },
+      },
+      {
+        name: 'get_change_history',
+        description: 'List all change sets with their application status and file results.',
+        parameters: { type: 'object', properties: {} },
+        async execute() {
+          return self.getChangeHistory();
         },
       },
     ];

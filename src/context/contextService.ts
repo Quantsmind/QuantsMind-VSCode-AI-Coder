@@ -7,6 +7,7 @@ import {
   type BuildContextResult,
   type ContextCandidate,
 } from './filters';
+import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 
 export interface ContextReadFailure {
   readonly path: string;
@@ -122,7 +123,15 @@ export class ContextService {
     if (!this.isTrusted()) {
       return [];
     }
-    const files = await vscode.workspace.findFiles('**/*', undefined, limit);
+    const root = selectWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (root === undefined) {
+      return [];
+    }
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(root, '**/*'),
+      undefined,
+      limit,
+    );
     const { excludeGlobs } = this.settings.getContextSettings();
     return files
       .filter((uri) => !isPathExcluded(this.displayPath(uri), excludeGlobs))

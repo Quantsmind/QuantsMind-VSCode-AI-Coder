@@ -38,12 +38,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/**/*.mjs', '**/*.config.mjs', '*.mjs'],
+    files: ['scripts/**/*.mjs', 'scripts/**/*.cjs', 'scripts/**/*.js', 'test/packaged/**/*.cjs', '**/*.config.mjs', '*.mjs'],
     languageOptions: {
       globals: globals.node,
     },
     rules: {
       'no-console': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 );

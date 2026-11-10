@@ -17,7 +17,8 @@ export type SupportedLanguage =
   | 'java'
   | 'go'
   | 'c'
-  | 'cpp';
+  | 'cpp'
+  | 'karkain';
 
 export const SUPPORTED_LANGUAGES: readonly SupportedLanguage[] = [
   'typescript',
@@ -27,6 +28,7 @@ export const SUPPORTED_LANGUAGES: readonly SupportedLanguage[] = [
   'go',
   'c',
   'cpp',
+  'karkain',
 ];
 
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, SupportedLanguage>> = {
@@ -49,6 +51,7 @@ const LANGUAGE_BY_EXTENSION: Readonly<Record<string, SupportedLanguage>> = {
   hpp: 'cpp',
   hh: 'cpp',
   hxx: 'cpp',
+  kark: 'karkain',
 };
 
 const BINARY_EXTENSIONS = new Set([
@@ -204,7 +207,7 @@ export function isIndexLikePath(path: string): boolean {
   return (
     /(^|\/)index\.(?:[cm]?[jt]sx?)$/.test(normalized) ||
     /(^|\/)__init__\.py$/.test(normalized) ||
-    /(^|\/)main\.(?:py|go|rs|c|cc|cpp)$/.test(normalized) ||
+    /(^|\/)main\.(?:py|go|rs|c|cc|cpp|kark)$/.test(normalized) ||
     /(^|\/)extension\.[cm]?ts$/.test(normalized)
   );
 }
@@ -780,6 +783,161 @@ function analyzeC(
   }
 }
 
+/**
+ * Breaks Karkain comments and string contents while preserving length and line
+ * breaks, so declaration matching never sees commented-out code or braces that
+ * belong to a string literal. The rules mirror the language's own lexer:
+ * double-slash line comments, nestable block comments, and quoted strings
+ * with backslash escapes.
+ */
+function maskKarkainCommentsAndStrings(source: string): string {
+  let result = '';
+  let state: 'normal' | 'line' | 'block' | 'string' = 'normal';
+  let blockDepth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? '';
+    const next = source[index + 1];
+    if (state === 'normal') {
+      if (character === '/' && next === '/') {
+        state = 'line';
+        result += '  ';
+        index += 1;
+      } else if (character === '/' && next === '*') {
+        state = 'block';
+        blockDepth = 1;
+        result += '  ';
+        index += 1;
+      } else if (character === '"') {
+        state = 'string';
+        result += ' ';
+      } else {
+        result += character;
+      }
+      continue;
+    }
+    if (state === 'line') {
+      if (character === '\n') {
+        state = 'normal';
+        result += '\n';
+      } else {
+        result += ' ';
+      }
+      continue;
+    }
+    if (state === 'block') {
+      if (character === '/' && next === '*') {
+        blockDepth += 1;
+        result += '  ';
+        index += 1;
+      } else if (character === '*' && next === '/') {
+        blockDepth -= 1;
+        result += '  ';
+        index += 1;
+        if (blockDepth === 0) {
+          state = 'normal';
+        }
+      } else {
+        result += character === '\n' ? '\n' : ' ';
+      }
+      continue;
+    }
+    if (character === '\\') {
+      result += '  ';
+      index += 1;
+    } else if (character === '"') {
+      state = 'normal';
+      result += ' ';
+    } else {
+      result += character === '\n' ? '\n' : ' ';
+    }
+  }
+  return result;
+}
+
+const KARKAIN_FUNCTION =
+  /^\s*(public\s+)?func\s+([A-Za-z_]\w*)\s*\(/;
+const KARKAIN_KERNEL = /^\s*(public\s+)?kernel\s+([A-Za-z_]\w*)\s*\(/;
+const KARKAIN_STRUCT = /^\s*(public\s+)?struct\s+([A-Za-z_]\w*)/;
+const KARKAIN_ENUM = /^\s*(public\s+)?enum\s+([A-Za-z_]\w*)/;
+const KARKAIN_TYPE = /^\s*(public\s+)?type\s+([A-Za-z_]\w*)/;
+const KARKAIN_ACTOR = /^\s*(public\s+)?actor\s+([A-Za-z_]\w*)/;
+const KARKAIN_IMPORT = /^\s*import\s+([A-Za-z_][\w.]*)\s*;?/;
+const KARKAIN_TYPED_VAR = /^\s*(?:var|let|const)\s+(?:[A-Za-z_][\w.]*\s+)?([A-Za-z_]\w*)\s*(?::[^=]+)?=/;
+
+interface KarkainDeclaration {
+  readonly pattern: RegExp;
+  readonly kind: SymbolKind;
+}
+
+/** The production compiler declares structs as `type Name struct { ... }`. */
+const KARKAIN_TYPE_STRUCT = /^\s*(public\s+)?type\s+([A-Za-z_]\w*)\s+struct\b/;
+
+const KARKAIN_DECLARATIONS: readonly KarkainDeclaration[] = [
+  { pattern: KARKAIN_TYPE_STRUCT, kind: 'struct' },
+  { pattern: KARKAIN_FUNCTION, kind: 'function' },
+  { pattern: KARKAIN_KERNEL, kind: 'function' },
+  { pattern: KARKAIN_STRUCT, kind: 'struct' },
+  { pattern: KARKAIN_ENUM, kind: 'enum' },
+  { pattern: KARKAIN_TYPE, kind: 'type' },
+  { pattern: KARKAIN_ACTOR, kind: 'class' },
+];
+
+function countBraces(line: string): number {
+  let delta = 0;
+  for (const character of line) {
+    if (character === '{') {
+      delta += 1;
+    } else if (character === '}') {
+      delta -= 1;
+    }
+  }
+  return delta;
+}
+
+/**
+ * Karkain declarations are read from the grammar implemented by the language's
+ * own compiler: `public` visibility, `func`/`kernel`/`struct`/`enum`/`type`/
+ * `actor` declarations, `var type name = ...`, `let name = ...`, and
+ * `import module.path`. C imports (`import "C" { ... }`) are ignored, matching
+ * the module resolver.
+ */
+function analyzeKarkain(masked: string, accumulator: AnalysisAccumulator): void {
+  const lines = splitLines(masked);
+  let depth = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const lineNumber = index + 1;
+    if (depth === 0) {
+      const declaration = KARKAIN_DECLARATIONS.find(
+        (candidate) => candidate.pattern.test(line),
+      );
+      if (declaration !== undefined) {
+        const match = declaration.pattern.exec(line);
+        if (match !== null) {
+          const exported = match[1] !== undefined;
+          const name = match[2] ?? '';
+          addSymbol(accumulator, name, declaration.kind, lineNumber, exported, 'confirmed');
+          if (exported) {
+            addExport(accumulator, name, 'named', lineNumber, 'confirmed');
+          }
+        }
+      } else {
+        const importMatch = KARKAIN_IMPORT.exec(line);
+        const variableMatch = importMatch === null ? KARKAIN_TYPED_VAR.exec(line) : null;
+        if (importMatch !== null) {
+          addImport(accumulator, importMatch[1] ?? '', 'import', lineNumber, 'confirmed');
+        } else if (variableMatch !== null) {
+          addSymbol(accumulator, variableMatch[1] ?? '', 'variable', lineNumber, false, 'heuristic');
+        }
+      }
+    }
+    depth += countBraces(line);
+    if (depth < 0) {
+      depth = 0;
+    }
+  }
+}
+
 function publicApiOf(path: string, exportsList: readonly ExportInfo[]): boolean {
   const normalized = path.replace(/\\/g, '/').toLowerCase();
   return (
@@ -842,7 +1000,7 @@ export function analyzeSourceFile(
   };
 
   try {
-    const masked = maskComments(bounded);
+    const masked = language === 'karkain' ? maskKarkainCommentsAndStrings(bounded) : maskComments(bounded);
     switch (language) {
       case 'typescript':
       case 'javascript':
@@ -860,6 +1018,9 @@ export function analyzeSourceFile(
       case 'c':
       case 'cpp':
         analyzeC(masked, accumulator, /\.(?:h|hh|hpp|hxx)$/i.test(normalized));
+        break;
+      case 'karkain':
+        analyzeKarkain(masked, accumulator);
         break;
     }
   } catch {
