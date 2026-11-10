@@ -326,7 +326,7 @@ you can see. Start with the built-in diagnostics:
 3. Note the extension version and your VS Code version (both are in the report).
 
 Then open an issue with the report attached:
-<https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder/issues>. Do not paste your API
+<https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder/issues>. Do not paste your API
 key "to help debug" — a `sk-…` value in an issue is a live credential, and the logs
 are built so that you never need to.
 

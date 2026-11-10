@@ -485,6 +485,7 @@
     "verify:vsix": "node scripts/verify-vsix.mjs",
     "verify:deps": "node scripts/verify-dependencies.mjs",
     "verify:release": "node scripts/verify-release.mjs",
+    "verify:docs-links": "node scripts/verify-docs-links.mjs",
     "verify:install": "node scripts/verify-install.mjs",
     "release": "node scripts/release.mjs",
     "sha256": "node scripts/sha256.mjs",

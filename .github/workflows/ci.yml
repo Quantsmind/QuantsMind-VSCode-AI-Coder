@@ -50,6 +50,9 @@ jobs:
       - name: Verify no hardcoded release versions
         run: npm run verify:release
 
+      - name: Verify documentation links
+        run: npm run verify:docs-links
+
       - name: Lint
         run: npm run lint
 
