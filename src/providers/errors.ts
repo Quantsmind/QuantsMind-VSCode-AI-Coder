@@ -218,7 +218,8 @@ function readProviderMessage(bodyText: string, secret?: string): string | undefi
 
 /**
  * Maps an HTTP failure to a stable, user-safe error. The raw response body is
- * never surfaced wholesale or logged.
+ * never surfaced wholesale or logged. `headers` is optional; when provided,
+ * `Retry-After` is parsed and stored on the error for bounded retry logic.
  */
 export function normalizeHttpError(
   status: number,
@@ -305,7 +306,10 @@ function isAbortError(error: unknown): boolean {
 
 /**
  * Converts fetch/stream exceptions into normalized provider errors. Callers
- * handle cancellation and timeout before reaching this function.
+ * handle cancellation and timeout before reaching this function. Underlying
+ * Node.js `code` values (ECONNREFUSED, ENOTFOUND, ECONNRESET, …) are mapped
+ * to distinct network messages to distinguish connection-refused, DNS and
+ * connection-reset failures without leaking topology details or secrets.
  */
 export function normalizeThrownError(error: unknown, secret?: string): ProviderError {
   if (isProviderError(error)) {
@@ -316,15 +320,58 @@ export function normalizeThrownError(error: unknown, secret?: string): ProviderE
     return new ProviderError('cancelled', 'The request was cancelled.');
   }
 
+  const causeCode = extractCauseCode(error);
   const raw = error instanceof Error ? error.message : String(error);
+  // Redact before classifying so a secret embedded in an error message cannot
+  // influence the classification string or leak into the final message.
   const safe = redactSecrets(raw, [secret]).text;
   const suffix = safe.length > 0 ? ` Details: ${sanitizeMessage(safe, 180)}` : '';
+
+  if (causeCode === 'ECONNREFUSED') {
+    return new ProviderError(
+      'network',
+      `The connection was refused. Is the provider server running on the configured endpoint?${suffix}`,
+      { cause: error },
+    );
+  }
+  if (causeCode === 'ENOTFOUND' || causeCode === 'EAI_AGAIN' || causeCode === 'ENETUNREACH') {
+    return new ProviderError(
+      'network',
+      `The provider host could not be resolved. Check the base URL spelling and DNS.${suffix}`,
+      { cause: error },
+    );
+  }
+  if (causeCode === 'ECONNRESET' || causeCode === 'EPIPE' || causeCode === 'ENOTCONN') {
+    return new ProviderError(
+      'network',
+      `The connection was reset. Check the endpoint, proxy, and TLS configuration.${suffix}`,
+      { cause: error },
+    );
+  }
+  if (causeCode === 'ETIMEDOUT' || causeCode === 'ESOCKETTIMEDOUT') {
+    return new ProviderError(
+      'timeout',
+      `The connection timed out. Check the endpoint and try again.${suffix}`,
+      { cause: error, retryable: true },
+    );
+  }
 
   return new ProviderError(
     'network',
     `Could not reach the AI provider. Check the endpoint, network connection, and TLS configuration.${suffix}`,
     { cause: error },
   );
+}
+
+function extractCauseCode(error: unknown): string | undefined {
+  const candidate = error as { code?: unknown; cause?: { code?: unknown } | undefined };
+  const direct = candidate?.code;
+  if (typeof direct === 'string' && direct.length > 0) return direct;
+  const cause = candidate?.cause;
+  if (cause !== null && typeof cause === 'object' && typeof cause.code === 'string') {
+    return cause.code;
+  }
+  return undefined;
 }
 
 export function errorHint(code: ProviderErrorCode): string | undefined {

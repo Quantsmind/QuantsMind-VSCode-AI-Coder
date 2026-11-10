@@ -548,12 +548,27 @@ suite('provider registry', () => {
       'pollinations',
     ]);
     expect(providerDisplayName(OPENAI_COMPATIBLE_PROVIDER_ID)).to.equal('OpenAI-compatible');
+    expect(providerDisplayName('gemini')).to.equal('Google Gemini');
     expect(providerDisplayName('unknown')).to.equal(undefined);
   });
 
   test('creates a provider by type', () => {
     const provider = createProvider(OPENAI_COMPATIBLE_PROVIDER_ID, config());
     expect(provider.id).to.equal(OPENAI_COMPATIBLE_PROVIDER_ID);
+  });
+
+  test('creates a gemini provider by type', () => {
+    const provider = createProvider('gemini', config());
+    expect(provider.id).to.equal('gemini');
+    expect(provider.displayName).to.equal('Google Gemini');
+  });
+
+  test('rejects empty model for gemini via registry', () => {
+    expectCodes(() => createProvider('gemini', config({ model: '' })), 'configuration');
+  });
+
+  test('rejects invalid model for gemini via registry', () => {
+    expectCodes(() => createProvider('gemini', config({ model: 'bad\nmodel' })), 'configuration');
   });
 
   test('rejects unsupported provider types', () => {

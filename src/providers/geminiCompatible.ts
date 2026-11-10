@@ -10,6 +10,7 @@ import {
 } from './errors';
 import { parseServerSentEvents } from './sse';
 import { withProviderRetry } from './retry';
+import { userAgent } from './openaiCompatible';
 import type {
   AiProvider,
   ChatMessage,
@@ -22,7 +23,6 @@ import type {
 } from './types';
 
 export const GEMINI_PROVIDER_ID = 'gemini';
-export const USER_AGENT = 'QuantsMind-VSCode-AI-Coder/1.0.0';
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
@@ -249,7 +249,7 @@ export function buildGeminiHeaders(apiKey: string | undefined, stream: boolean):
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
-    'User-Agent': USER_AGENT,
+    'User-Agent': userAgent(),
   };
   if (apiKey !== undefined && apiKey.length > 0) {
     headers['x-goog-api-key'] = apiKey;

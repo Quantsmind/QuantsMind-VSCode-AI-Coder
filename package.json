@@ -26,7 +26,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder.git"
+    "url": "https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder.git"
   },
   "galleryBanner": {
     "color": "#0B1020",
@@ -284,7 +284,7 @@
           "default": "openai-compatible",
           "scope": "application",
           "order": 1,
-          "markdownDescription": "AI provider adapter. v0.3.0 ships the **openai-compatible** adapter and keeps the abstraction extensible for future providers."
+          "markdownDescription": "Provider profile. Profiles reuse the openai-compatible adapter (except Gemini) and select endpoint defaults and credential keys. Override the base URL to target a custom endpoint."
         },
         "quantsmind.provider.baseUrl": {
           "type": "string",

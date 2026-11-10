@@ -122,6 +122,10 @@ export function resolveProviderSettings(raw: RawProviderSettings): ResolvedProvi
   const type = stringValue(raw.type, DEFAULT_PROVIDER_TYPE, 100);
   const profile = getProviderProfile(type);
 
+  // Profile defaults apply only when the raw value is absent or still the
+  // global default (which is what VS Code returns when the user has not
+  // overridden the setting). An explicit non-default URL/model is always
+  // honoured so users can override endpoints.
   const rawBaseUrl = typeof raw.baseUrl === 'string' ? raw.baseUrl.trim() : '';
   const rawModel = typeof raw.model === 'string' ? raw.model.trim() : '';
   const profileBaseUrl =

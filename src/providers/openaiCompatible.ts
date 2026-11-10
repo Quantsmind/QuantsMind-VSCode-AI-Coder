@@ -9,6 +9,7 @@ import {
   normalizeThrownError,
 } from './errors';
 import { parseServerSentEvents } from './sse';
+import { withProviderRetry } from './retry';
 import type {
   AiProvider,
   ChatMessage,
@@ -534,6 +535,7 @@ async function parseStreamingResponse(
   body: ReadableStream<Uint8Array>,
   secret: string | undefined,
   onDelta: ((delta: string) => void) | undefined,
+  signal?: AbortSignal,
 ): Promise<CompletionResult> {
   let text = '';
   let model: string | undefined;
@@ -542,7 +544,7 @@ async function parseStreamingResponse(
   let sawEvent = false;
   const streamedToolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
 
-  for await (const data of parseServerSentEvents(body)) {
+  for await (const data of parseServerSentEvents(body, { signal })) {
     if (data === '[DONE]') {
       break;
     }
@@ -628,6 +630,13 @@ async function parseStreamingResponse(
   }));
   const toolCalls = parseToolCalls(accumulatedToolCalls, secret);
 
+  if (text.length === 0 && toolCalls.length === 0) {
+    throw new ProviderError(
+      'invalid_response',
+      'The provider response did not contain message text.',
+    );
+  }
+
   return {
     text,
     model,
@@ -660,58 +669,74 @@ class OpenAiCompatibleProvider implements AiProvider {
     try {
       return await withAbort(
         async (signal) => {
-          const response = await this.fetchImpl(buildChatCompletionsUrl(this.config.baseUrl), {
-            method: 'POST',
-            headers: buildRequestHeaders(this.config.apiKey, validated.stream),
-            body: JSON.stringify(buildCompletionBody(validated)),
-            signal,
-            redirect: 'error',
-          });
+          let streamStarted = false;
+          return await withProviderRetry(
+            async (retrySignal) => {
+              const attemptSignal = retrySignal;
+              const response = await this.fetchImpl(buildChatCompletionsUrl(this.config.baseUrl), {
+                method: 'POST',
+                headers: buildRequestHeaders(this.config.apiKey, validated.stream),
+                body: JSON.stringify(buildCompletionBody(validated)),
+                signal: attemptSignal,
+                redirect: 'error',
+              });
 
-          if (!response.ok) {
-            const errorBody = await readResponseText(
-              response,
-              MAX_ERROR_BODY_BYTES,
-              'truncate',
-            );
-            throw normalizeHttpError(response.status, errorBody, this.config.apiKey, response.headers);
-          }
+              if (!response.ok) {
+                const errorBody = await readResponseText(
+                  response,
+                  MAX_ERROR_BODY_BYTES,
+                  'truncate',
+                );
+                throw normalizeHttpError(response.status, errorBody, this.config.apiKey, response.headers);
+              }
 
-          const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
-          const useStreaming =
-            validated.stream && !contentType.includes('application/json');
+              const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+              const useStreaming =
+                validated.stream && !contentType.includes('application/json');
 
-          if (useStreaming) {
-            if (response.body === null) {
-              throw new ProviderError(
-                'invalid_response',
-                'The provider returned an empty streaming response body.',
+              if (useStreaming) {
+                if (response.body === null) {
+                  throw new ProviderError(
+                    'invalid_response',
+                    'The provider returned an empty streaming response body.',
+                  );
+                }
+                const wrappedOnDelta =
+                  options.onDelta === undefined
+                    ? undefined
+                    : (delta: string) => {
+                        streamStarted = true;
+                        options.onDelta?.(delta);
+                      };
+                return await parseStreamingResponse(
+                  response.body,
+                  this.config.apiKey,
+                  wrappedOnDelta,
+                  attemptSignal,
+                );
+              }
+
+              const responseText = await readResponseText(
+                response,
+                MAX_JSON_RESPONSE_BYTES,
+                'error',
               );
-            }
-            return await parseStreamingResponse(
-              response.body,
-              this.config.apiKey,
-              options.onDelta,
-            );
-          }
 
-          const responseText = await readResponseText(
-            response,
-            MAX_JSON_RESPONSE_BYTES,
-            'error',
+              let payload: unknown;
+              try {
+                payload = JSON.parse(responseText);
+              } catch {
+                throw new ProviderError(
+                  'invalid_response',
+                  'The provider returned invalid JSON. Check that the endpoint is OpenAI-compatible.',
+                );
+              }
+
+              return parseJsonResponse(payload, this.config.apiKey);
+            },
+            { token: options.token, streamStarted: () => streamStarted },
+            signal,
           );
-
-          let payload: unknown;
-          try {
-            payload = JSON.parse(responseText);
-          } catch {
-            throw new ProviderError(
-              'invalid_response',
-              'The provider returned invalid JSON. Check that the endpoint is OpenAI-compatible.',
-            );
-          }
-
-          return parseJsonResponse(payload, this.config.apiKey);
         },
         { token: options.token, timeoutMs },
       );

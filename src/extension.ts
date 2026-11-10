@@ -528,8 +528,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.setApiKey, setApiKey);
   register(COMMANDS.clearApiKey, clearApiKey);
   register(COMMANDS.configureProvider, configureProvider);
-  register(COMMANDS.selectModel, selectModel);
   register(COMMANDS.selectProvider, selectProvider);
+  register(COMMANDS.selectModel, selectModel);
   register(COMMANDS.testConnection, testConnection);
   register(COMMANDS.showLog, () => output.show());
   const showVersion = async (): Promise<void> => {
@@ -601,6 +601,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   );
   context.subscriptions.push(
     settings.onDidChange(() => {
+      // Prevent stale provider instances: an in-flight request was dispatched
+      // with the old profile/endpoint/model/credential. Cancel it so its
+      // result cannot be posted as if it came from the new configuration.
+      chatProvider.cancelActiveIfBusy();
       workspaceIndex.invalidate();
       void refreshAll();
     }),
@@ -615,6 +619,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   context.subscriptions.push(
     context.secrets.onDidChange((event) => {
       if (isProviderApiKeySecretKey(event.key)) {
+        // A credential change must not let an in-flight request dispatched with
+        // the old credential finish and post its result as if it were fresh.
+        chatProvider.cancelActiveIfBusy();
         void refreshAll();
       }
     }),

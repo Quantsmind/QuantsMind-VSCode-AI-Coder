@@ -218,6 +218,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return false;
   }
 
+  private async currentSecret(): Promise<string | undefined> {
+    try {
+      const providerType = this.deps.settings.getProviderSettings().type;
+      return await this.deps.secrets.forProvider(providerType).get();
+    } catch {
+      return await this.deps.secrets.get();
+    }
+  }
+
   private workspaceRoot(): vscode.WorkspaceFolder | undefined {
     return selectWorkspaceRoot(vscode.workspace.workspaceFolders);
   }
@@ -441,6 +450,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : RESTRICTED_MODE_FEATURE_NOTICE,
     });
     void this.refreshStatus();
+  }
+
+  /**
+   * Called when provider configuration changed while a request is active.
+   * Cancels the active request so a stale profile cannot finish and post a
+   * result under the new profile's UI.
+   */
+  cancelActiveIfBusy(): void {
+    if (this.busy) {
+      this.cancelActive();
+    }
   }
 
   async requestSelection(mode: ChatMode, prompt: string): Promise<void> {
@@ -1326,7 +1346,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     try {
-      const secret = await this.deps.secrets.get();
+      const secret = await this.currentSecret();
       const retrieval = await this.deps.workspaceIndex.retrieve(trimmed, secret);
       let added = 0;
       for (const item of retrieval.items) {
@@ -1808,7 +1828,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     candidates: readonly ContextCandidate[],
     source: AttachmentOrigin,
   ): Promise<AddResult> {
-    const secret = await this.deps.secrets.get();
+    const secret = await this.currentSecret();
     const contextSettings = this.deps.settings.getContextSettings();
     const skipped: string[] = [];
     let added = 0;
@@ -2369,7 +2389,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const secret = await this.deps.secrets.get();
+    const secret = await this.currentSecret();
     const built = await this.deps.contextService.build(
       this.attachments.map((attachment) => ({
         path: attachment.path,
