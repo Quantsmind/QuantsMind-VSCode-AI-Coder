@@ -54,6 +54,10 @@ const PACKAGE_JS_ENTRIES: Readonly<Record<string, readonly string[]>> = {
   yarn: ['node_modules', 'yarn', 'bin', 'yarn.js'],
 };
 
+function pathFor(platform: NodeJS.Platform): typeof path.win32 {
+  return platform === 'win32' ? path.win32 : (path.posix as unknown as typeof path.win32);
+}
+
 function environmentValue(
   env: Readonly<Record<string, string | undefined>>,
   name: string,
@@ -102,9 +106,10 @@ export function resolveOnPath(
   exists: (candidate: string) => boolean,
   platform: NodeJS.Platform,
 ): string | undefined {
+  const p = pathFor(platform);
   for (const directory of pathDirectories(env, platform)) {
     for (const extension of extensionOrder(env, platform)) {
-      const candidate = path.join(directory, `${name}${extension}`);
+      const candidate = p.join(directory, `${name}${extension}`);
       if (exists(candidate)) {
         return candidate;
       }
@@ -113,11 +118,11 @@ export function resolveOnPath(
   return undefined;
 }
 
-function directPlan(file: string, args: readonly string[]): PlanResult {
+function directPlan(file: string, args: readonly string[], platform: NodeJS.Platform = 'win32'): PlanResult {
   return {
     ok: true,
     plan: { mode: 'direct', file, args, verbatimArguments: false },
-    detail: `direct ${path.basename(file)}`,
+    detail: `direct ${pathFor(platform).basename(file)}`,
   };
 }
 
@@ -129,12 +134,13 @@ function directPlan(file: string, args: readonly string[]): PlanResult {
 export function canonicalWindowsShell(
   env: Readonly<Record<string, string | undefined>> = process.env,
   exists: (candidate: string) => boolean = (candidate) => fs.existsSync(candidate),
+  platform: NodeJS.Platform = 'win32',
 ): string | undefined {
   const root = environmentValue(env, 'SYSTEMROOT') ?? environmentValue(env, 'WINDIR');
   if (root === undefined || root.length === 0) {
     return undefined;
   }
-  const candidate = path.join(root, 'System32', 'cmd.exe');
+  const candidate = pathFor(platform).join(root, 'System32', 'cmd.exe');
   if (!exists(candidate) || /[\s"%!^]/.test(candidate)) {
     return undefined;
   }
@@ -144,8 +150,9 @@ export function canonicalWindowsShell(
 function systemShell(
   env: Readonly<Record<string, string | undefined>>,
   exists: (candidate: string) => boolean,
+  platform: NodeJS.Platform,
 ): { readonly file: string } | { readonly reason: string } {
-  const file = canonicalWindowsShell(env, exists);
+  const file = canonicalWindowsShell(env, exists, platform);
   if (file === undefined) {
     return {
       reason:
@@ -161,6 +168,7 @@ function batchWrapped(
   args: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   exists: (candidate: string) => boolean,
+  platform: NodeJS.Platform,
 ): PlanResult {
   for (const value of [script, ...args]) {
     if (CMD_UNSAFE.test(value)) {
@@ -181,7 +189,7 @@ function batchWrapped(
     }
   }
 
-  const shell = systemShell(env, exists);
+  const shell = systemShell(env, exists, platform);
   if ('reason' in shell) {
     return { ok: false, reason: shell.reason };
   }
@@ -195,7 +203,7 @@ function batchWrapped(
       args: ['/d', '/s', '/c', `"${line}"`],
       verbatimArguments: true,
     },
-    detail: `batch-wrapped ${path.basename(script)}`,
+    detail: `batch-wrapped ${pathFor(platform).basename(script)}`,
   };
 }
 
@@ -207,16 +215,17 @@ function nodeEntryPlan(
   exists: (candidate: string) => boolean,
   platform: NodeJS.Platform,
 ): PlanResult | undefined {
+  const p = pathFor(platform);
   const segments = PACKAGE_JS_ENTRIES[name.toLowerCase()];
   if (segments === undefined) {
     return undefined;
   }
-  const script = path.resolve(path.dirname(wrapper), ...segments);
+  const script = p.resolve(p.dirname(wrapper), ...segments);
   if (!exists(script)) {
     return undefined;
   }
   const node = resolveOnPath('node', env, exists, platform);
-  if (node === undefined || !BINARY_SUFFIXES.has(path.extname(node).toLowerCase())) {
+  if (node === undefined || !BINARY_SUFFIXES.has(p.extname(node).toLowerCase())) {
     return undefined;
   }
   return {
@@ -227,7 +236,7 @@ function nodeEntryPlan(
       args: [script, ...args],
       verbatimArguments: false,
     },
-    detail: `node-entry ${path.basename(script)}`,
+    detail: `node-entry ${p.basename(script)}`,
   };
 }
 
@@ -261,9 +270,10 @@ export function planCommand(input: PlanInputs): PlanResult {
   }
 
   if (platform !== 'win32') {
-    return directPlan(name, args);
+    return directPlan(name, args, platform);
   }
 
+  const p = pathFor(platform);
   const resolved = resolveOnPath(name, env, exists, platform);
   if (resolved === undefined) {
     return {
@@ -272,19 +282,19 @@ export function planCommand(input: PlanInputs): PlanResult {
     };
   }
 
-  const suffix = path.extname(resolved).toLowerCase();
+  const suffix = p.extname(resolved).toLowerCase();
   if (BINARY_SUFFIXES.has(suffix)) {
-    return directPlan(resolved, args);
+    return directPlan(resolved, args, platform);
   }
   if (BATCH_SUFFIXES.has(suffix)) {
     return (
       nodeEntryPlan(name, resolved, args, env, exists, platform) ??
-      batchWrapped(resolved, args, env, exists)
+      batchWrapped(resolved, args, env, exists, platform)
     );
   }
   return {
     ok: false,
-    reason: `"${path.basename(resolved)}" is neither a binary nor a batch wrapper, ` +
+    reason: `"${p.basename(resolved)}" is neither a binary nor a batch wrapper, ` +
       'so it cannot be run without shell interpretation.',
   };
 }

@@ -49,14 +49,14 @@ class MemoryPathFs implements AgentPathFs, AgentFileSystem {
 
   async createDirectory(absolutePath: string): Promise<void> {
     const normalized = this.normalize(absolutePath).replace(/\/+$/, '');
+    const isPosix = normalized.startsWith('/');
     const parts = normalized.split('/').filter((part) => part.length > 0);
     if (parts.length === 0) {
       return;
     }
-    let current = parts[0];
-    this.dirs.add(current);
-    for (let index = 1; index < parts.length; index += 1) {
-      current = `${current}/${parts[index]}`;
+    let current = '';
+    for (const part of parts) {
+      current = isPosix ? `${current}/${part}` : current.length === 0 ? part : `${current}/${part}`;
       this.dirs.add(current);
     }
   }

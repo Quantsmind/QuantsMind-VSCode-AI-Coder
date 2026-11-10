@@ -59,9 +59,16 @@ suite('git service detection', () => {
     const info = await repoInfo(dir);
 
     expect(info.isRepository).to.equal(true);
-    expect((info.root as string).replace(/\\/g, '/').toLowerCase()).to.equal(
-      dir.replace(/\\/g, '/').toLowerCase(),
-    );
+    // Git and os.tmpdir() may report the same directory through different
+    // Windows short (8.3) vs long path forms; compare realpaths instead.
+    const realpath = (value: string): string => {
+      try {
+        return fs.realpathSync.native(value).replace(/\\/g, '/').toLowerCase();
+      } catch {
+        return value.replace(/\\/g, '/').toLowerCase();
+      }
+    };
+    expect(realpath(info.root as string)).to.equal(realpath(dir));
     expect(info.branch).to.be.a('string');
     expect(info.headSha).to.equal(undefined); // no commits yet
   });
