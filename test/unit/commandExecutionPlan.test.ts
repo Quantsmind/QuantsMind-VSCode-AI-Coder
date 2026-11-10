@@ -1,5 +1,7 @@
 import { expect } from 'chai';
 import * as path from 'node:path';
+
+const win32 = path.win32;
 import {
   canonicalWindowsShell,
   planCommand,
@@ -7,13 +9,13 @@ import {
 } from '../../src/commands/executionPlan';
 
 const SYSTEM_ROOT = 'C:\\WINDOWS';
-const SHELL = path.join(SYSTEM_ROOT, 'System32', 'cmd.exe');
+const SHELL = win32.join(SYSTEM_ROOT, 'System32', 'cmd.exe');
 const NODE_DIR = 'C:\\Program Files\\nodejs';
-const NODE_EXE = path.join(NODE_DIR, 'node.exe');
-const NPM_CMD = path.join(NODE_DIR, 'npm.cmd');
-const NPM_CLI = path.join(NODE_DIR, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const NODE_EXE = win32.join(NODE_DIR, 'node.exe');
+const NPM_CMD = win32.join(NODE_DIR, 'npm.cmd');
+const NPM_CLI = win32.join(NODE_DIR, 'node_modules', 'npm', 'bin', 'npm-cli.js');
 const TOOLS_DIR = 'C:\\build\\tools';
-const GRADLEW = path.join(TOOLS_DIR, 'gradlew.cmd');
+const GRADLEW = win32.join(TOOLS_DIR, 'gradlew.cmd');
 const WORKSPACE = 'F:\\Codes\\demo';
 
 /** Separator- and case-insensitive so the same expectations hold on any host. */
@@ -176,7 +178,7 @@ suite('execution planning', () => {
 
   test('an executable with no runnable form is refused', () => {
     const plan = windowsPlan(['eslint', '--version'], {
-      files: [path.join(TOOLS_DIR, 'eslint.ps1'), SHELL, NODE_EXE],
+      files: [win32.join(TOOLS_DIR, 'eslint.ps1'), SHELL, NODE_EXE],
       env: windowsEnv({ PATHEXT: '.PS1;.EXE;.CMD' }),
     });
     expect(plan.ok).to.equal(false);
@@ -187,14 +189,14 @@ suite('execution planning', () => {
   });
 
   test('PATHEXT order decides between an exe and a cmd of the same name', () => {
-    const both = [SHELL, NODE_EXE, path.join(TOOLS_DIR, 'tool.exe'), path.join(TOOLS_DIR, 'tool.cmd')];
+    const both = [SHELL, NODE_EXE, win32.join(TOOLS_DIR, 'tool.exe'), win32.join(TOOLS_DIR, 'tool.cmd')];
     const plan = windowsPlan(['tool', '--version'], { files: both });
     expect(plan.ok).to.equal(true);
     if (!plan.ok) {
       return;
     }
     expect(plan.plan.mode).to.equal('direct');
-    expect(key(plan.plan.file)).to.equal(key(path.join(TOOLS_DIR, 'tool.exe')));
+    expect(key(plan.plan.file)).to.equal(key(win32.join(TOOLS_DIR, 'tool.exe')));
   });
 
   test('a missing SystemRoot shell stops a batch command', () => {
@@ -219,7 +221,7 @@ suite('execution planning', () => {
     expect(canonicalWindowsShell(windowsEnv(), filesIn([]))).to.equal(undefined);
     const spacedRoot = 'C:\\Program Files\\Windows';
     expect(
-      canonicalWindowsShell({ SystemRoot: spacedRoot }, filesIn([path.join(spacedRoot, 'System32', 'cmd.exe')])),
+      canonicalWindowsShell({ SystemRoot: spacedRoot }, filesIn([win32.join(spacedRoot, 'System32', 'cmd.exe')])),
     ).to.equal(undefined);
   });
 
