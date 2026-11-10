@@ -2,7 +2,7 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "2.0.0",
+  "version": "2.5.0",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
@@ -340,6 +340,41 @@
           "scope": "application",
           "order": 8,
           "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected. Loopback traffic is unencrypted and any local process can answer the port, so each such request is logged at warn level in the QuantsMind output channel. Set to `false` to require HTTPS everywhere."
+        },
+        "quantsmind.mcp.servers": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "order": 9,
+          "markdownDescription": "MCP (Model Context Protocol) servers the agent may use. Each entry names an executable and arguments; tool calls always require explicit approval and tool output is treated as untrusted data. Servers send and receive newline-delimited JSON-RPC over stdio.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "command"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Stable server identifier used in tool arguments."
+              },
+              "command": {
+                "type": "string",
+                "description": "Executable to launch, for example `node` or `python`."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Command arguments, for example the path to the server script."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          }
         },
         "quantsmind.context.excludeGlobs": {
           "type": "array",

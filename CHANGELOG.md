@@ -59,6 +59,24 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.0 — advanced AI intelligence.** Multi-provider usage reporting and cost
+accounting with explicit rate cards only; a per-window paid-provider consent
+gate for autonomous agent calls (`PaidConsentError` blocks paid calls without
+explicit consent); a bounded, per-task shared context store with
+`context_set` / `context_get` / `context_list` agent tools; a token-budget
+allocator with selection visibility attached to retrieval results
+(`RetrievalResult.budget`); a real MCP (Model Context Protocol) stdio/JSON-RPC
+client with approval-gated `mcp_list_tools` / `mcp_call` agent tools and
+untrusted-output delimiting; an interrupted-session continuation planner
+(`computeContinuationPlan`) surfaced in the session restore path; a
+stack-aware system prompt for the coding agent (evidence-based languages,
+package manager and Karkain posture); `get_usage` tool for session usage
+visibility; new `quantsmind.mcp.servers` application setting. Known limits:
+MCP support is stdio JSON-RPC for self-configured servers (no auto-execution,
+no streamable-HTTP transport yet); usage is reported only for providers that
+send it; cost requires an explicit rate card; no third-party MCP server has
+been exercised in an automated way.
+
 Milestone work layered on top of the 2.0.0 release commit (see the
 implementation reports at the repository root for qualification evidence):
 

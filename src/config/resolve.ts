@@ -208,6 +208,70 @@ export interface ResolvedCommandSettings {
   readonly maxOutputChars: number;
 }
 
+export interface RawMcpSettings {
+  readonly servers?: unknown;
+}
+
+export interface ResolvedMcpServer {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly enabled: boolean;
+}
+
+export interface ResolvedMcpSettings {
+  readonly servers: readonly ResolvedMcpServer[];
+}
+
+const MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MCP_FORBIDDEN_COMMAND = /["';&|<>$`(){}[\]*?!^~%\r\n\0]/;
+const MAX_MCP_SERVERS = 10;
+const MAX_MCP_ARGS = 50;
+const MAX_MCP_ARG_LENGTH = 500;
+
+export function resolveMcpSettings(raw: RawMcpSettings): ResolvedMcpSettings {
+  const servers: ResolvedMcpServer[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(raw.servers)) {
+    for (const entry of raw.servers) {
+      if (servers.length >= MAX_MCP_SERVERS) {
+        break;
+      }
+      if (typeof entry !== 'object' || entry === null) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      const name = typeof record.name === 'string' ? record.name.trim() : '';
+      const command = typeof record.command === 'string' ? record.command.trim() : '';
+      if (
+        !MCP_NAME.test(name) ||
+        seen.has(name) ||
+        command.length === 0 ||
+        command.length > 260 ||
+        command !== command.trim() ||
+        MCP_FORBIDDEN_COMMAND.test(command)
+      ) {
+        continue;
+      }
+      seen.add(name);
+      const args = record.args;
+      if (args !== undefined && !Array.isArray(args)) {
+        continue;
+      }
+      const list = (args ?? []) as unknown[];
+      if (
+        list.length > MAX_MCP_ARGS ||
+        list.some((item) => typeof item !== 'string' || item.length > MAX_MCP_ARG_LENGTH)
+      ) {
+        continue; // malformed or oversized arguments reject the entry, not just the argument
+      }
+      const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
+      servers.push({ name, command, args: list as string[], enabled });
+    }
+  }
+  return { servers };
+}
+
 function commandAllowlist(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [...DEFAULT_COMMAND_ALLOWLIST];

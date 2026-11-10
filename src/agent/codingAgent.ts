@@ -352,7 +352,7 @@ export interface RunCodingAgentOptions {
   readonly systemPrompt?: string;
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are QuantsMind AI Coder, a coding agent with access to workspace tools.
+export const DEFAULT_SYSTEM_PROMPT = `You are QuantsMind AI Coder, a coding agent with access to workspace tools.
 
 Planning:
 - Inspect the workspace before changing it (read_file, list_files, search_files, get_workspace_context).

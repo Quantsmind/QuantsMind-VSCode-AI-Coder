@@ -4,6 +4,7 @@ import type { SettingsService } from '../../src/config/settings';
 import {
   resolveAgentSettings,
   resolveCommandSettings,
+  resolveMcpSettings,
   resolveContextSettings,
   resolveProviderSettings,
   resolveWorkspaceSettings,
@@ -193,6 +194,7 @@ export function createSettings(
     getWorkspaceSettings: () => resolveWorkspaceSettings({}),
     getAgentSettings: () => resolveAgentSettings({}),
     getCommandSettings: () => resolveCommandSettings({}),
+    getMcpSettings: () => resolveMcpSettings({}),
     updateModel: async () => undefined,
     updateProviderType: async () => undefined,
     updateBaseUrl: async () => undefined,

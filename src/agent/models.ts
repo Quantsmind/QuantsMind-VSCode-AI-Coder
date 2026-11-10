@@ -173,6 +173,13 @@ export interface RetrievalResult {
   readonly items: readonly RedactedContextItem[];
   readonly reasons: Readonly<Record<string, string>>;
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+  /** Present when the host computed a token-budget allocation for visibility. */
+  readonly budget?: {
+    readonly budgetTokens: number;
+    readonly usedTokens: number;
+    readonly included?: Readonly<Record<string, { estimatedTokens: number; reason: 'selected' }>>;
+    readonly excluded?: Readonly<Record<string, string>>;
+  };
 }
 
 export interface UnifiedDiff {

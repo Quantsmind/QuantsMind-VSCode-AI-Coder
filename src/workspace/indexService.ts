@@ -35,6 +35,14 @@ import {
 } from './analyze';
 import { createIgnoreMatcher } from './ignore';
 import { selectWorkspaceRoot } from './rootPolicy';
+import { estimateTokens } from '../context/tokenBudget';
+
+export interface BudgetReportSummary {
+  readonly budgetTokens: number;
+  readonly usedTokens: number;
+  readonly included: Readonly<Record<string, { estimatedTokens: number; reason: 'selected' }>>;
+  readonly excluded: Readonly<Record<string, string>>;
+}
 
 export interface RetrievalResult {
   readonly summary: WorkspaceSummary;
@@ -42,6 +50,7 @@ export interface RetrievalResult {
   readonly reasons: Readonly<Record<string, string>>;
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
   readonly truncated: boolean;
+  readonly budget?: BudgetReportSummary;
 }
 
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
@@ -454,15 +463,35 @@ export class WorkspaceIndexService {
       maxTotalChars: budget,
     }, secret);
 
+    const allSkipped = [
+      ...skipped,
+      ...built.skipped.map((item) => ({ path: item.path, reason: item.reason })),
+    ];
+    const budgetTokens = Math.max(1, Math.floor(budget / 4));
+    const included: Record<string, { estimatedTokens: number; reason: 'selected' }> = {};
+    let usedTokens = 0;
+    for (const item of built.items) {
+      const tokens = estimateTokens(item.content);
+      usedTokens += tokens;
+      included[item.path] = { estimatedTokens: tokens, reason: 'selected' };
+    }
+    const excluded: Record<string, string> = {};
+    for (const entry of allSkipped) {
+      excluded[entry.path] = entry.reason;
+    }
+
     return {
       summary,
       items: built.items,
       reasons,
-      skipped: [
-        ...skipped,
-        ...built.skipped.map((item) => ({ path: item.path, reason: item.reason })),
-      ],
+      skipped: allSkipped,
       truncated,
+      budget: {
+        budgetTokens,
+        usedTokens,
+        included,
+        excluded,
+      },
     };
   }
 

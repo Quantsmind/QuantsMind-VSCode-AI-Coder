@@ -4,11 +4,13 @@ import {
   resolveAgentSettings,
   resolveCommandSettings,
   resolveContextSettings,
+  resolveMcpSettings,
   resolveProviderSettings,
   resolveWorkspaceSettings,
   type ResolvedAgentSettings,
   type ResolvedCommandSettings,
   type ResolvedContextSettings,
+  type ResolvedMcpSettings,
   type ResolvedProviderSettings,
   type ResolvedWorkspaceSettings,
 } from './resolve';
@@ -66,6 +68,13 @@ export class SettingsService {
       allowlist: config.get<unknown>('commands.allowlist'),
       timeoutMs: config.get<unknown>('commands.timeoutMs'),
       maxOutputChars: config.get<unknown>('commands.maxOutputChars'),
+    });
+  }
+
+  getMcpSettings(): ResolvedMcpSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveMcpSettings({
+      servers: config.get<unknown>('mcp.servers'),
     });
   }
 

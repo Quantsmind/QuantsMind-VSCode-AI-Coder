@@ -44,6 +44,7 @@ import {
   type ValidationRun,
 } from './models';
 import { buildDevelopmentPlanMessages, buildTaskRequest, parseDevelopmentPlan } from './planning';
+import { computeContinuationPlan } from './continuation';
 import { buildCompletionReport } from './report';
 import { canTransitionTaskStatus, findTask, nextRunnableTasks, refreshBlockedTasks, schedule, updateTask } from './scheduler';
 import { canPause, deriveProgress, deriveStages, transitionSession, STATE_LABELS } from './stateMachine';
@@ -3081,12 +3082,22 @@ export class AgentOrchestrator implements IAgentController {
     }
 
     const unverified = this.deps.hashFile === undefined;
-    const restored: AgentSession = {
+    let restored: AgentSession = {
       ...current,
       state,
       pausedFrom,
       needsReview: unverified,
     };
+    const continuation = computeContinuationPlan(
+      restored.tasks.map((task) => ({ id: task.id, status: task.status, dependencies: task.dependsOn })),
+    );
+    if (continuation.interrupted.length > 0 || continuation.failed.length > 0 || continuation.blocked.length > 0) {
+      restored = this.withEvent(
+        restored,
+        'note',
+        `Continuation plan: ${continuation.resumable.length} resumable, ${continuation.failed.length} failed, ${continuation.blocked.length} blocked task(s).`,
+      );
+    }
     return this.record(restored);
   }
 
