@@ -55,6 +55,9 @@ import { bindValidation, changeSetVersion, deriveValidationSuggestions, type Val
 import type { ISessionRepository } from '../sessions/repository';
 import type { CheckpointRepository } from '../sessions/checkpointRepository';
 import { impactSummary, type ChangeImpact } from '../repository/impact';
+import { checkChangeSetBudgets } from '../workflow/executionBudgets';
+import { orchestratorSessionToOutcome, renderOutcome } from './execution';
+import type { AgentExecutionLimits } from './limits';
 
 export interface OrchestratorLogger {
   info(message: string): void;
@@ -76,6 +79,8 @@ export interface OrchestratorDependencies {
   readonly commandSettings: () => ResolvedCommandSettings;
   /** Maximum number of tasks that may run per execution; defaults to 1 and is clamped to 1..3. */
   readonly maxConcurrentTasks?: number;
+  /** Optional shared execution limits (v2.5.7): provider-request and duration budgets enforced BEFORE the model is called. Absent limits preserve legacy behavior. */
+  readonly executionLimits?: () => AgentExecutionLimits;
   readonly hashFile?: (path: string) => Promise<string | undefined>;
   readonly checkpointRepository?: CheckpointRepository;
   readonly analyzeImpact?: (
@@ -706,6 +711,26 @@ export class AgentOrchestrator implements IAgentController {
     return { ...session, validationRuns: [...session.validationRuns, run] };
   }
 
+  /**
+   * Shared execution-budget gate (v2.5.7): the same provider-request and
+   * duration budgets the chat-agent engine enforces. Returns the breach
+   * message when a limit is exhausted; undefined when there is budget left.
+   */
+  private executionBudgetBreach(current: { providerCalls: number; createdAt: string }): string | undefined {
+    const limits = this.deps.executionLimits?.();
+    if (limits === undefined) {
+      return undefined;
+    }
+    if (current.providerCalls >= limits.maxProviderRequests) {
+      return `The agentic engine provider budget of ${limits.maxProviderRequests} provider request(s) was reached (quantsmind.agenticEngine.maxProviderRequests).`;
+    }
+    const createdAt = Date.parse(current.createdAt);
+    if (Number.isFinite(createdAt) && Date.now() - createdAt >= limits.maxDurationMs) {
+      return `The agentic engine duration limit of ${limits.maxDurationMs} ms was reached (quantsmind.agenticEngine.maxDurationSeconds).`;
+    }
+    return undefined;
+  }
+
   private withEvent(
     session: AgentSession,
     type: SessionEventType,
@@ -964,6 +989,10 @@ export class AgentOrchestrator implements IAgentController {
           (retrieval.skipped.length > 0 ? ` and skipped ${retrieval.skipped.length}.` : '.'),
       );
       const agentSettings = this.deps.agentSettings();
+      const breach = this.executionBudgetBreach(current);
+      if (breach !== undefined) {
+        return this.failSession(id, breach);
+      }
       if (current.providerCalls >= agentSettings.maxSteps) {
         return this.failSession(
           id,
@@ -1302,6 +1331,10 @@ export class AgentOrchestrator implements IAgentController {
 
     current = this.require(sessionId);
     const agentSettings = this.deps.agentSettings();
+    const breach = this.executionBudgetBreach(current);
+    if (breach !== undefined) {
+      return this.failSession(sessionId, breach);
+    }
     if (current.providerCalls >= agentSettings.maxSteps) {
       return this.failSession(
         sessionId,
@@ -1384,6 +1417,17 @@ export class AgentOrchestrator implements IAgentController {
     }
     if (prepared.errors.length > 0) {
       return this.failSession(sessionId, prepared.errors.join(' '));
+    }
+    // v2.5.7: shared execution budget applies BEFORE an approvable artifact is proposed.
+    const budgetLimits = this.deps.executionLimits?.();
+    if (budgetLimits !== undefined) {
+      const budgetCheck = checkChangeSetBudgets(prepared.plan.changes, budgetLimits);
+      if (!budgetCheck.ok) {
+        return this.failSession(
+          sessionId,
+          `The proposed change set exceeds the agentic execution budget: ${budgetCheck.detail}. Narrow the change or raise the agentic limits (quantsmind.agenticEngine.*).`,
+        );
+      }
     }
     if (this.taskCancelled(sessionId, taskId)) {
       return this.viewOf(sessionId);
@@ -2214,6 +2258,10 @@ export class AgentOrchestrator implements IAgentController {
       if (run === undefined) {
         return this.failSession(sessionId, 'No validation evidence is available for the failed task.');
       }
+      const breach = this.executionBudgetBreach(current);
+      if (breach !== undefined) {
+        return this.failSession(sessionId, breach);
+      }
       if (current.providerCalls >= settings.maxSteps) {
         return this.failSession(
           sessionId,
@@ -2901,19 +2949,21 @@ export class AgentOrchestrator implements IAgentController {
     const edited = scope === undefined
       ? withLifecycleNote
       : this.withEvent(withLifecycleNote, 'note', `Change scope: ${scope}`);
-    const report = buildCompletionReport(edited, at);
+    // v2.5.7: one typed, bounded outcome note for the timeline; additive, bounded.
+    const withOutcomeNote = this.withEvent(edited, 'note', renderOutcome(orchestratorSessionToOutcome(edited)));
+    const report = buildCompletionReport(withOutcomeNote, at);
     const event: SessionEvent = {
       id: this.nextId('event'),
       at,
       type: 'report',
-      state: edited.state,
+      state: withOutcomeNote.state,
       message: `Completion report generated with outcome "${report.outcome}".`,
     };
     const withReport: AgentSession = {
-      ...edited,
+      ...withOutcomeNote,
       updatedAt: at,
       report,
-      events: [...edited.events, event].slice(-MAX_SESSION_EVENTS),
+      events: [...withOutcomeNote.events, event].slice(-MAX_SESSION_EVENTS),
     };
     return this.record(withReport);
   }

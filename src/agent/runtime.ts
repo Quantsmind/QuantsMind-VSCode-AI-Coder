@@ -21,6 +21,7 @@ import type { AgentSessionView } from './models';
 import { AgentToolRegistry, type AgentModelClient } from './codingAgent';
 import { DEFAULT_SYSTEM_PROMPT } from './codingAgent';
 import { runAgentEngine } from './engine';
+import { settingsToEngineLimits } from './execution';
 import { buildStackGuidance } from './stackGuidance';
 import { cachedLanguageInventory } from '../languages/inventory';
 import { describeCapabilities } from '../providers/capabilities';
@@ -507,17 +508,14 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
       readonly onEvent?: (event: import('./codingAgent').AgentRunEvent) => void;
     }): Promise<import('./codingAgent').AgentRunResult> => {
       const guidance = await buildStackGuidanceForTask();
-      const agentic = deps.settings.getAgenticEngineSettings();
+      const agentic = settingsToEngineLimits(deps.settings.getAgenticEngineSettings());
       const outcome = await runAgentEngine({
         task,
         model,
         tools: toolRegistry.list(),
         limits: {
+          ...agentic,
           maxIterations: options?.maxIterations ?? agentic.maxIterations,
-          maxToolCalls: agentic.maxToolCalls,
-          maxPlanRevisions: agentic.maxPlanRevisions,
-          maxDurationMs: agentic.maxDurationMs,
-          maxChangedFiles: agentic.maxChangedFiles,
         },
         signal: options?.signal,
         onEvent: options?.onEvent,
@@ -579,6 +577,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
       return record as unknown as import('../commands/runner').CommandResult;
     },
     agentSettings: () => deps.settings.getAgentSettings(),
+    executionLimits: () => settingsToEngineLimits(deps.settings.getAgenticEngineSettings()),
     commandSettings: () => deps.settings.getCommandSettings(),
     hashFile: (path) => hashWorkspaceFile(path, trusted),
     analyzeImpact: async (changes, validationCommands) =>
