@@ -55,9 +55,10 @@ import { bindValidation, changeSetVersion, deriveValidationSuggestions, type Val
 import type { ISessionRepository } from '../sessions/repository';
 import type { CheckpointRepository } from '../sessions/checkpointRepository';
 import { impactSummary, type ChangeImpact } from '../repository/impact';
-import { checkChangeSetBudgets } from '../workflow/executionBudgets';
+import { checkChangeSetBudgets, patchBytesOf } from '../workflow/executionBudgets';
 import { orchestratorSessionToOutcome, renderOutcome } from './execution';
 import type { AgentExecutionLimits } from './limits';
+import { AGENT_LIMIT_DEFAULTS } from './limits';
 
 export interface OrchestratorLogger {
   info(message: string): void;
@@ -222,6 +223,11 @@ export class AgentOrchestrator implements IAgentController {
   private readonly aborters = new Map<string, AbortController>();
   private readonly maxConcurrentTasks: number;
   private readonly applyingChangeSets = new Set<string>();
+  /** v3.0.0 tool accounting and cumulative failure tracking (in-memory, per session). */
+  private readonly toolDispatches = new Map<string, number>();
+  private readonly toolRefusals = new Map<string, number>();
+  private readonly consecutiveFailures = new Map<string, number>();
+  private readonly patchBytesAccumulated = new Map<string, number>();
   private sequence = 0;
 
   constructor(private readonly deps: OrchestratorDependencies) {
@@ -712,17 +718,104 @@ export class AgentOrchestrator implements IAgentController {
   }
 
   /**
-   * Shared execution-budget gate (v2.5.7): the same provider-request and
-   * duration budgets the chat-agent engine enforces. Returns the breach
-   * message when a limit is exhausted; undefined when there is budget left.
+   * Shared execution-budget gate (v2.5.7, per-task duration in v3.0.0):
+   * provider-request budget is session-wide; the duration budget is
+   * measured from the task's first start when a task id is supplied,
+   * otherwise from session creation (planning). Returns a breach message
+   * when a limit is exhausted.
    */
-  private executionBudgetBreach(current: { providerCalls: number; createdAt: string }): string | undefined {
+  private incrementCounter(map: Map<string, number>, key: string): void {
+    map.set(key, (map.get(key) ?? 0) + 1);
+  }
+
+  private toolAccountingFor(sessionId: string): { dispatched: number; refused: number } {
+    return {
+      dispatched: this.toolDispatches.get(sessionId) ?? 0,
+      refused: this.toolRefusals.get(sessionId) ?? 0,
+    };
+  }
+
+  private resetSessionAccounting(sessionId: string): void {
+    this.toolDispatches.delete(sessionId);
+    this.toolRefusals.delete(sessionId);
+    this.consecutiveFailures.delete(sessionId);
+    this.patchBytesAccumulated.delete(sessionId);
+  }
+
+  /**
+   * v3.0.0 (Gap 3.4): shared failure accounting. Only a passing validation
+   * (or an apply that validated clean end-to-end) breaks the sequence.
+   */
+  private trackExecutionSuccess(sessionId: string): void {
+    this.consecutiveFailures.delete(sessionId);
+  }
+
+  private trackExecutionFailure(sessionId: string): number {
+    const next = (this.consecutiveFailures.get(sessionId) ?? 0) + 1;
+    this.consecutiveFailures.set(sessionId, next);
+    return next;
+  }
+
+  private consecutiveFailureLimit(): number {
+    return this.deps.executionLimits?.()?.maxConsecutiveFailures ?? AGENT_LIMIT_DEFAULTS.maxConsecutiveFailures;
+  }
+
+  private addPatchBytes(sessionId: string, bytes: number): void {
+    this.patchBytesAccumulated.set(sessionId, (this.patchBytesAccumulated.get(sessionId) ?? 0) + bytes);
+  }
+
+  /** v3.0.0 (Gap 3.3): per-set and cumulative patch protection. */
+  private enforceChangeSetBudgets(
+    sessionId: string,
+    changes: readonly { path?: unknown; fromPath?: unknown; kind?: unknown; content?: unknown }[],
+  ): string | undefined {
+    const limits = this.deps.executionLimits?.();
+    if (limits === undefined) {
+      return undefined;
+    }
+    const check = checkChangeSetBudgets(changes, limits);
+    if (!check.ok) {
+      return `The proposed change set exceeds the agentic execution budget: ${check.detail}. Narrow the change or raise the agentic limits (quantsmind.agenticEngine.*).`;
+    }
+    const bytes = patchBytesOf(changes);
+    const cumulative = this.cumulativePatchBreach(this.patchBytesAccumulated.get(sessionId) ?? 0, bytes);
+    if (cumulative !== undefined) {
+      return cumulative;
+    }
+    this.addPatchBytes(sessionId, bytes);
+    return undefined;
+  }
+
+  private cumulativePatchBreach(currentBytes: number, addition: number): string | undefined {
+    const budget = this.deps.executionLimits?.()?.maxPatchSizeChars;
+    if (budget === undefined) {
+      return undefined;
+    }
+    if (currentBytes + addition > budget) {
+      return `The agentic engine cumulative patch budget of ${budget} characters of proposed change content was reached (quantsmind.agenticEngine.maxPatchSizeChars).`;
+    }
+    return undefined;
+  }
+
+  private executionBudgetBreach(current: { providerCalls: number; createdAt: string; executions: readonly TaskExecution[] }, taskId?: string): string | undefined {
     const limits = this.deps.executionLimits?.();
     if (limits === undefined) {
       return undefined;
     }
     if (current.providerCalls >= limits.maxProviderRequests) {
       return `The agentic engine provider budget of ${limits.maxProviderRequests} provider request(s) was reached (quantsmind.agenticEngine.maxProviderRequests).`;
+    }
+    if (taskId !== undefined) {
+      const execution = current.executions.find((candidate) => candidate.taskId === taskId);
+      const anchor = execution?.startedAt;
+      if (anchor !== undefined) {
+        const elapsed = Date.now() - Date.parse(anchor);
+        if (Number.isFinite(elapsed) && elapsed >= limits.maxDurationMs) {
+          return `The agentic engine per-task duration limit of ${limits.maxDurationMs} ms was reached for this task (quantsmind.agenticEngine.maxDurationSeconds).`;
+        }
+        return undefined;
+      }
+      return undefined;
     }
     const createdAt = Date.parse(current.createdAt);
     if (Number.isFinite(createdAt) && Date.now() - createdAt >= limits.maxDurationMs) {
@@ -1289,12 +1382,16 @@ export class AgentOrchestrator implements IAgentController {
       current,
       updateTask(current.tasks, taskId, { status: 'running', attempts: attempt, error: undefined }),
     );
+    // v3.0.0 (Gap 3.1): a task keeps its original start timestamp across
+    // resume/retry/repair; only a task that never ran before gets a fresh one.
+    const priorExecution = current.executions.find((execution) => execution.taskId === taskId);
+    const startedAt = priorExecution?.startedAt ?? this.timestamp();
     current = {
       ...current,
       executions: upsertExecution(current.executions, taskId, {
         status: 'running',
         attempts: attempt,
-        startedAt: this.timestamp(),
+        startedAt,
         finishedAt: undefined,
         appliedFiles: [],
         changeSetId: undefined,
@@ -1331,7 +1428,7 @@ export class AgentOrchestrator implements IAgentController {
 
     current = this.require(sessionId);
     const agentSettings = this.deps.agentSettings();
-    const breach = this.executionBudgetBreach(current);
+    const breach = this.executionBudgetBreach(current, taskId);
     if (breach !== undefined) {
       return this.failSession(sessionId, breach);
     }
@@ -1418,16 +1515,11 @@ export class AgentOrchestrator implements IAgentController {
     if (prepared.errors.length > 0) {
       return this.failSession(sessionId, prepared.errors.join(' '));
     }
-    // v2.5.7: shared execution budget applies BEFORE an approvable artifact is proposed.
-    const budgetLimits = this.deps.executionLimits?.();
-    if (budgetLimits !== undefined) {
-      const budgetCheck = checkChangeSetBudgets(prepared.plan.changes, budgetLimits);
-      if (!budgetCheck.ok) {
-        return this.failSession(
-          sessionId,
-          `The proposed change set exceeds the agentic execution budget: ${budgetCheck.detail}. Narrow the change or raise the agentic limits (quantsmind.agenticEngine.*).`,
-        );
-      }
+    // v2.5.7: shared execution budget applies BEFORE an approvable artifact is proposed;
+    // v3.0.0: cumulative patch accounting across change sets and repairs.
+    const breachLimits = this.enforceChangeSetBudgets(sessionId, prepared.plan.changes);
+    if (breachLimits !== undefined) {
+      return this.failSession(sessionId, breachLimits);
     }
     if (this.taskCancelled(sessionId, taskId)) {
       return this.viewOf(sessionId);
@@ -1715,6 +1807,7 @@ export class AgentOrchestrator implements IAgentController {
         return this.failTask(sessionId, changeSet.taskId, 'A change set is already being applied for this session.');
       }
       this.applyingChangeSets.add(sessionId);
+      this.incrementCounter(this.toolDispatches, sessionId);
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -1914,6 +2007,7 @@ export class AgentOrchestrator implements IAgentController {
       const settings = this.deps.commandSettings();
       const policy = evaluateCommand(command, settings.allowlist);
       if (!policy.allowed || policy.normalized === undefined) {
+        this.incrementCounter(this.toolRefusals, sessionId);
         let denied = this.require(sessionId);
         const diagnostic: Diagnostic = {
           id: `diag-runtime-${denied.diagnostics.length + 1}`,
@@ -2030,6 +2124,7 @@ export class AgentOrchestrator implements IAgentController {
     return this.runBusy(sessionId, async () => {
       const policy = evaluateCommand(approvedCommand, this.deps.commandSettings().allowlist);
       if (!policy.allowed || policy.normalized !== approvedCommand) {
+        this.incrementCounter(this.toolRefusals, sessionId);
         const reason = policy.reason ?? 'The command no longer matches the approved request.';
         let denied = this.require(sessionId);
         const diagnostic: Diagnostic = {
@@ -2065,6 +2160,7 @@ export class AgentOrchestrator implements IAgentController {
       );
       await this.record(current);
 
+      this.incrementCounter(this.toolDispatches, sessionId);
       const startedAt = this.timestamp();
       const controller = new AbortController();
       this.aborters.set(sessionId, controller);
@@ -2112,6 +2208,19 @@ export class AgentOrchestrator implements IAgentController {
         output: clampText(result.output, MAX_VALIDATION_OUTPUT_CHARS),
         error: result.error,
       };
+      /** v3.0.0 (Gap 3.4): validation outcome feeds the shared failure sequence. */
+      if (evidence.passed) {
+        this.trackExecutionSuccess(sessionId);
+      } else if (!result.cancelled) {
+        const failures = this.trackExecutionFailure(sessionId);
+        const limit = this.consecutiveFailureLimit();
+        if (failures >= limit) {
+          return this.failSession(
+            sessionId,
+            `The agentic engine consecutive-failure budget of ${limit} validation/command failure(s) was reached; the session stopped rather than repair forever.`,
+          );
+        }
+      }
       const testedSession = this.require(sessionId);
       const tested = testedSession.executions.find((execution) => execution.taskId === task.id);
       const binding = bindValidation(
@@ -2258,7 +2367,7 @@ export class AgentOrchestrator implements IAgentController {
       if (run === undefined) {
         return this.failSession(sessionId, 'No validation evidence is available for the failed task.');
       }
-      const breach = this.executionBudgetBreach(current);
+      const breach = this.executionBudgetBreach(current, task.id);
       if (breach !== undefined) {
         return this.failSession(sessionId, breach);
       }
@@ -2341,6 +2450,11 @@ export class AgentOrchestrator implements IAgentController {
       }
       if (prepared.errors.length > 0) {
         return this.failSession(sessionId, prepared.errors.join(' '));
+      }
+      // v3.0.0 (Gap 3.3): the repair envelope is budget-checked like the initial one.
+      const repairBreach = this.enforceChangeSetBudgets(sessionId, prepared.plan.changes);
+      if (repairBreach !== undefined) {
+        return this.failSession(sessionId, repairBreach);
       }
 
       const diagnosis =
@@ -2461,6 +2575,7 @@ export class AgentOrchestrator implements IAgentController {
 
       const historyTaskId = this.changeTaskId(sessionId, proposal.taskId);
       const applyId = this.nextId('apply');
+      this.incrementCounter(this.toolDispatches, sessionId);
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -2949,8 +3064,10 @@ export class AgentOrchestrator implements IAgentController {
     const edited = scope === undefined
       ? withLifecycleNote
       : this.withEvent(withLifecycleNote, 'note', `Change scope: ${scope}`);
+    // v3.0.0 (Gap 3.2): report the actual tool accounting in the outcome.
+    const accounting = this.toolAccountingFor(edited.id);
     // v2.5.7: one typed, bounded outcome note for the timeline; additive, bounded.
-    const withOutcomeNote = this.withEvent(edited, 'note', renderOutcome(orchestratorSessionToOutcome(edited)));
+    const withOutcomeNote = this.withEvent(edited, 'note', renderOutcome(orchestratorSessionToOutcome(edited, accounting)));
     const report = buildCompletionReport(withOutcomeNote, at);
     const event: SessionEvent = {
       id: this.nextId('event'),
@@ -2965,6 +3082,7 @@ export class AgentOrchestrator implements IAgentController {
       report,
       events: [...withOutcomeNote.events, event].slice(-MAX_SESSION_EVENTS),
     };
+    this.resetSessionAccounting(withOutcomeNote.id);
     return this.record(withReport);
   }
 

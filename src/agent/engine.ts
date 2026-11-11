@@ -92,6 +92,8 @@ export interface AgentEngineResult {
   readonly iterations: number;
   readonly providerRequests: number;
   readonly toolCalls: number;
+  /** Calls refused before dispatch (authorization gate) — subset of toolCalls. */
+  readonly refusedToolCalls: number;
   readonly revisions: number;
   /** Distinct files targeted by mutating tools. */
   readonly filesChanged: readonly string[];
@@ -227,6 +229,7 @@ export async function runAgentEngine(options: AgentEngineOptions): Promise<Agent
   let revisions = 0;
   let patchBytes = 0;
   let state: AgentEngineState = 'created';
+  let refusedToolCalls = 0;
   const emit = (event: AgentRunEvent): void => options.onEvent?.(event);
 
   const transition = (to: AgentEngineState): void => {
@@ -271,6 +274,7 @@ export async function runAgentEngine(options: AgentEngineOptions): Promise<Agent
       iterations,
       providerRequests,
       toolCalls: toolCallCount,
+      refusedToolCalls,
       revisions,
       filesChanged: [...filesChanged].slice(0, limits.maxChangedFiles),
       limitReached,
@@ -413,6 +417,7 @@ export async function runAgentEngine(options: AgentEngineOptions): Promise<Agent
         if (!authorized) {
           totalFailures += 1;
           consecutiveFailures += 1;
+          refusedToolCalls += 1;
           const denied: AgentToolResult = {
             ok: false,
             tool: call.name,

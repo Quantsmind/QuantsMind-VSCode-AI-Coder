@@ -177,6 +177,7 @@ suite('shared execution contract', () => {
       recoveryRequired: true,
       failureSummary: 'x'.repeat(500),
       limitReached: 'duration',
+      refusedToolCalls: 0,
     };
     const line = renderOutcome(outcome);
 

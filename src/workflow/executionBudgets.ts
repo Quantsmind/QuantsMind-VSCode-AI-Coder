@@ -16,6 +16,19 @@ export type ChangeSetBudgetResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: 'changed-files' | 'patch-size'; readonly detail: string; readonly files: number; readonly patchBytes: number };
 
+/** Total content bytes of a change set (as used by the cumulative budget). */
+export function patchBytesOf(
+  changes: readonly { content?: unknown }[],
+): number {
+  let bytes = 0;
+  for (const change of changes) {
+    if (typeof change.content === 'string') {
+      bytes += change.content.length;
+    }
+  }
+  return bytes;
+}
+
 function kindOf(change: { kind?: unknown }): string {
   return typeof change.kind === 'string' ? change.kind : 'unknown';
 }

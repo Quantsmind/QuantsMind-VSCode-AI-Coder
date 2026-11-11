@@ -232,7 +232,7 @@ export class McpClient {
       const result = await this.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: '2.5.1' },
+        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: '3.0.0' },
       });
       this.verifyInitializeResult(result);
     } catch (error) {

@@ -34,6 +34,8 @@ export interface EngineeringOutcome {
   readonly iterations: number;
   readonly providerRequests: number;
   readonly toolCalls: number;
+  /** Calls refused before dispatch (authorization gate). */
+  readonly refusedToolCalls: number;
   readonly revisions: number;
   readonly filesChanged: readonly string[];
   readonly validationOutcome?: string;
@@ -87,6 +89,7 @@ export function engineResultToOutcome(result: AgentEngineResult): EngineeringOut
     iterations: result.iterations,
     providerRequests: result.providerRequests,
     toolCalls: result.toolCalls,
+    refusedToolCalls: result.refusedToolCalls,
     revisions: result.revisions,
     filesChanged: [...result.filesChanged],
     limitReached: result.limitReached,
@@ -103,7 +106,10 @@ function firstLine(text: string | undefined, max = 200): string | undefined {
 }
 
 /** Maps an orchestrator session to the shared contract. */
-export function orchestratorSessionToOutcome(session: AgentSession): EngineeringOutcome {
+export function orchestratorSessionToOutcome(
+  session: AgentSession,
+  toolAccounting?: { readonly dispatched: number; readonly refused: number },
+): EngineeringOutcome {
   const total = session.tasks.length;
   const completed = session.tasks.filter((task) => task.status === 'completed').length;
   const filesChanged = [...new Set(
@@ -114,6 +120,7 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
   const validationOutcome = session.validationRuns.length > 0
     ? session.validationRuns[session.validationRuns.length - 1]?.outcome
     : undefined;
+  const accounting = toolAccounting ?? { dispatched: 0, refused: 0 };
 
   if (session.state === 'completed') {
     const allDone = total === 0 || completed === total;
@@ -123,7 +130,8 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
       evaluation: allDone ? 'complete' : 'partial',
       iterations: session.tasks.reduce((sum, task) => sum + task.attempts, 0),
       providerRequests: session.providerCalls,
-      toolCalls: 0,
+      toolCalls: accounting.dispatched,
+      refusedToolCalls: accounting.refused,
       revisions: session.tasks.reduce((sum, task) => sum + task.repairAttempts, 0),
       filesChanged,
       ...(validationOutcome !== undefined ? { validationOutcome } : {}),
@@ -144,7 +152,8 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
       evaluation: 'inconclusive',
       iterations: session.tasks.reduce((sum, task) => sum + task.attempts, 0),
       providerRequests: session.providerCalls,
-      toolCalls: 0,
+      toolCalls: accounting.dispatched,
+      refusedToolCalls: accounting.refused,
       revisions: session.tasks.reduce((sum, task) => sum + task.repairAttempts, 0),
       filesChanged,
       ...(validationOutcome !== undefined ? { validationOutcome } : {}),
@@ -160,7 +169,8 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
       evaluation: 'inconclusive',
       iterations: session.tasks.reduce((sum, task) => sum + task.attempts, 0),
       providerRequests: session.providerCalls,
-      toolCalls: 0,
+      toolCalls: accounting.dispatched,
+      refusedToolCalls: accounting.refused,
       revisions: session.tasks.reduce((sum, task) => sum + task.repairAttempts, 0),
       filesChanged,
       ...(validationOutcome !== undefined ? { validationOutcome } : {}),
@@ -175,7 +185,8 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
     evaluation: 'failed',
     iterations: session.tasks.reduce((sum, task) => sum + task.attempts, 0),
     providerRequests: session.providerCalls,
-    toolCalls: 0,
+    toolCalls: accounting.dispatched,
+    refusedToolCalls: accounting.refused,
     revisions: session.tasks.reduce((sum, task) => sum + task.repairAttempts, 0),
     filesChanged,
     ...(validationOutcome !== undefined ? { validationOutcome } : {}),
@@ -188,7 +199,7 @@ export function orchestratorSessionToOutcome(session: AgentSession): Engineering
 export function renderOutcome(outcome: EngineeringOutcome): string {
   const parts: string[] = [`Outcome: ${outcome.status} (${outcome.evaluation})`];
   parts.push(`${outcome.filesChanged.length} file(s) changed`);
-  parts.push(`${outcome.providerRequests} provider call(s)`);
+  parts.push(`${outcome.providerRequests} provider call(s), ${outcome.toolCalls + outcome.refusedToolCalls} tool call(s) (${outcome.refusedToolCalls} refused)`);
   if (outcome.limitReached !== undefined) {
     parts.push(`limit: ${outcome.limitReached}`);
   }
@@ -198,5 +209,5 @@ export function renderOutcome(outcome: EngineeringOutcome): string {
   if (outcome.failureSummary !== undefined) {
     parts.push(`note: ${outcome.failureSummary}`);
   }
-  return parts.join(' · ').slice(0, 500);
+  return parts.join(' Ã‚Â· ').slice(0, 500);
 }
