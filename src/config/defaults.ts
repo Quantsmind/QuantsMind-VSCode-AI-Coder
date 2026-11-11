@@ -30,6 +30,7 @@ export const DEFAULT_COMMAND_OUTPUT_MAX_CHARS = 120_000;
 // actual clamps enforced at call time).
 export const DEFAULT_MCP_TIMEOUT_MS = 10_000;
 export const DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS = 20_000;
+export const DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED = true;
 export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = Object.freeze([
   'npm run compile',
   'npm run lint',

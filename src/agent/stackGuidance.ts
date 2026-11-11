@@ -1,39 +1,44 @@
 /**
  * Builds a bounded, language-aware guidance block for the agent system
- * prompt from project-intelligence evidence. Only languages and frameworks
- * actually detected in the workspace are mentioned — nothing is invented.
+ * prompt from the workspace language inventory. Only languages actually
+ * detected in the workspace are mentioned — nothing is invented. Unknown
+ * languages degrade to generic behavior; detection quality is surfaced.
  */
+import type { LanguageInventory } from '../languages/inventory';
+import { buildLanguageGuidance } from '../languages/prompts';
+
 export interface StackGuidanceInput {
-  readonly languages?: readonly { readonly name: string; readonly files: number }[];
+  /** Pre-built workspace language inventory (bounded, deterministic). */
+  readonly inventory: LanguageInventory;
   readonly packageManager?: string;
   readonly hasKarkain?: boolean;
+  /** Active document's language id (VS Code languageId), when available. */
+  readonly activeLanguageId?: string;
 }
 
-const MAX_LANGUAGE_NAMES = 8;
-const MAX_CHARS = 1200;
+const MAX_CHARS = 2_400;
+const KARKAIN_SECTION =
+  'This is a Karkain (.kark) project: use get_karkain_project and get_karkain_context before editing; ' +
+  'respect the module system, import relationships and compiler-verified grammar reported there; ' +
+  'module imports (including std.*) and cross-file type/enum usage must stay consistent with the fixture-verified rules ' +
+  'already present in this repository. The real Karkain toolchain may not be available on this machine.';
 
 export function buildStackGuidance(input: StackGuidanceInput): string {
   const sections: string[] = [];
 
-  const languages = (input.languages ?? []).slice(0, MAX_LANGUAGE_NAMES);
-  if (languages.length > 0) {
-    sections.push(`Detected languages: ${languages.map((language) => `${language.name} (${language.files})`).join(', ')}.`);
-  }
-  if (input.packageManager !== undefined && input.packageManager.length > 0) {
-    sections.push(`Package manager: ${input.packageManager}.`);
+  const guidance = buildLanguageGuidance(input.inventory, {
+    ...(input.packageManager !== undefined ? { packageManager: input.packageManager } : {}),
+    ...(input.activeLanguageId !== undefined ? { activeLanguageId: input.activeLanguageId } : {}),
+  });
+  if (guidance.length > 0) {
+    sections.push(guidance);
   }
   if (input.hasKarkain === true) {
-    sections.push(
-      'This is a Karkain (.kark) project: use get_karkain_project and get_karkain_context before editing; ' +
-        'respect the module system, import relationships and compiler-verified grammar reported there; ' +
-        'module imports (including std.*) and cross-file type/enum usage must stay consistent with the fixture-verified rules ' +
-        'already present in this repository. The real Karkain toolchain may not be available on this machine.',
-    );
+    sections.push(KARKAIN_SECTION);
   }
 
   if (sections.length === 0) {
     return '';
   }
-  const guidance = `\n\nProject stack (local evidence only):\n- ${sections.join('\n- ')}`;
-  return guidance.slice(0, MAX_CHARS);
+  return `\n\n${sections.join('\n')}`.slice(0, MAX_CHARS);
 }

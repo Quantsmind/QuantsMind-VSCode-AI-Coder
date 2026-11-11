@@ -11,6 +11,7 @@ import {
   DEFAULT_COMMAND_ALLOWLIST,
   DEFAULT_COMMAND_OUTPUT_MAX_CHARS,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED,
   DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
   DEFAULT_MCP_TIMEOUT_MS,
   DEFAULT_EXCLUDE_GLOBS,
@@ -515,5 +516,22 @@ export function resolveContextSettings(raw: RawContextSettings): ResolvedContext
       LIMITS.maxFiles.max,
       true,
     ),
+  };
+}
+
+export interface RawLanguageIntelligenceSettings {
+  readonly enabled?: unknown;
+}
+
+export interface ResolvedLanguageIntelligenceSettings {
+  readonly enabled: boolean;
+}
+
+/** Language-intelligence guidance in prompts; on by default, deterministic and bounded. */
+export function resolveLanguageIntelligenceSettings(
+  raw: RawLanguageIntelligenceSettings,
+): ResolvedLanguageIntelligenceSettings {
+  return {
+    enabled: booleanValue(raw.enabled, DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED),
   };
 }

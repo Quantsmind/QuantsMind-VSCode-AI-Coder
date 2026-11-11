@@ -347,12 +347,19 @@
           "order": 8,
           "markdownDescription": "Allow plain HTTP for loopback endpoints such as `http://127.0.0.1:11434/v1`. Plain HTTP to remote hosts is always rejected. Loopback traffic is unencrypted and any local process can answer the port, so each such request is logged at warn level in the QuantsMind output channel. Set to `false` to require HTTPS everywhere."
         },
+        "quantsmind.languageIntelligence.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "order": 10,
+          "markdownDescription": "Enables language-adaptive prompts and language-aware context scoring. When enabled (default), the workspace language inventory (bounded, deterministic, privacy-aware) is used to focus the coding agent and chat guidance on the languages actually present and to surface cross-language relationships in context selection. Disabling restores the generic prompts and path-only context ranking. Nothing is sent anywhere; all analysis happens locally and bounded."
+        },
         "quantsmind.mcp.servers": {
           "type": "array",
           "default": [],
           "scope": "application",
           "order": 9,
-          "markdownDescription": "MCP (Model Context Protocol) servers the agent may use. Each entry names a local stdio process (`command`) or a remote Streamable HTTP endpoint (`url`, HTTPS required except loopback development). Tool calls always require explicit approval and tool output is treated as untrusted data. Servers send and receive newline-delimited JSON-RPC over stdio (stdio transport) or JSON/SSE framed JSON-RPC 2.0 over HTTP POST (streamable-http transport). Both per-request timeout (`timeoutMs`, default 10,000 ms, 250–300,000 ms) and tool-output cap (`maxToolOutputChars`, default 20,000, 1,000–200,000) are configurable per server. Existing configurations without these properties keep the defaults.",
+          "markdownDescription": "MCP (Model Context Protocol) servers the agent may use. Each entry names a local stdio process (`command`) or a remote Streamable HTTP endpoint (`url`, HTTPS required except loopback development). Tool calls always require explicit approval and tool output is treated as untrusted data. Servers send and receive newline-delimited JSON-RPC over stdio (stdio transport) or JSON/SSE framed JSON-RPC 2.0 over HTTP POST (streamable-http transport). Both per-request timeout (`timeoutMs`, default 10,000 ms, 250Ã¢â‚¬â€œ300,000 ms) and tool-output cap (`maxToolOutputChars`, default 20,000, 1,000Ã¢â‚¬â€œ200,000) are configurable per server. Existing configurations without these properties keep the defaults.",
           "items": {
             "type": "object",
             "required": [
@@ -403,14 +410,14 @@
                 "default": 10000,
                 "minimum": 250,
                 "maximum": 300000,
-                "markdownDescription": "Per-request timeout in milliseconds (10,000 default; 250–300,000 clamp). Applies to both initialize and tool-call requests. Client-side clamping enforces the same bounds."
+                "markdownDescription": "Per-request timeout in milliseconds (10,000 default; 250Ã¢â‚¬â€œ300,000 clamp). Applies to both initialize and tool-call requests. Client-side clamping enforces the same bounds."
               },
               "maxToolOutputChars": {
                 "type": "number",
                 "default": 20000,
                 "minimum": 1000,
                 "maximum": 200000,
-                "markdownDescription": "Maximum characters of MCP tool output returned to the agent (20,000 default; 1,000–200,000 clamp). Output stays wrapped in the untrusted-data delimiters regardless of this cap."
+                "markdownDescription": "Maximum characters of MCP tool output returned to the agent (20,000 default; 1,000Ã¢â‚¬â€œ200,000 clamp). Output stays wrapped in the untrusted-data delimiters regardless of this cap."
               },
               "transport": {
                 "type": "string",
@@ -425,7 +432,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 2048,
-                "markdownDescription": "MCP Streamable HTTP endpoint (`streamable-http` transport only). `https:` is required for production remote connections; `http:` is permitted only for loopback development/test endpoints (`localhost`, `127.0.0.1`, `::1`). Userinfo, query strings and fragments are rejected — credentials never belong in the URL; store them with `QuantsMind: Manage MCP Servers` (SecretStorage) instead. Certificate verification is never disabled."
+                "markdownDescription": "MCP Streamable HTTP endpoint (`streamable-http` transport only). `https:` is required for production remote connections; `http:` is permitted only for loopback development/test endpoints (`localhost`, `127.0.0.1`, `::1`). Userinfo, query strings and fragments are rejected Ã¢â‚¬â€ credentials never belong in the URL; store them with `QuantsMind: Manage MCP Servers` (SecretStorage) instead. Certificate verification is never disabled."
               },
               "auth": {
                 "type": "string",

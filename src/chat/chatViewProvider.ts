@@ -48,6 +48,7 @@ import {
   isAgentMode,
   type ChatMode,
 } from './prompts';
+import { buildChatLanguageGuidance } from '../languages/prompts';
 import {
   ConversationStore,
   type Conversation,
@@ -2415,11 +2416,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.ensureConversation();
     this.syncHistoryBeforeSend();
 
+    const activeLanguageId = vscode.window.activeTextEditor?.document.languageId;
+    let languageGuidance: string | undefined;
+    if (this.deps.settings.getLanguageIntelligenceSettings().enabled) {
+      const guidance = buildChatLanguageGuidance(activeLanguageId);
+      if (guidance.length > 0) {
+        languageGuidance = guidance;
+      }
+    }
     const messages = buildMessages({
       mode,
       question: prompt,
       attachments: built.items,
       history: this.session.snapshot(),
+      ...(languageGuidance !== undefined ? { languageGuidance } : {}),
     });
     const userContent = messages[messages.length - 1]?.content ?? prompt;
     this.session.addUser(userContent);

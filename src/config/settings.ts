@@ -5,11 +5,13 @@ import {
   resolveCommandSettings,
   resolveContextSettings,
   resolveMcpSettings,
+  resolveLanguageIntelligenceSettings,
   resolveProviderSettings,
   resolveWorkspaceSettings,
   type ResolvedAgentSettings,
   type ResolvedCommandSettings,
   type ResolvedContextSettings,
+  type ResolvedLanguageIntelligenceSettings,
   type ResolvedMcpSettings,
   type ResolvedProviderSettings,
   type ResolvedWorkspaceSettings,
@@ -75,6 +77,13 @@ export class SettingsService {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     return resolveMcpSettings({
       servers: config.get<unknown>('mcp.servers'),
+    });
+  }
+
+  getLanguageIntelligenceSettings(): ResolvedLanguageIntelligenceSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveLanguageIntelligenceSettings({
+      enabled: config.get<unknown>('languageIntelligence.enabled'),
     });
   }
 

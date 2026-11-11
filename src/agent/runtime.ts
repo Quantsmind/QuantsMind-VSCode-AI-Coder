@@ -21,6 +21,7 @@ import type { AgentSessionView } from './models';
 import { AgentToolRegistry, runCodingAgent, type AgentModelClient } from './codingAgent';
 import { DEFAULT_SYSTEM_PROMPT } from './codingAgent';
 import { buildStackGuidance } from './stackGuidance';
+import { cachedLanguageInventory } from '../languages/inventory';
 import { describeCapabilities } from '../providers/capabilities';
 import { WorkspaceTools, type AgentFileSystem } from './workspaceTools';
 import { ChangeTools } from './changeTools';
@@ -466,16 +467,31 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
   };
   const buildStackGuidanceForTask = async (): Promise<string> => {
     try {
-      const inspection = await intelligence.inspect({
-        isCancellationRequested: false,
-        onCancellationRequested: () => ({ dispose() {} }),
-      });
+      if (!deps.settings.getLanguageIntelligenceSettings().enabled) {
+        return '';
+      }
       const entries = await deps.workspaceIndex.getEntries();
+      const inventory = cachedLanguageInventory(entries);
       const hasKarkain = entries.some((entry) => String(entry.path ?? '').toLowerCase().endsWith('.kark'));
+      // Package-manager detection is best-effort; a failure must not drop guidance.
+      let packageManager: string | undefined;
+      try {
+        const inspection = await intelligence.inspect({
+          isCancellationRequested: false,
+          onCancellationRequested: () => ({ dispose() {} }),
+        });
+        packageManager = typeof inspection.packageManager === 'string' && inspection.packageManager.length > 0
+          ? inspection.packageManager
+          : undefined;
+      } catch {
+        packageManager = undefined;
+      }
+      const activeLanguageId = vscode.window.activeTextEditor?.document.languageId;
       return buildStackGuidance({
-        languages: inspection.languages.map((language) => ({ name: language.name, files: language.files })),
-        packageManager: typeof inspection.packageManager === 'string' && inspection.packageManager.length > 0 ? inspection.packageManager : undefined,
+        inventory,
+        ...(packageManager !== undefined ? { packageManager } : {}),
         hasKarkain,
+        ...(activeLanguageId !== undefined ? { activeLanguageId } : {}),
       });
     } catch {
       // Guidance is best-effort; the default prompt is fully usable without it.

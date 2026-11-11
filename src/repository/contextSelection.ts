@@ -5,10 +5,18 @@ import {
   type DependencyGraph,
 } from './graph';
 import type { Confidence, FileAnalysis } from './symbols';
+import type { LanguageRelation } from '../languages/relationships';
 
 export interface ContextSelectionOptions {
   readonly maxFiles: number;
   readonly maxChars: number;
+  /**
+   * Cross-language relationships computed from the same entries/analyses.
+   * When provided, candidates adjacent to high-scoring files across languages
+   * gain bounded score and an explicit reason; they never outrank direct
+   * path or symbol matches.
+   */
+  readonly relations?: readonly LanguageRelation[];
 }
 
 export interface SelectedContextFile {
@@ -22,7 +30,8 @@ export interface SelectedContextFile {
     | 'dependency'
     | 'test'
     | 'entry-point'
-    | 'public-api';
+    | 'public-api'
+    | 'cross-language';
   readonly confidence: Confidence;
 }
 
@@ -209,6 +218,20 @@ export function selectRepositoryContext(
         'dependent',
         edge.confidence,
       );
+    }
+  }
+
+  const relations = options.relations ?? [];
+  if (relations.length > 0) {
+    for (const candidate of ranked.slice(0, Math.min(6, ranked.length))) {
+      for (const relation of relations) {
+        if (relation.from === candidate.path || relation.to === candidate.path) {
+          const other = relation.from === candidate.path ? relation.to : relation.from;
+          // Cross-language neighbors are related, not primary: +3 keeps them
+          // below a direct symbol/path match while making them selectable.
+          add(other, 3, relation.reason, 'cross-language', relation.confidence);
+        }
+      }
     }
   }
 
