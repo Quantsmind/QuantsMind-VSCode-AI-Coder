@@ -37,6 +37,7 @@ import { PaidProviderConsent, PaidConsentError } from '../providers/paidConsent'
 import { getProviderProfile } from '../providers/profiles';
 import { TaskContextStore, contextTools } from './context';
 import { McpTools } from '../mcp/mcpTools';
+import { McpServerManager } from '../mcp/serverManager';
 import type { AgentTool } from './codingAgent';
 
 export interface AgentRuntimeDependencies {
@@ -61,6 +62,7 @@ export interface AgentRuntime {
   readonly checkpointService: CheckpointService;
   readonly usageLedger: UsageLedger;
   readonly taskContext: TaskContextStore;
+  readonly mcpServerManager: McpServerManager;
   readonly toolRegistry: AgentToolRegistry;
   readonly codingAgent: {
     run(task: string, options?: {
@@ -336,6 +338,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
   for (const tool of gitTools.toAgentTools()) {
     toolRegistry.register(tool);
   }
+  const mcpServerManager = new McpServerManager();
   const mcpTools = new McpTools({
     servers: () =>
       deps.settings
@@ -343,6 +346,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
         .servers.filter((entry) => entry.enabled)
         .map((entry) => ({ name: entry.name, command: entry.command, args: entry.args })),
     trusted,
+    manager: mcpServerManager,
     approval: async (request) => {
       const answer = await vscode.window.showWarningMessage(
         request.detail,
@@ -353,6 +357,22 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
         'Apply',
       );
       return answer === 'Apply';
+    },
+    launchApproval: async (request) => {
+      const answer = await vscode.window.showWarningMessage(
+        `Launch MCP server "${request.name}"?`,
+        {
+          modal: true,
+          detail:
+            `  Command: ${request.command}\n` +
+            `  Arguments: ${request.args.join(' ') || '(none)'}\n` +
+            `  Origin: ${request.launchOrigin}\n\n` +
+            'This starts an external process chosen by your configuration. ' +
+            'It is not sandboxed. Only launch servers you trust.',
+        },
+        'Launch server',
+      );
+      return answer === 'Launch server';
     },
   });
   for (const tool of mcpTools.toAgentTools()) {
@@ -515,6 +535,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
     checkpointService,
     usageLedger,
     taskContext,
+    mcpServerManager,
     toolRegistry,
     codingAgent,
     subscribe(listener) {

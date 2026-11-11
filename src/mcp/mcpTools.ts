@@ -1,7 +1,8 @@
 import type { LiveValue } from '../agent/commandTools';
 import { resolveLive } from '../agent/commandTools';
-import type { AgentTool, AgentToolResult } from '../agent/codingAgent';
-import { McpClient, McpError, type McpServerConfig } from './client';
+import type { AgentTool, AgentToolResult, AgentToolExecutionContext } from '../agent/codingAgent';
+import { McpServerManager, type ApproveMcpLaunchRequest } from './serverManager';
+import type { McpServerConfig } from './client';
 
 export interface McpToolApprovalRequest {
   readonly operation: string;
@@ -11,8 +12,9 @@ export interface McpToolApprovalRequest {
 export interface McpToolEnvironment {
   readonly servers: LiveValue<readonly McpServerConfig[]>;
   readonly trusted: LiveValue<boolean>;
+  readonly manager: McpServerManager;
   readonly approval: (request: McpToolApprovalRequest) => Promise<boolean>;
-  readonly timeoutMs?: LiveValue<number | undefined>;
+  readonly launchApproval?: (request: ApproveMcpLaunchRequest) => Promise<boolean>;
 }
 
 function fail(tool: string, error: string): AgentToolResult {
@@ -24,9 +26,9 @@ function ok(tool: string, output: string): AgentToolResult {
 }
 
 /**
- * Agent-facing MCP tools. Every call is consequential (it drives an external
- * process) so calls are approval-gated; tool output is marked untrusted and
- * delimited, and it is never interpreted as instructions.
+ * Agent-facing MCP tools. Launching a configured server requires explicit
+ * per-window approval; every tool call is consequential and approval-gated;
+ * tool output is delimited and marked untrusted.
  */
 export class McpTools {
   constructor(private readonly env: McpToolEnvironment) {}
@@ -34,7 +36,7 @@ export class McpTools {
   private resolveServers(): readonly McpServerConfig[] {
     const configs = resolveLive(this.env.servers);
     return Array.isArray(configs)
-      ? configs.filter((entry) => typeof entry?.name === 'string' && typeof entry?.command === 'string')
+      ? configs.filter((entry) => typeof entry?.name === 'string' && typeof entry?.command === 'string' && entry?.enabled !== false)
       : [];
   }
 
@@ -47,35 +49,67 @@ export class McpTools {
     return servers.find((entry) => entry.name === wanted);
   }
 
+  private async ensureLaunchApproved(server: McpServerConfig): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.env.manager.hasLaunchApproval(server.name)) {
+      return { ok: true };
+    }
+    const approval = this.env.launchApproval ?? (async () => {
+      const answer = await this.env.approval({
+        operation: 'launch MCP server',
+        detail:
+          `Launch MCP server "${server.name}"?\n` +
+          `  Command: ${server.command}\n` +
+          `  Arguments: ${(server.args ?? []).join(' ') || '(none)'}\n` +
+          'Launching starts an external process chosen by your configuration. ' +
+          'It is not sandboxed; only continue with servers you trust.',
+      });
+      return answer;
+    });
+    const approved = await approval({
+      name: server.name,
+      command: server.command,
+      args: server.args ?? [],
+      launchOrigin: 'Application setting quantsmind.mcp.servers',
+    });
+    if (!approved) {
+      return { ok: false, error: 'Launching this MCP server requires explicit approval and was not approved.' };
+    }
+    this.env.manager.grantLaunchApproval(server.name);
+    return { ok: true };
+  }
+
   async listTools(args: { server?: unknown }): Promise<AgentToolResult> {
     if (resolveLive(this.env.trusted) !== true) {
       return fail('mcp_list_tools', 'Workspace trust is required for MCP operations.');
     }
-    const target = args.server === undefined ? undefined : this.serverConfig(args.server);
-    if (args.server !== undefined && target === undefined) {
-      return fail('mcp_list_tools', `No enabled MCP server named "${String(args.server)}" is configured.`);
-    }
-    const servers = this.resolveServers().filter((entry) => target === undefined || entry.name === target.name);
+    const target = typeof args.server === 'string' && args.server.trim().length > 0 ? args.server.trim() : undefined;
+    const servers = this.resolveServers().filter((entry) => target === undefined || entry.name === target);
     if (servers.length === 0) {
-      return fail('mcp_list_tools', 'No MCP servers are configured. Add one in quantsmind.mcp.servers.');
+      return fail(
+        'mcp_list_tools',
+        target !== undefined
+          ? `No enabled MCP server named "${target}" is configured.`
+          : 'No MCP servers are configured. Add one in quantsmind.mcp.servers.',
+      );
     }
     const output: Record<string, unknown> = {};
     for (const server of servers) {
-      const client = new McpClient(server);
+      const approval = await this.ensureLaunchApproved(server);
+      if (!approval.ok) {
+        output[server.name] = { error: approval.error };
+        continue;
+      }
       try {
-        await client.connect();
-        const tools = await client.listTools();
+        const tools = await this.env.manager.listTools({ name: server.name, command: server.command, args: server.args ?? [] });
         output[server.name] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? '' }));
       } catch (error) {
-        output[server.name] = { error: error instanceof McpError ? error.message : 'Could not reach the MCP server.' };
-      } finally {
-        await client.close().catch(() => undefined);
+        output[server.name] = { error: error instanceof Error ? error.message : 'Could not reach the MCP server.' };
       }
     }
     return ok('mcp_list_tools', JSON.stringify({ servers: output }, null, 2));
   }
 
-  async callTool(args: { server?: unknown; tool?: unknown; arguments?: unknown }): Promise<AgentToolResult> {
+  async callTool(args: { server?: unknown; tool?: unknown; arguments?: unknown }, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
     if (resolveLive(this.env.trusted) !== true) {
       return fail('mcp_call', 'Workspace trust is required for MCP operations.');
     }
@@ -95,28 +129,42 @@ export class McpTools {
     if (typeof toolArgs !== 'object' || toolArgs === null || Array.isArray(toolArgs)) {
       return fail('mcp_call', 'arguments must be a JSON object.');
     }
+    // Check that the tool exists without invoking it.
+    let knownTools: readonly { readonly name: string; readonly description?: string }[];
+    try {
+      const approval = await this.ensureLaunchApproved(server);
+      if (!approval.ok) {
+        return fail('mcp_call', approval.error);
+      }
+      knownTools = await this.env.manager.listTools({ name: server.name, command: server.command, args: server.args ?? [] });
+    } catch (error) {
+      return fail('mcp_call', `Could not reach the MCP server "${serverName}": ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+    const known = knownTools.find((tool) => tool.name === toolName);
+    if (known === undefined) {
+      return fail('mcp_call', `The MCP server "${serverName}" does not expose a tool named "${toolName}".`);
+    }
     const preview = JSON.stringify(toolArgs).slice(0, 300);
     const approved = await this.env.approval({
       operation: 'call MCP tool',
-      detail: `Call MCP tool "${toolName}" on server "${serverName}" with arguments:\n${preview}\n\nThe tool output will be treated as untrusted data.`,
+      detail:
+        `Call MCP tool "${toolName}" on server "${serverName}"` +
+        (known.description !== undefined ? `\nDescription: ${known.description}` : '') +
+        `\nArguments:\n${preview}\n\n` +
+        'The tool output will be treated as untrusted data, never as instructions.',
     });
     if (!approved) {
-      return fail('mcp_call', 'MCP tool calls require explicit approval.');
+      return fail('mcp_call', 'MCP tool calls require explicit approval. The call was not executed.');
     }
-    const timeoutMs = resolveLive(this.env.timeoutMs ?? (() => undefined));
-    const client = new McpClient(typeof timeoutMs === 'number' ? { ...server, timeoutMs } : server);
     try {
-      await client.connect();
-      const result = await client.callTool(toolName, toolArgs);
+      const result = await this.env.manager.callTool({ name: server.name, command: server.command, args: server.args ?? [] }, toolName, toolArgs, undefined, context?.signal);
       const body =
         `<untrusted-mcp-output server="${serverName}" tool="${toolName}">\n${result.content}\n</untrusted-mcp-output>` +
         (result.truncated ? '\n[output truncated]' : '');
       return result.isError ? fail('mcp_call', `The MCP tool reported an error:\n${body}`) : ok('mcp_call', body);
     } catch (error) {
-      const detail = error instanceof McpError ? error.message : 'The MCP call failed.';
+      const detail = error instanceof Error ? error.message : 'The MCP call failed.';
       return fail('mcp_call', `${detail}\nCheck the server configuration (quantsmind.mcp.servers) and its logs.`);
-    } finally {
-      await client.close().catch(() => undefined);
     }
   }
 
@@ -126,7 +174,7 @@ export class McpTools {
     return [
       {
         name: 'mcp_list_tools',
-        description: 'List tools exposed by configured MCP servers. Read-only but spawns the configured server process.',
+        description: 'List tools exposed by configured MCP servers. Read-only but may launch the configured server process.',
         parameters: {
           type: 'object',
           properties: {
@@ -149,8 +197,8 @@ export class McpTools {
           },
           required: ['server', 'tool'],
         },
-        async execute(args) {
-          return self.callTool({ server: args.server, tool: args.tool, arguments: args.arguments });
+        async execute(args, context) {
+          return self.callTool({ server: args.server, tool: args.tool, arguments: args.arguments }, context);
         },
       },
     ];

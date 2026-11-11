@@ -2,7 +2,7 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,
@@ -183,6 +183,12 @@
         "title": "Run Complete Self-Diagnostics",
         "category": "QuantsMind",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "quantsmind.manageMcpServers",
+        "title": "Manage MCP Servers",
+        "category": "QuantsMind",
+        "icon": "$(plug)"
       },
       {
         "command": "quantsmind.showMenu",

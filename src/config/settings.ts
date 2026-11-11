@@ -78,6 +78,22 @@ export class SettingsService {
     });
   }
 
+  async setMcpServers(
+    servers: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean }[],
+  ): Promise<void> {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    await config.update(
+      'mcp.servers',
+      servers.map((entry) => ({
+        name: entry.name,
+        command: entry.command,
+        args: [...entry.args],
+        enabled: entry.enabled,
+      })),
+      vscode.ConfigurationTarget.Global,
+    );
+  }
+
   async updateModel(model: string): Promise<void> {
     await vscode.workspace
       .getConfiguration(CONFIG_SECTION)

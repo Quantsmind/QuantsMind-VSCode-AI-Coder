@@ -22,11 +22,13 @@ import { isProviderApiKeySecretKey, SecretStore } from './security/secretStore';
 import { FIRST_RUN_NOTICE_KEY, showFirstRunNotice } from './onboarding/firstRun';
 import { WorkspaceIndexService } from './workspace/indexService';
 import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
+import { manageMcpServers } from './commands/mcpManagement';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
   readonly statusBar: vscode.StatusBarItem;
   readonly logger: Logger;
+  readonly agentRuntime: ReturnType<typeof createAgentRuntime>;
 }
 
 let activeRuntime: ActiveRuntime | undefined;
@@ -408,6 +410,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       { label: '$(symbol-method) Select Provider Profile', command: COMMANDS.selectProvider },
       { label: '$(plug) Test Provider Connection', command: COMMANDS.testConnection },
       { label: '$(symbol-parameter) Select Model', command: COMMANDS.selectModel },
+      { label: '$(plug) Manage MCP Servers', command: COMMANDS.manageMcpServers },
       { label: '$(output) Show Log', command: COMMANDS.showLog },
     ];
     const picked = await vscode.window.showQuickPick(items, {
@@ -580,6 +583,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   register(COMMANDS.inspectWorkspace, inspectWorkspace);
   register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
   register(COMMANDS.showVersion, showVersion);
+  const mcpOutputChannel = vscode.window.createOutputChannel('QuantsMind MCP');
+  context.subscriptions.push(mcpOutputChannel);
+  const manageMcpServersCommand = async (): Promise<void> => {
+    await manageMcpServers({
+      settings,
+      manager: agentRuntime.mcpServerManager,
+      outputChannel: mcpOutputChannel,
+      trusted: () => vscode.workspace.isTrusted,
+    });
+  };
+  register(COMMANDS.manageMcpServers, manageMcpServersCommand);
 
   const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
   const invalidateIndex = (): void => workspaceIndex.invalidate();
@@ -645,7 +659,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     });
   }
 
-  activeRuntime = { chatProvider, statusBar, logger };
+  activeRuntime = { chatProvider, statusBar, logger, agentRuntime };
 
   return {
     version,
@@ -662,5 +676,6 @@ export function deactivate(): void {
   }
   runtime.chatProvider.dispose();
   runtime.statusBar.hide();
+  void runtime.agentRuntime.mcpServerManager.disconnectAll().catch(() => undefined);
   runtime.logger.info('deactivated');
 }

@@ -1,18 +1,32 @@
 /**
  * Fixture MCP server for tests (plain Node, newline-delimited JSON-RPC 2.0).
  * Modes:
- *   node mcp-server.cjs            — normal server (initialize, tools/list, tools/call)
- *   node mcp-server.cjs silent     — never responds to requests (timeout path)
- *   node mcp-server.cjs crash      — exits immediately (connect/closed path)
- *   node mcp-server.cjs env        — echoes process.env in an env tool (leak check)
+ *   node mcp-server.cjs                — normal server (initialize, tools/list, tools/call)
+ *   node mcp-server.cjs silent         — never responds to requests (timeout path)
+ *   node mcp-server.cjs crash          — exits immediately (connect/closed path)
+ *   node mcp-server.cjs env            — echoes process.env in an env tool (leak check)
+ *   node mcp-server.cjs noise          — emits a non-JSON garbage line before valid responses
+ *   node mcp-server.cjs spy <log>      — appends every method name it receives to <log>
+ *   node mcp-server.cjs oversized      — never completes a valid initialize (one huge line)
  */
 const mode = process.argv[2] ?? 'normal';
+const spyLog = process.argv[3];
+const fs = require('node:fs');
 
 if (mode === 'crash') {
   process.exit(3);
 }
 
+function spy(method) {
+  if (mode === 'spy' && spyLog) {
+    fs.appendFileSync(spyLog, `${method}\n`);
+  }
+}
+
 function send(message) {
+  if (mode === 'noise') {
+    process.stdout.write('this is not JSON at all {broken\n');
+  }
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
@@ -64,8 +78,13 @@ const TOOLS = [
 ];
 
 function handle(message) {
+  spy(message.method);
   if (mode === 'silent') {
     return; // never respond: exercises the timeout path
+  }
+  if (mode === 'oversized') {
+    process.stdout.write('x'.repeat(2_000_000) + '\n');
+    return;
   }
   if (message.method === 'notifications/initialized') {
     return; // notifications carry no response

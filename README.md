@@ -341,6 +341,7 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)
 - [Execution, build and test integration](docs/BUILD_AND_TEST.md)
 - [Advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md)
+- [MCP (Model Context Protocol)](docs/MCP.md)
 - [Git, GitHub and change management](docs/GIT_AND_CHANGES.md)
 - [Planning and tasks](docs/PLANNING_AND_TASKS.md)
 - [Change review](docs/CHANGE_REVIEW.md)

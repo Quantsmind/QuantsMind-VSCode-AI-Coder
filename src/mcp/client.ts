@@ -2,11 +2,14 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { redactSecrets } from '../security/redact';
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2024-11-05'] as const;
 export const DEFAULT_MCP_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_TOOL_OUTPUT_CHARS = 20_000;
 export const MAX_STDERR_CHARS = 4_000;
+export const MAX_MESSAGE_CHARS = 1_000_000;
+export const MAX_SCHEMA_CHARS = 32_768;
 
-export type McpErrorCode = 'connect' | 'timeout' | 'protocol' | 'server' | 'closed' | 'disabled';
+export type McpErrorCode = 'connect' | 'timeout' | 'protocol' | 'server' | 'closed' | 'disabled' | 'cancelled';
 
 export class McpError extends Error {
   constructor(
@@ -39,6 +42,11 @@ export interface McpToolResult {
   /** Tool output is server-controlled and untrusted; it is data, never instructions. */
   readonly untrusted: true;
   readonly truncated: boolean;
+}
+
+export interface McpServerInfo {
+  readonly name: string;
+  readonly version: string;
 }
 
 /**
@@ -75,16 +83,27 @@ interface JsonRpcResponse {
  * the tools surface: initialize, notifications/initialized, tools/list and
  * tools/call. Everything else fails closed.
  *
+ * Security boundary: the server is an arbitrary local process chosen by the
+ * user. It is not sandboxed, jailed or containerized by this client. The
+ * only protections are explicit configuration approval, a sanitized child
+ * environment, bounded output and never treating server output as trusted
+ * instructions. On Windows, `SystemRoot`/`ComSpec` are inherited so the
+ * server's own child processes can launch; no other ambient variable is.
+ *
  * Every tool result is marked untrusted: the output of an external process
  * is data, and it is never interpreted as instructions.
  */
 export class McpClient {
   private child: ChildProcess | undefined;
+  private connecting: Promise<void> | undefined;
   private buffer = '';
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private toolsCache: readonly McpTool[] | undefined;
   private stderrBuffer = '';
+  private serverInfoCache: McpServerInfo | undefined;
+  private serverCapabilitiesCache: Record<string, unknown> | undefined;
+  private negotiatedProtocolVersion: string | undefined;
 
   constructor(private readonly config: McpServerConfig) {}
 
@@ -100,10 +119,40 @@ export class McpClient {
     return this.child !== undefined && this.child.exitCode === null && this.child.signalCode === null;
   }
 
+  /** Number of tools served from cache after at least one listTools() call. */
+  cachedToolCount(): number | undefined {
+    return this.toolsCache?.length;
+  }
+
+  /** Server info captured during initialize; undefined until a handshake succeeds. */
+  serverInfo(): McpServerInfo | undefined {
+    return this.serverInfoCache;
+  }
+
+  serverCapabilities(): Record<string, unknown> | undefined {
+    return this.serverCapabilitiesCache;
+  }
+
+  protocolVersion(): string | undefined {
+    return this.negotiatedProtocolVersion;
+  }
+
   async connect(): Promise<void> {
     if (this.isConnected()) {
       return;
     }
+    if (this.connecting !== undefined) {
+      return this.connecting;
+    }
+    this.connecting = this.connectInternal();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = undefined;
+    }
+  }
+
+  private async connectInternal(): Promise<void> {
     const command = this.config.command;
     if (
       command.length === 0 ||
@@ -121,6 +170,9 @@ export class McpClient {
     this.buffer = '';
     this.stderrBuffer = '';
     this.toolsCache = undefined;
+    this.serverInfoCache = undefined;
+    this.serverCapabilitiesCache = undefined;
+    this.negotiatedProtocolVersion = undefined;
 
     const child = spawn(command, args, {
       env: mcpChildEnv(this.config.env),
@@ -143,11 +195,12 @@ export class McpClient {
     });
 
     try {
-      await this.request('initialize', {
+      const result = await this.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: '2.5.0' },
+        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: '2.5.1' },
       });
+      this.verifyInitializeResult(result);
     } catch (error) {
       await this.close();
       throw error instanceof McpError
@@ -155,6 +208,40 @@ export class McpClient {
         : new McpError('connect', `The MCP server "${this.config.name}" did not complete the initialize handshake.`);
     }
     this.notify('notifications/initialized', {});
+  }
+
+  /** Validates the initialize result and records the negotiated protocol. */
+  private verifyInitializeResult(result: unknown): void {
+    if (typeof result !== 'object' || result === null) {
+      throw new McpError('protocol', `The MCP server "${this.config.name}" returned an invalid initialize response.`);
+    }
+    const record = result as Record<string, unknown>;
+    const protocolVersion = typeof record.protocolVersion === 'string' ? record.protocolVersion : undefined;
+    if (
+      protocolVersion !== undefined &&
+      !(SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(protocolVersion)
+    ) {
+      throw new McpError(
+        'protocol',
+        `The MCP server "${this.config.name}" negotiated unsupported protocol version "${protocolVersion}".`,
+      );
+    }
+    const serverInfoRaw = typeof record.serverInfo === 'object' && record.serverInfo !== null
+      ? (record.serverInfo as Record<string, unknown>)
+      : undefined;
+    const name = typeof serverInfoRaw?.name === 'string' ? serverInfoRaw.name.slice(0, 128) : '(unnamed server)';
+    const version = typeof serverInfoRaw?.version === 'string' ? serverInfoRaw.version.slice(0, 64) : 'unknown';
+    this.serverInfoCache = { name, version };
+    if (typeof record.capabilities === 'object' && record.capabilities !== null && !Array.isArray(record.capabilities)) {
+      const serialized = JSON.stringify(record.capabilities);
+      if (serialized.length > MAX_SCHEMA_CHARS) {
+        throw new McpError('protocol', `The MCP server "${this.config.name}" returned oversized capabilities.`);
+      }
+      this.serverCapabilitiesCache = record.capabilities as Record<string, unknown>;
+    } else {
+      this.serverCapabilitiesCache = {};
+    }
+    this.negotiatedProtocolVersion = protocolVersion ?? MCP_PROTOCOL_VERSION;
   }
 
   async listTools(): Promise<readonly McpTool[]> {
@@ -174,10 +261,17 @@ export class McpClient {
         if (name.length === 0 || name.length > 256) {
           continue;
         }
+        const inputSchema = record.inputSchema;
+        if (inputSchema !== undefined) {
+          const serialized = JSON.stringify(inputSchema);
+          if (serialized.length > MAX_SCHEMA_CHARS) {
+            continue; // schema too large to trust or forward
+          }
+        }
         tools.push({
           name,
           ...(typeof record.description === 'string' ? { description: record.description.slice(0, 400) } : {}),
-          ...(record.inputSchema !== undefined ? { inputSchema: record.inputSchema } : {}),
+          ...(inputSchema !== undefined ? { inputSchema } : {}),
         });
       }
     }
@@ -185,13 +279,16 @@ export class McpClient {
     return tools;
   }
 
-  async callTool(name: string, args: unknown, maxOutputChars?: number): Promise<McpToolResult> {
+  async callTool(name: string, args: unknown, maxOutputChars?: number, signal?: AbortSignal): Promise<McpToolResult> {
     const toolName = String(name ?? '').trim();
     if (toolName.length === 0 || toolName.length > 256) {
       throw new McpError('protocol', 'A tool name is required.');
     }
+    if (signal?.aborted === true) {
+      throw new McpError('cancelled', 'The MCP call was cancelled before it started.');
+    }
     const limit = Math.max(1_000, Math.min(maxOutputChars ?? this.config.maxToolOutputChars ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS, 200_000));
-    const result = await this.request('tools/call', { name: toolName, arguments: args ?? {} });
+    const result = await this.request('tools/call', { name: toolName, arguments: args ?? {} }, signal);
     const parsed = result as { isError?: unknown; content?: unknown };
     const isError = parsed.isError === true;
     const text = this.extractText(parsed.content, limit);
@@ -250,6 +347,11 @@ export class McpClient {
         });
       });
     }
+    this.toolsCache = undefined;
+    this.serverInfoCache = undefined;
+    this.serverCapabilitiesCache = undefined;
+    this.negotiatedProtocolVersion = undefined;
+    this.buffer = '';
   }
 
   private timeoutMs(): number {
@@ -257,7 +359,7 @@ export class McpClient {
     return Math.max(250, Math.min(Number.isFinite(configured) ? configured : DEFAULT_MCP_TIMEOUT_MS, 300_000));
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const child = this.child;
     if (child === undefined || !this.isConnected()) {
       throw new McpError('closed', `The MCP server "${this.config.name}" is not connected.`);
@@ -270,14 +372,39 @@ export class McpClient {
         this.pending.delete(id);
         reject(new McpError('timeout', `The MCP server "${this.config.name}" did not respond to ${method} within ${this.timeoutMs()}ms.`));
       }, this.timeoutMs());
+      const abortSignal = signal;
+      let onAbort: (() => void) | undefined;
+      if (abortSignal !== undefined) {
+        const handler = (): void => {
+          this.pending.delete(id);
+          clearTimeout(timer);
+          abortSignal.removeEventListener('abort', handler);
+          this.notify('notifications/cancelled', { requestId: id, reason: 'The client cancelled the request.' });
+          reject(new McpError('cancelled', `The MCP call to "${this.config.name}" was cancelled.`));
+        };
+        onAbort = handler;
+      }
+      if (abortSignal !== undefined && onAbort !== undefined) {
+        if (abortSignal.aborted) {
+          onAbort();
+          return;
+        }
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
+          if (onAbort !== undefined && abortSignal !== undefined) {
+            abortSignal.removeEventListener('abort', onAbort);
+          }
           this.pending.delete(id);
           resolve(value);
         },
         reject: (error) => {
           clearTimeout(timer);
+          if (onAbort !== undefined && abortSignal !== undefined) {
+            abortSignal.removeEventListener('abort', onAbort);
+          }
           this.pending.delete(id);
           reject(error);
         },
@@ -286,6 +413,9 @@ export class McpClient {
         child.stdin?.write(`${payload}\n`);
       } catch (error) {
         clearTimeout(timer);
+        if (onAbort !== undefined && signal !== undefined) {
+          signal.removeEventListener('abort', onAbort);
+        }
         this.pending.delete(id);
         reject(new McpError('protocol', `Could not write to the MCP server "${this.config.name}": ${error instanceof Error ? error.message : 'write failed'}`));
       }
@@ -302,6 +432,14 @@ export class McpClient {
 
   private onStdout(chunk: Buffer | string): void {
     this.buffer += chunk.toString('utf8');
+    if (this.buffer.length > MAX_MESSAGE_CHARS) {
+      this.buffer = '';
+      this.failPending(new McpError('protocol', `The MCP server "${this.config.name}" sent an oversized message; the connection was dropped.`));
+      const child = this.child;
+      this.child = undefined;
+      child?.kill();
+      return;
+    }
     for (;;) {
       const newline = this.buffer.indexOf('\n');
       if (newline === -1) {

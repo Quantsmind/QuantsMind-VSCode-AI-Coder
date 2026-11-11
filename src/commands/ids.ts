@@ -20,4 +20,5 @@ export const COMMANDS = Object.freeze({
   showVersion: 'quantsmind.showVersion',
   inspectWorkspace: 'quantsmind.inspectWorkspace',
   runSelfDiagnostics: 'quantsmind.runSelfDiagnostics',
+  manageMcpServers: 'quantsmind.manageMcpServers',
 });

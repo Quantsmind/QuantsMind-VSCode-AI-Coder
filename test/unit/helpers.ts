@@ -195,6 +195,7 @@ export function createSettings(
     getAgentSettings: () => resolveAgentSettings({}),
     getCommandSettings: () => resolveCommandSettings({}),
     getMcpSettings: () => resolveMcpSettings({}),
+    setMcpServers: async () => undefined,
     updateModel: async () => undefined,
     updateProviderType: async () => undefined,
     updateBaseUrl: async () => undefined,

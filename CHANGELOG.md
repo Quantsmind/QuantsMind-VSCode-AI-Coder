@@ -59,6 +59,28 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.1 — MCP security, integration and UX hardening.** MCP server launch now
+requires explicit per-window approval naming the executable, arguments and
+launch origin (application setting), never persisted, revoked on
+reconfiguration. `McpServerManager` caches connections (no duplicate process
+launches), detects crash/exit, reconnects on the next operation and terminates
+every child on extension deactivation. Protocol correctness: version
+negotiation (`2025-06-18` / `2024-11-05`), initialize result validation,
+bounded frames (oversized messages drop the connection), oversized-schema
+guards, newline-delimited JSON-RPC with per-request timeouts and
+`notifications/cancelled` for cancellation. Agent invocation remains
+per-call approval-gated with the tool's description shown; discovery never
+runs tools. New `QuantsMind: Manage MCP Servers` command (palette +
+status-bar menu): view/add/edit/enable/disable/connect/disconnect/restart,
+tool discovery, diagnostics to the `QuantsMind MCP` output channel. No
+secrets displayed or forwarded (environment allowlist only). Continuation
+recovery now covered by tests: restore marks interrupted tasks failed without
+replaying them; applied-file hash drift fails restore; cancellation state
+round-trips; an approve/cancel pair is enforced by the restore report.
+Third-party MCP servers are **not** verified in this build (registry metadata
+for `@modelcontextprotocol/server-filesystem@2.2.0` is reachable; no download or
+execution without explicit local approval).
+
 **v2.5.0 — advanced AI intelligence.** Multi-provider usage reporting and cost
 accounting with explicit rate cards only; a per-window paid-provider consent
 gate for autonomous agent calls (`PaidConsentError` blocks paid calls without

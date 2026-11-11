@@ -42,26 +42,29 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
-## MCP integration (WP4)
+## MCP integration (WP4) — hardened in v2.5.1
 
-- A real, minimal **Model Context Protocol** client (`src/mcp/client.ts`):
-  newline-delimited JSON-RPC 2.0 over stdio, `initialize` /
-  `notifications/initialized` / `tools/list` / `tools/call`, with bounded
-  output, per-call timeouts, sanitized environment (no ambient secrets) and
-  redacted error surfaces.
-- Agent tools: `mcp_list_tools` (spawns the configured server to list tools)
-  and `mcp_call` (approval required per call; output wrapped in
-  `<untrusted-mcp-output>` and marked untrusted; never interpreted as
-  instructions).
-- Servers are configured via the `quantsmind.mcp.servers` application setting
-  (name, command, args, enabled). No server is configured by default; with an
-  empty list the tools fail with an actionable message.
-- Tool *discovery* never auto-grants a tool; every invocation requires the
-  same explicit approval as any other consequential operation.
-- Verified against a controlled in-repo fixture MCP server (handshake,
-  success, tool error, large output, silent timeout, crash, environment
-  sanitization, command metacharacter rejection). It has **not** been
-  verified against third-party MCP servers in this environment.
+See [MCP (Model Context Protocol) — v2.5.1](MCP.md) for the full contract:
+configuration, launch approval, workspace trust, permission model, tool
+invocation, security boundaries, diagnostics and known limitations.
+
+At a glance:
+
+- Real stdio/newline-delimited JSON-RPC 2.0 client with protocol-version
+  negotiation, bounded frames, timeouts, sanitized environment, redacted
+  errors and an `McpServerManager` that caches connections, reconnects across
+  crashes and terminates every child on deactivation.
+- `quantsmind.manageMcpServers` (command palette / status-bar menu): view,
+  add, edit, enable/disable, connect/disconnect/restart, discover tools and
+  view diagnostics for configured servers. No secrets are ever displayed.
+- Launch of a configured server requires explicit per-window approval naming
+  the executable, arguments and origin; approval is never persisted and is
+  revoked on reconfiguration.
+- Tool discovery never invokes a tool; every invocation is individually
+  approval-gated; tool output is delimited and marked untrusted.
+- The control model, the process boundary and the transport limits are all
+  documented in the MCP page — the server is not sandboxed by this
+  extension.
 
 ## Task continuity (WP5)
 
@@ -92,10 +95,9 @@ paths; nothing bypasses the existing approval or trust boundaries.
 
 - No GitHub/marketplace publication from this branch; no release.
 - Cost figures are unavailable until a host supplies an explicit rate card.
-- MCP support is stdio JSON-RPC for servers you configure yourself; streamable
-  HTTP/SSE transports are not implemented yet.
+- MCP is stdio JSON-RPC only; servers are user-configured; the server process
+  is not sandboxed by this extension (see the MCP page for the exact boundary).
+- Third-party MCP servers have **not** been verified in this build; the MCP
+  page lists the exact steps to authorize and run that verification.
 - Karkain tooling remains syntax-aware; the real compiler cannot run on every
   machine and fixture evidence is not compiler evidence.
-- Third-party MCP servers and third-party paid providers have not been
-  exercised against this build; do not treat the fixture suite as live
-  certification.
