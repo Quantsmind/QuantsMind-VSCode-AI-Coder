@@ -16,6 +16,7 @@ function baseOptions(allowlist: string[]) {
     workspaceRoot: process.cwd(),
     allowlist,
     timeoutMs: 10_000,
+    trusted: true,
   };
 }
 
@@ -105,6 +106,17 @@ suite('approved command execution', () => {
     expect(result.exitCode).to.equal(null);
     expect(result.output).to.equal('');
     expect(result.error).to.contain('allowlist');
+  });
+
+  test('refuses to run when workspace trust is not explicitly granted', async () => {
+    const result = await runApprovedCommand(`${NODE} -v`, {
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      allowlist: [`${NODE} -v`],
+      timeoutMs: 10_000,
+    });
+    expect(result.exitCode).to.equal(null);
+    expect(result.error).to.contain('Workspace trust is required');
   });
 
   test('refuses to run outside the workspace', async () => {

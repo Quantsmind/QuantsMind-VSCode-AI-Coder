@@ -345,6 +345,24 @@ suite('agent engine execution loop', () => {
     expect(result.filesChanged).to.deep.equal([]);
   });
 
+  test('a failed mutation charges no changed-file or patch-size budget', async () => {
+    let dispatchedCount = 0;
+    const spy = makeTool('write_file', async () => {
+      dispatchedCount += 1;
+      return { ok: false, error: 'disk full' };
+    });
+    const model = scriptedModel([
+      () => toolCall('write_file', { path: 'src/a.ts', content: 'x'.repeat(900) }, 'c1'),
+      () => toolCall('write_file', { path: 'src/a.ts', content: 'x'.repeat(900) }, 'c2'),
+      () => finalResponse,
+    ]);
+    const result = await run({ task: 'x', model, tools: [spy], limits: { maxPatchSizeChars: 1_000, maxChangedFiles: 1 } });
+
+    expect(dispatchedCount).to.equal(2);
+    expect(result.status).to.equal('completed');
+    expect(result.filesChanged).to.deep.equal([]);
+  });
+
   test('changed-file budget refuses mutation of another distinct file', async () => {
     let dispatchedCount = 0;
     const spy = makeTool('write_file', async () => {

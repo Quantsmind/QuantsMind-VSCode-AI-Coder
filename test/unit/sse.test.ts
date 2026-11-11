@@ -38,6 +38,19 @@ suite('server-sent events parser', () => {
     expect(cr).to.deep.equal(['alpha', 'beta']);
   });
 
+  test('handles a CRLF pair split across chunks without phantom newlines', async () => {
+    // 'data: one\r' + '\ndata: two\r' + '\n\r' + '\n' — a lone CR at a chunk
+    // boundary must not be normalized until its LF arrives.
+    const events = await collect([
+      'data: part one\r',
+      '\ndata: part two\r',
+      '\n\r',
+      '\n',
+      'data: second\r\n\r\n',
+    ]);
+    expect(events).to.deep.equal(['part one\npart two', 'second']);
+  });
+
   test('handles events split across network chunks', async () => {
     const events = await collect(['data: {"content":', '"split"}\n', '\n', 'data: second\n\n']);
     expect(events).to.deep.equal(['{"content":"split"}', 'second']);
