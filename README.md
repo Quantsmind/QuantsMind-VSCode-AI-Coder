@@ -117,6 +117,12 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **Agentic engineering (v2.5.6).** The bounded agent execution engine runs
+  plan → execute → observe → evaluate loops with hard, model-independent
+  limits; task completion is determined from tool evidence, not model
+  assertions; repeated failures trigger bounded plan revisions instead of
+  infinite loops; scope and budget violations stop the run honestly. See the
+  [agentic engineering documentation](docs/AGENTIC_ENGINEERING.md).
 - **Coding workflows (v2.5.5).** Substantial tasks get structured,
   evidence-grounded plans with explicit evidence-vs-assumption labels; change
   sets are tracked against the plan (in-scope, unexpected, missing); the
@@ -364,6 +370,7 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 
 ## Documentation
 
+- [Agentic engineering](docs/AGENTIC_ENGINEERING.md)
 - [Agent workflow](docs/AGENT_WORKFLOW.md)
 - [Coding workflows](docs/CODING_WORKFLOWS.md)
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)

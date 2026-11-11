@@ -42,6 +42,16 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
+## Agentic engineering (v2.5.6) — bounded execution engine
+
+See [Agentic engineering](AGENTIC_ENGINEERING.md) for the full contract: the
+engine state machine, hard model-independent limits, observe/evaluate from
+actual tool evidence, bounded plan revision, recovery-required semantics for
+uncertain mutating outcomes, and per-limit settings. v2.5.6 does not enable
+unrestricted autonomy; all approvals, trust gates and security boundaries
+from v2.5.1–v2.5.5 are unchanged. Tool usage keeps the existing approval
+model; the engine only adds model-independent caps on top.
+
 ## Coding workflows (v2.5.5) — structured plans and validation
 
 See [Coding workflows](CODING_WORKFLOWS.md) for the full contract:

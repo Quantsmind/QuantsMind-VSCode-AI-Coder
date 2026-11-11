@@ -59,6 +59,24 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.6 — agentic engineering.** A bounded agent execution engine
+(`src/agent/engine.ts`) now drives the coding-agent path: plan → execute →
+observe → evaluate loops with explicit, validated state and hard,
+model-independent limits (iterations: 10; tool calls: 40; provider requests:
+12; plan revisions: 2; duration: 10 minutes; per-result output clamp;
+cumulative patch budget; changed-file budget; consecutive-failure stop).
+Completion is determined from tool evidence (no claim of success from model
+text alone); repeated identical failures trigger a bounded plan revision
+before the run stops as blocked; uncertain mutating-tool failures yield
+`recovery-required` instead of blind retries; mutation budgets (files, patch
+bytes) refuse out-of-scope or oversized work before dispatch regardless of
+downstream approvals. Five validated `quantsmind.agenticEngine.*` settings
+(defaults conservative, non-finite/out-of-range values clamp or fall back);
+the chat agent path now reports `engineOutcome` (status/evaluation/counts) for
+honest completion reporting. Existing approvals, workspace trust, MCP
+behavior and v2.5.2–v2.5.5 semantics are unchanged; no unrestricted autonomy,
+no auto-install, no auto-deploy.
+
 **v2.5.5 — advanced coding workflows.** Substantial coding tasks now flow
 through a structured, evidence-grounded plan instead of an inline edit:
 deterministic routing and task categorization (bugfix, feature, refactor,
