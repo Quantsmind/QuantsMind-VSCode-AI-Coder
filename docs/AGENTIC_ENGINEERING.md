@@ -164,6 +164,42 @@ when supported, with the text-envelope fallback unchanged.
 Invalid values fall back to defaults (duration clamps to 60–1,800 s). No
 setting exists that disables workspace trust, approvals or limits.
 
+## Unified runtime (v2.5.7) — same guarantees, both doors
+
+The extension has two agent entry paths. Since v2.5.6 they shared the
+v2.5.4–v2.5.5 substrate (language intelligence, workflow scope tracking,
+checkpoint notes, change-set pipeline); since v2.5.7 they also share the
+execution limits and configuration resolution:
+
+| Concern | Chat agent path | Approval-orchestrator path |
+|---|---|---|
+| Engine | `runAgentEngine` (direct) | Shared execution budget enforced before each provider call |
+| Provider-requests budget (`agenticEngine.maxProviderRequests`) | hard stop per task | enforced at plan/execute/repair funnels; over-budget sessions fail closed |
+| Duration budget (`maxDurationSeconds`) | engine deadline | enforced at the same funnels from `createdAt` |
+| Changed-file / patch-size budget | refuses out-of-budget mutations pre-dispatch | refuses the proposed change set **before any approval is built** |
+| Approvals | tools self-approve (trust + allowlist + per-call) | plan → change-set → repair approvals, unchanged |
+| Pause/resume | step-boundary `paused` outcome | session pause/resume, unchanged |
+| Recovery | uncertain mutating tool → `recovery-required` | restore parses checkpoints; inspection note; no silent replay |
+| Outcome reporting | `engineOutcome` on results; timeline | typed `Outcome: status (evaluation); N file(s) changed; M provider call(s)` timeline note |
+
+Both resolve the same validated settings bundle via
+`settingsToEngineLimits` (`src/agent/execution.ts`); invalid values clamp,
+and no setting disables any protection. `EngineeringOutcome` is the shared
+typed contract; outcomes never imply success from a model assertion alone.
+The change-set approval wiring refuses proposals exceeding
+`maxChangedFiles`/`maxPatchSizeChars` before presentation, keeping
+refuse-before-dispatch symmetry with the engine path.
+
+The orchestrator keeps its explicit plan/change review UX; the chat path
+keeps its interaction model. No authority is shared or elevated:
+
+- A denied/untrusted/unapproved operation never reaches the tool executor.
+- Plan approval in the orchestrator and tool approvals in the engine remain
+  independent gates — both must pass for consequential actions.
+- Approvals restore never silently replays an uncertain operation.
+
+Next milestone: **v3.0.0 GA**.
+
 ## Known limitations
 
 - Execution is bounded **per task**; the engine does not chain approvals or

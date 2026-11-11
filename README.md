@@ -117,6 +117,13 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **Release candidate (v2.5.7).** Both agent entry paths now share one bounded
+  execution runtime: the same validated limits (provider requests, duration,
+  changed files, patch size), one outcome contract (`EngineeringOutcome`) and
+  symmetric refuse-before-dispatch behavior; the orchestrator's approvals and
+  the chat agent's semantics are unchanged. Recovery is conservative on both
+  paths. See [agentic engineering](docs/AGENTIC_ENGINEERING.md) and
+  [coding workflows](docs/CODING_WORKFLOWS.md).
 - **Agentic engineering (v2.5.6).** The bounded agent execution engine runs
   plan → execute → observe → evaluate loops with hard, model-independent
   limits; task completion is determined from tool evidence, not model

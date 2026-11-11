@@ -59,6 +59,21 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.7 — unified agent runtime and release-candidate hardening.** Both
+agent entry paths now share one execution substrate: the chat agent and the
+approval orchestrator both enforce the validated
+`quantsmind.agenticEngine.*` bundle (provider requests 12, duration 10
+minutes, changed files 25); the orchestrator applies the provider-request and
+duration budgets before every model call and refuses a proposed change set
+that exceeds the changed-files or cumulative patch budget **before any
+approval is built** (engine-symmetric refuse-before-dispatch). A shared
+typed outcome contract (`EngineeringOutcome`) maps both paths onto the same
+completed/partial/blocked/failed/paused/cancelled/recovery-required
+reporting with an evidence-based evaluation; sessions carry a bounded typed
+`Outcome:` timeline note. Approval flow, workspace trust, MCP behavior and
+v2.5.1–v2.5.6 guarantees are unchanged; settings are backward compatible.
+Establishes the qualification baseline for v3.0.0 GA.
+
 **v2.5.6 — agentic engineering.** A bounded agent execution engine
 (`src/agent/engine.ts`) now drives the coding-agent path: plan → execute →
 observe → evaluate loops with explicit, validated state and hard,

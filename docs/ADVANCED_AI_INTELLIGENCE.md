@@ -42,6 +42,15 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
+## Release candidate (v2.5.7) — unified agent runtime
+
+As of v2.5.7 both agent entry paths (chat agent and approval-oriented
+orchestrator) share one bounded execution runtime: the resolved
+`quantsmind.agenticEngine.*` configuration, provider-request and duration
+budgets enforced before every model call (orchestrator) or next step
+(engine), refuse-before-dispatch on change-set budgets, and a single typed
+outcome contract rendered identically in the session timeline.
+
 ## Agentic engineering (v2.5.6) — bounded execution engine
 
 See [Agentic engineering](AGENTIC_ENGINEERING.md) for the full contract: the
