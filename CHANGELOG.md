@@ -59,6 +59,25 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.4 — multi-language intelligence.** New central language capability
+registry (`src/languages/registry.ts`, 20 families with qualification levels
+`analysis`/`detection`) and a bounded, deterministic, content-free workspace
+language inventory (`src/languages/inventory.ts`): primary vs supporting
+languages, `confident`/`partial`/`unknown` detection, manifest markers by
+path only, 10k-entry/5 MB scan bounds, vendored/generated directories
+excluded, content-keyed memoization with automatic invalidation. The coding
+agent's system prompt gains a bounded language block (primary + secondary
+languages, tooling, explicit uncertainty note when detection is partial/unknown)
+and the chat prompt gains a bounded active-document block; both degrade
+gracefully for unknown languages. Context selection now accepts deterministic
+cross-language relationships (shared API contracts, SQL schema ↔ model symbols,
+client ↔ server route layers, build files ↔ compiled sources) with labelled
+`cross-language` candidates that cannot outrank direct matches or bypass
+token/character budgets. New setting `quantsmind.languageIntelligence.enabled`
+(application scope, default `true`); existing configurations need no migration.
+Repository overview and self-diagnostics report the inventory; no file
+contents or secrets are exposed.
+
 **v2.5.3 — MCP Streamable HTTP: secure remote connectivity.** The MCP client
 now supports remote servers over Streamable HTTP alongside stdio, behind one
 transport interface. Remote servers are configured with

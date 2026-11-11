@@ -42,6 +42,20 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
+## Language intelligence (WP1–WP6) — added in v2.5.4
+
+See [Language intelligence](LANGUAGE_INTELLIGENCE.md) for the full contract:
+supported language families and qualification levels, workspace detection,
+context selection with cross-language relations, language-adaptive prompts,
+configuration and performance limits. v2.5.4 adds a central language
+capability registry, a bounded workspace language inventory (primary and
+supporting languages, detection confidence), language-adaptive prompts for
+the coding agent and chat, cross-language relationships in context selection
+(shared API contracts, SQL schema ↔ models, client/server pairs, build
+files ↔ compiled sources) and a `quantsmind.languageIntelligence.enabled`
+switch (default true). Unknown languages degrade gracefully; providers are
+not retrained.
+
 ## MCP integration (WP4) — hardened in v2.5.1, configurable in v2.5.2, remote in v2.5.3
 
 See [MCP (Model Context Protocol) — v2.5.3](MCP.md) for the full contract:

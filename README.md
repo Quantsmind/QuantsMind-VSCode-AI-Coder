@@ -117,6 +117,15 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **Language intelligence (v2.5.4).** The extension understands your
+  workspace's language mix: a bounded inventory identifies primary and
+  supporting languages (with detection confidence), language-adaptive
+  prompts and context selection focus on the languages actually present, and
+  cross-language relationships (shared API contracts, SQL schema ↔ models,
+  client/server pairs, build files ↔ compiled sources) inform task context
+  without autonomous edits. Toggle with
+  `quantsmind.languageIntelligence.enabled` (default true). See the
+  [language intelligence documentation](docs/LANGUAGE_INTELLIGENCE.md).
 - **MCP (Model Context Protocol) servers** you configure in
   `quantsmind.mcp.servers` can be launched with explicit per-window approval;
   each tool invocation is approval-gated and tool output is treated as
@@ -349,6 +358,7 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 
 - [Agent workflow](docs/AGENT_WORKFLOW.md)
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)
+- [Language intelligence](docs/LANGUAGE_INTELLIGENCE.md)
 - [Execution, build and test integration](docs/BUILD_AND_TEST.md)
 - [Advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md)
 - [MCP (Model Context Protocol)](docs/MCP.md)

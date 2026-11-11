@@ -1,5 +1,10 @@
 # Project intelligence
 
+> For the v2.5.4 multi-language intelligence milestone — language capability
+> registry, workspace language inventory, language-adaptive prompts and
+> cross-language context selection — see
+> [Language intelligence](LANGUAGE_INTELLIGENCE.md).
+
 Project intelligence gives the planner a compact, local description of the
 workspace before any provider request. It is implemented in
 `src/project/intelligence.ts` and backed by `src/workspace/analyze.ts` and
