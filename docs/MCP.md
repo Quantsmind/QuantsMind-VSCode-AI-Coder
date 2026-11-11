@@ -1,4 +1,4 @@
-# MCP (Model Context Protocol) — v2.5.1
+# MCP (Model Context Protocol) — v2.5.2
 
 This page documents the actual shipped behaviour of the MCP integration. It
 covers configuration, launch approval, workspace trust, the permission model,
@@ -36,7 +36,14 @@ Servers are configured in the `quantsmind.mcp.servers` **application** setting:
     "name": "filesystem",
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-    "enabled": true
+    "enabled": true,
+    "timeoutMs": 15000,
+    "maxToolOutputChars": 30000
+  },
+  {
+    "name": "with-defaults",
+    "command": "node",
+    "args": ["./server.cjs"]
   }
 ]
 ```
@@ -48,8 +55,23 @@ Servers are configured in the `quantsmind.mcp.servers` **application** setting:
 - `args`: argument array. Non-string or oversized entries reject the server
   entry, never selectively drop arguments.
 - `enabled`: `false` keeps the configuration but forbids launching.
+- `timeoutMs` (optional): per-request timeout in milliseconds, covering both
+  `initialize` and tool-call requests. Default `10000`; clamped to `250`–`300,000`.
+  Non-finite or out-of-range values fall back to the default. The runtime
+  applies the same clamp again at call time.
+- `maxToolOutputChars` (optional): maximum characters of MCP tool output
+  returned to the agent; output stays wrapped in the untrusted-data delimiters
+  regardless. Default `20000`; clamped to `1,000`–`200,000`. Non-finite or
+  out-of-range values fall back to the default.
 - Application scope means a workspace cannot inject a malicious server into
   your configuration. At most 10 servers are tracked.
+
+Existing configurations without `timeoutMs`/`maxToolOutputChars` keep the
+defaults and require no migration. Changing any setting for a cached server
+(including `timeoutMs`/`maxToolOutputChars`, command, args or `enabled`)
+invalidates the cached connection: the manager closes the old process and
+revokes the cached launch approval for that server, so the next operation
+launches with the new settings and a fresh approval.
 
 No server is configured by default; with an empty list, `mcp_list_tools` fails
 with an actionable message.
@@ -129,9 +151,9 @@ Without a trusted workspace, no server is launched and no MCP tool runs.
   editing revokes the cached launch approval).
 - Connect / disconnect / restart a server (connect asks for launch approval).
 - Discover tools (listing is read-only and never invokes a tool).
-- Inspect diagnostics: state, server info, protocol version, cached tool count,
-  last error and stderr tail (redacted) written to the `QuantsMind MCP`
-  output channel.
+- Inspect diagnostics: state, launch limits (`timeoutMs` / `maxToolOutputChars`),
+  server info, protocol version, cached tool count, last error and stderr tail
+  (redacted) written to the `QuantsMind MCP` output channel.
 
 No secrets are ever displayed in the management UI.
 
@@ -140,7 +162,9 @@ No secrets are ever displayed in the management UI.
 The `QuantsMind MCP` output channel records launch decisions and results,
 connection events, tool selection and errors with timestamps. Deliberate
 diagnostics output includes the failing stage (launch, initialize, tools/list,
-tools/call) and only sanitized error text.
+tools/call) and only sanitized error text. Launch diagnostics include the
+configured `timeoutMs` / `maxToolOutputChars` so you can confirm which limits
+are in effect.
 
 ## Known limitations
 
@@ -157,13 +181,16 @@ tools/call) and only sanitized error text.
 
 ## Third-party interoperability evidence
 
-**Not verified against a live third-party server in this build/CI.** The
-boundary behavior is verified against a controlled in-repo fixture server
-(protocol, lifecycle, limits, redaction, approval flow). Registry metadata for
-`@modelcontextprotocol/server-filesystem@2.2.0` is reachable, but no
-third-party server is downloaded or executed automatically; the task author
-must explicitly authorize that verification. Do not treat the fixture suite as
-live interoperability certification.
+**Verified against a live third-party server in this lineage.** v2.5.1-A
+qualified `@modelcontextprotocol/server-filesystem@2.2.0` (pinned, integrity
+`sha512-mNLj/qhV+P4kj1qP8VzgQ2fjSmWcKDQ3Q+KpZEA+WahCDWHw5zJBRQUNSPZ6Ai2/ZGGUjzNzsFpz958a1+4T9A==`)
+through the production stdio client over an isolated temp root, covering
+initialize/protocol-version negotiation, server identity, `tools/list` (16 tools),
+read-only tool calls (`list_allowed_directories`, `list_directory`,
+`read_text_file`), approval/denial dispatch behavior, reconnection and timeout
+behavior. See the v2.5.1-A qualification report and `test/unit/mcpSecurity.test.ts`
+for the committed boundary coverage. Fresh execution still requires explicit
+authorization in environments where network or package execution is restricted.
 
 To verify against a real server after authorizing it, use:
 

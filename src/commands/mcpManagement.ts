@@ -44,7 +44,10 @@ function serverDescription(server: McpServerSnapshot): string {
 
 function serverDetail(server: McpServerSnapshot): string {
   const args = server.args.join(' ');
-  return args.length > 0 ? `${server.command} ${args}` : server.command;
+  const launch = args.length > 0 ? `${server.command} ${args}` : server.command;
+  const limits =
+    `${server.timeoutMs ?? '10,000'} ms · ${server.maxToolOutputChars ?? '20,000'} chars`;
+  return `${launch}  (${limits})`;
 }
 
 /** Pure builder: the top-level QuickPick for MCP server management. */
@@ -160,6 +163,8 @@ function diagnosticsFor(deps: McpManagerDependencies, server: McpServerSnapshot)
     `  launch origin: ${server.launchOrigin}`,
     `  command: ${server.command}`,
     `  args: ${server.args.join(' ') || '(none)'}`,
+    `  timeoutMs: ${server.timeoutMs ?? 'default (10000)'}`,
+    `  maxToolOutputChars: ${server.maxToolOutputChars ?? 'default (20000)'}`,
     ...(server.serverInfo !== undefined ? [`  server: ${server.serverInfo.name} ${server.serverInfo.version}`] : []),
     ...(server.protocolVersion !== undefined ? [`  protocol: ${server.protocolVersion}`] : []),
     ...(server.toolCount !== undefined ? [`  tools cached: ${server.toolCount}`] : []),

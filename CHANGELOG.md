@@ -59,6 +59,18 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.2 — per-server MCP limits, user-configurable.** `quantsmind.mcp.servers`
+now accepts per-server `timeoutMs` (default 10,000 ms, clamped 250–300,000 ms)
+and `maxToolOutputChars` (default 20,000, clamped 1,000–200,000). Legacy
+configurations without these properties keep the defaults and need no migration.
+Values are validated at resolve time (non-finite/out-of-range fall back to the
+documented bounds) and re-clamped at runtime as defense in depth. Changing any
+launch-relevant setting (command, args, timeout, output cap or enabled)
+invalidates the cached connection and revokes its launch approval, so the next
+operation launches with the new settings and a fresh approval. Diagnostics
+report the configured limits. The JSON schema now describes both properties
+with IntelliSense documentation.
+
 **v2.5.1 — MCP security, integration and UX hardening.** MCP server launch now
 requires explicit per-window approval naming the executable, arguments and
 launch origin (application setting), never persisted, revoked on

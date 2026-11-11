@@ -117,6 +117,13 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **MCP (Model Context Protocol) servers** you configure in
+  `quantsmind.mcp.servers` can be launched with explicit per-window approval;
+  each tool invocation is approval-gated and tool output is treated as
+  untrusted data. Per-server `timeoutMs` (10,000 ms default; 250–300,000) and
+  `maxToolOutputChars` (20,000 default; 1,000–200,000) are configurable in the
+  same setting. See the [MCP documentation](docs/MCP.md) and
+  [advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md).
 
 ### Evidence and security
 

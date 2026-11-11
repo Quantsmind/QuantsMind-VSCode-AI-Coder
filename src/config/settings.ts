@@ -79,7 +79,7 @@ export class SettingsService {
   }
 
   async setMcpServers(
-    servers: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean }[],
+    servers: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean; readonly timeoutMs?: number; readonly maxToolOutputChars?: number }[],
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     await config.update(
@@ -89,6 +89,8 @@ export class SettingsService {
         command: entry.command,
         args: [...entry.args],
         enabled: entry.enabled,
+        ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
+        ...(entry.maxToolOutputChars !== undefined ? { maxToolOutputChars: entry.maxToolOutputChars } : {}),
       })),
       vscode.ConfigurationTarget.Global,
     );

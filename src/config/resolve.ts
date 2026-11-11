@@ -10,6 +10,8 @@ import {
   DEFAULT_COMMAND_ALLOWLIST,
   DEFAULT_COMMAND_OUTPUT_MAX_CHARS,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
+  DEFAULT_MCP_TIMEOUT_MS,
   DEFAULT_EXCLUDE_GLOBS,
   DEFAULT_MAX_FILE_SIZE_KB,
   DEFAULT_MAX_FILES,
@@ -217,6 +219,8 @@ export interface ResolvedMcpServer {
   readonly command: string;
   readonly args: readonly string[];
   readonly enabled: boolean;
+  readonly timeoutMs: number;
+  readonly maxToolOutputChars: number;
 }
 
 export interface ResolvedMcpSettings {
@@ -266,7 +270,23 @@ export function resolveMcpSettings(raw: RawMcpSettings): ResolvedMcpSettings {
         continue; // malformed or oversized arguments reject the entry, not just the argument
       }
       const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
-      servers.push({ name, command, args: list as string[], enabled });
+      // Per-server overrides; non-finite or out-of-range values fall back to
+      // the documented defaults rather than disabling the runtime guards.
+      const timeoutMs = numberValue(
+        record.timeoutMs,
+        DEFAULT_MCP_TIMEOUT_MS,
+        LIMITS.mcpTimeoutMs.min,
+        LIMITS.mcpTimeoutMs.max,
+        true,
+      );
+      const maxToolOutputChars = numberValue(
+        record.maxToolOutputChars,
+        DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
+        LIMITS.mcpMaxToolOutputChars.min,
+        LIMITS.mcpMaxToolOutputChars.max,
+        true,
+      );
+      servers.push({ name, command, args: list as string[], enabled, timeoutMs, maxToolOutputChars });
     }
   }
   return { servers };

@@ -344,7 +344,13 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
       deps.settings
         .getMcpSettings()
         .servers.filter((entry) => entry.enabled)
-        .map((entry) => ({ name: entry.name, command: entry.command, args: entry.args })),
+        .map((entry) => ({
+          name: entry.name,
+          command: entry.command,
+          args: entry.args,
+          timeoutMs: entry.timeoutMs,
+          maxToolOutputChars: entry.maxToolOutputChars,
+        })),
     trusted,
     manager: mcpServerManager,
     approval: async (request) => {

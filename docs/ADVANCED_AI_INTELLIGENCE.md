@@ -42,11 +42,18 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
-## MCP integration (WP4) — hardened in v2.5.1
+## MCP integration (WP4) — hardened in v2.5.1, configurable in v2.5.2
 
 See [MCP (Model Context Protocol) — v2.5.1](MCP.md) for the full contract:
 configuration, launch approval, workspace trust, permission model, tool
-invocation, security boundaries, diagnostics and known limitations.
+invocation, security boundaries, diagnostics and known limitations. v2.5.2
+makes the per-server limits user-configurable: each server's `timeoutMs`
+(10,000 ms default, 250–300,000 ms) and `maxToolOutputChars` (20,000 default,
+1,000–200,000) pass through from VS Code settings through
+`resolveMcpSettings` → `McpServerManager` (with a configuration fingerprint that
+invalidates stale connections and cached launch approvals on change) →
+`McpClient` → the actual request timer and output clamp. Legacy configurations
+without these properties keep the defaults and require no migration.
 
 At a glance:
 

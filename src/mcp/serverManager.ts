@@ -8,11 +8,13 @@ export interface McpServerSnapshot {
   readonly args: readonly string[];
   readonly enabled: boolean;
   readonly state: McpServerState;
+  readonly timeoutMs?: number;
+  readonly maxToolOutputChars?: number;
+  readonly launchOrigin: string;
   readonly serverInfo?: McpServerInfo;
   readonly protocolVersion?: string;
   readonly toolCount?: number;
   readonly lastError?: string;
-  readonly launchOrigin: string;
 }
 
 export interface ApproveMcpLaunchRequest {
@@ -36,8 +38,19 @@ const MAX_TRACKED_SERVERS = 10;
  * - `disposeAll()` terminates every child process; wired into extension
  *   deactivation.
  */
+/** Stable fingerprint of a server's launch-relevant configuration. */
+function fingerprint(server: { command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): string {
+  return JSON.stringify({
+    command: server.command,
+    args: [...server.args],
+    timeoutMs: server.timeoutMs ?? null,
+    maxToolOutputChars: server.maxToolOutputChars ?? null,
+  });
+}
+
 export class McpServerManager {
   private readonly clients = new Map<string, McpClient>();
+  private readonly fingerprints = new Map<string, string>();
   private readonly states = new Map<string, McpServerState>();
   private readonly lastErrors = new Map<string, string>();
   private readonly launchOrigin = LAUNCH_ORIGIN_LABEL;
@@ -63,15 +76,27 @@ export class McpServerManager {
     this.approvedLaunches.clear();
   }
 
-  /** Returns the connection for a server, reusing a healthy one; undefined when not configured/approved or on failure. */
+  /** Returns the connection for a server, reusing a healthy, identically configured one. */
   async client(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<McpClient | undefined> {
+    const desiredFingerprint = fingerprint(server);
+    const existingFingerprint = this.fingerprints.get(server.name);
     const existing = this.clients.get(server.name);
+    if (existing !== undefined && existingFingerprint !== undefined && existingFingerprint !== desiredFingerprint) {
+      // Configuration changed since the last launch: drop the stale connection and approval.
+      await existing.close().catch(() => undefined);
+      this.clients.delete(server.name);
+      this.fingerprints.delete(server.name);
+      this.revokeLaunchApproval(server.name);
+      this.setError(server.name, 'The server configuration changed; reconnect to launch it with the new settings.');
+      return undefined;
+    }
     if (existing?.isConnected() === true) {
       return existing;
     }
     if (existing !== undefined) {
       await existing.close().catch(() => undefined);
       this.clients.delete(server.name);
+      this.fingerprints.delete(server.name);
       this.setError(server.name, 'The previous server process exited; a reconnect was performed.');
     }
     return undefined;
@@ -94,6 +119,7 @@ export class McpServerManager {
     try {
       await client.connect();
       this.clients.set(server.name, client);
+      this.fingerprints.set(server.name, fingerprint(server));
       this.setState(server.name, 'connected');
       this.lastErrors.delete(server.name);
       return client;
@@ -121,7 +147,7 @@ export class McpServerManager {
     return client.callTool(tool, args, maxOutputChars, signal);
   }
 
-  snapshot(servers: readonly { name: string; command: string; args?: readonly string[]; enabled: boolean }[]): readonly McpServerSnapshot[] {
+  snapshot(servers: readonly { name: string; command: string; args?: readonly string[]; enabled: boolean; timeoutMs?: number; maxToolOutputChars?: number }[]): readonly McpServerSnapshot[] {
     return servers.map((server) => {
       const client = this.clients.get(server.name);
       const connected = client?.isConnected() === true;
@@ -132,11 +158,13 @@ export class McpServerManager {
         args: server.args ?? [],
         enabled: server.enabled,
         state: this.states.get(server.name) ?? (server.enabled ? 'disconnected' : 'disabled'),
+        ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+        ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+        launchOrigin: this.launchOrigin,
         ...(connected && client?.serverInfo() !== undefined ? { serverInfo: client.serverInfo() } : {}),
         ...(connected && client?.protocolVersion() !== undefined ? { protocolVersion: client.protocolVersion() } : {}),
         ...(connected ? { toolCount: client?.cachedToolCount() } : {}),
         ...(error !== undefined ? { lastError: error } : {}),
-        launchOrigin: this.launchOrigin,
       };
     });
   }
@@ -152,6 +180,7 @@ export class McpServerManager {
   async disconnect(name: string): Promise<void> {
     const client = this.clients.get(name);
     this.clients.delete(name);
+    this.fingerprints.delete(name);
     if (client !== undefined) {
       await client.close().catch(() => undefined);
     }
