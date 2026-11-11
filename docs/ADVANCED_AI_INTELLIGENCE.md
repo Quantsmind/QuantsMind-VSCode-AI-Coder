@@ -42,12 +42,24 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
-## MCP integration (WP4) — hardened in v2.5.1, configurable in v2.5.2
+## MCP integration (WP4) — hardened in v2.5.1, configurable in v2.5.2, remote in v2.5.3
 
-See [MCP (Model Context Protocol) — v2.5.1](MCP.md) for the full contract:
-configuration, launch approval, workspace trust, permission model, tool
-invocation, security boundaries, diagnostics and known limitations. v2.5.2
-makes the per-server limits user-configurable: each server's `timeoutMs`
+See [MCP (Model Context Protocol) — v2.5.3](MCP.md) for the full contract:
+transports, configuration, authentication, launch approval, workspace trust,
+the permission model, tool invocation, security boundaries, diagnostics,
+known limitations, migration and troubleshooting. v2.5.3 adds the MCP
+Streamable HTTP transport alongside stdio: remote servers are configured with
+`transport: "streamable-http"` and an HTTPS `url` (plain HTTP only for
+loopback development/test), authenticate with an optional bearer token stored
+in VS Code SecretStorage (`QuantsMind: Manage MCP Servers`), and go through
+the same trust gate, per-window launch approval, per-call approval, output
+delimiting, timeout and output caps, configuration-fingerprint invalidation
+and lifecycle management as stdio servers. Redirects are refused, response
+bodies are read with a hard byte cap, session expiry and network drops drop
+the connection (requests are never replayed), and server-initiated requests
+fail closed with JSON-RPC `-32601`.
+
+v2.5.2 made the per-server limits user-configurable: each server's `timeoutMs`
 (10,000 ms default, 250–300,000 ms) and `maxToolOutputChars` (20,000 default,
 1,000–200,000) pass through from VS Code settings through
 `resolveMcpSettings` → `McpServerManager` (with a configuration fingerprint that
@@ -57,16 +69,21 @@ without these properties keep the defaults and require no migration.
 
 At a glance:
 
-- Real stdio/newline-delimited JSON-RPC 2.0 client with protocol-version
-  negotiation, bounded frames, timeouts, sanitized environment, redacted
-  errors and an `McpServerManager` that caches connections, reconnects across
-  crashes and terminates every child on deactivation.
+- Real MCP client with two transports behind one interface: stdio
+  (newline-delimited JSON-RPC 2.0) and Streamable HTTP (HTTPS, SSE/JSON
+  framing, sessions with 404-expiry handling, redirect refusal, hard response
+  caps). Both share protocol-version negotiation, timeouts, redacted errors
+  and an `McpServerManager` that caches connections, reconnects across
+  crashes/drops/session-expiry, never replays tool calls, and terminates
+  everything on deactivation.
 - `quantsmind.manageMcpServers` (command palette / status-bar menu): view,
-  add, edit, enable/disable, connect/disconnect/restart, discover tools and
-  view diagnostics for configured servers. No secrets are ever displayed.
+  add, edit, enable/disable, connect/disconnect/restart, discover tools,
+  manage bearer credentials and view diagnostics for configured servers.
+  No secrets are ever displayed.
 - Launch of a configured server requires explicit per-window approval naming
-  the executable, arguments and origin; approval is never persisted and is
-  revoked on reconfiguration.
+  the executable and arguments (stdio) or the endpoint, transport and auth
+  scheme (HTTP) and origin; approval is never persisted and is revoked on
+  reconfiguration or credential changes.
 - Tool discovery never invokes a tool; every invocation is individually
   approval-gated; tool output is delimited and marked untrusted.
 - The control model, the process boundary and the transport limits are all

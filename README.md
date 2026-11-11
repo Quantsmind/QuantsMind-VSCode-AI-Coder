@@ -120,9 +120,12 @@ requirement
 - **MCP (Model Context Protocol) servers** you configure in
   `quantsmind.mcp.servers` can be launched with explicit per-window approval;
   each tool invocation is approval-gated and tool output is treated as
-  untrusted data. Per-server `timeoutMs` (10,000 ms default; 250–300,000) and
-  `maxToolOutputChars` (20,000 default; 1,000–200,000) are configurable in the
-  same setting. See the [MCP documentation](docs/MCP.md) and
+  untrusted data. Servers run over stdio or remote Streamable HTTP
+  (`https:` required remotely; bearer credentials stored in VS Code
+  SecretStorage, never in settings). Per-server `timeoutMs` (10,000 ms
+  default; 250–300,000) and `maxToolOutputChars` (20,000 default;
+  1,000–200,000) are configurable in the same setting. See the
+  [MCP documentation](docs/MCP.md) and
   [advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md).
 
 ### Evidence and security

@@ -59,6 +59,27 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.3 — MCP Streamable HTTP: secure remote connectivity.** The MCP client
+now supports remote servers over Streamable HTTP alongside stdio, behind one
+transport interface. Remote servers are configured with
+`transport: "streamable-http"` and an HTTPS `url` (plain HTTP only for
+loopback development/test); userinfo, query strings, fragments and all
+non-HTTP(S) schemes are rejected. Optional bearer authentication stores the
+token in VS Code SecretStorage only (per-server key
+`quantsmind.mcp.credential.<name>`), never in settings, logs or tool output;
+`QuantsMind: Manage MCP Servers` can set/replace/remove credentials. The HTTP
+transport captures `Mcp-Session-Id` (404 expires the session; the next
+operation initializes a fresh one), sends `MCP-Protocol-Version` after
+negotiation, refuses redirects, reads response bodies with a hard byte cap,
+supports JSON and SSE framing, fails server-initiated requests closed with
+JSON-RPC -32601, drops the connection on network/5xx/protocol-fatal failures
+(requests are never replayed), and terminates sessions with a best-effort
+`DELETE` on deactivation. All stdio behaviour, v2.5.2 limits, approval flow,
+workspace trust, delimiting and truncation are unchanged; remote connections
+reuse the same approval/trust/invalidation model, now fingerprinted over
+transport, endpoint, auth scheme and limits. Remote interoperability is only
+fixture-qualified in this build; OAuth is not implemented.
+
 **v2.5.2 — per-server MCP limits, user-configurable.** `quantsmind.mcp.servers`
 now accepts per-server `timeoutMs` (default 10,000 ms, clamped 250–300,000 ms)
 and `maxToolOutputChars` (default 20,000, clamped 1,000–200,000). Legacy
