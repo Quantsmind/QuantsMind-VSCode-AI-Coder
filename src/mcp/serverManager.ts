@@ -64,7 +64,7 @@ export class McpServerManager {
   }
 
   /** Returns the connection for a server, reusing a healthy one; undefined when not configured/approved or on failure. */
-  async client(server: { name: string; command: string; args: readonly string[] }): Promise<McpClient | undefined> {
+  async client(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<McpClient | undefined> {
     const existing = this.clients.get(server.name);
     if (existing?.isConnected() === true) {
       return existing;
@@ -77,14 +77,20 @@ export class McpServerManager {
     return undefined;
   }
 
-  async connectApproved(server: { name: string; command: string; args: readonly string[] }): Promise<McpClient> {
+  async connectApproved(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<McpClient> {
     const cached = await this.client(server);
     if (cached !== undefined) {
       this.setState(server.name, 'connected');
       return cached;
     }
     this.setState(server.name, 'connecting');
-    const client = new McpClient({ name: server.name, command: server.command, args: server.args });
+    const client = new McpClient({
+      name: server.name,
+      command: server.command,
+      args: server.args,
+      ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+      ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+    });
     try {
       await client.connect();
       this.clients.set(server.name, client);
@@ -99,13 +105,13 @@ export class McpServerManager {
     }
   }
 
-  async listTools(server: { name: string; command: string; args: readonly string[] }): Promise<readonly McpTool[]> {
+  async listTools(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<readonly McpTool[]> {
     const client = await this.connectApproved(server);
     return client.listTools();
   }
 
   async callTool(
-    server: { name: string; command: string; args: readonly string[] },
+    server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number },
     tool: string,
     args: unknown,
     maxOutputChars?: number,
