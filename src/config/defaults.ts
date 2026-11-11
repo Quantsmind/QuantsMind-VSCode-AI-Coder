@@ -36,6 +36,7 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = Object.freeze([
   'npm run lint',
   'npm test',
   'npm run test:unit',
+  'npm run verify',
 ]);
 
 export const MAX_CONVERSATIONS = 30;

@@ -570,19 +570,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   };
 
   register(COMMANDS.showMenu, showMenu);
-  const runCodingAgent = async (): Promise<void> => {
-    const prompt = await vscode.window.showInputBox({
-      title: 'QuantsMind: Run Coding Agent',
-      prompt: 'Describe the coding task. The agent will inspect the workspace with read-only tools and return a result.',
-      ignoreFocusOut: true,
-      placeHolder: 'For example: find where provider errors are normalized',
-    });
-    if (prompt === undefined || prompt.trim().length === 0) {
-      return;
-    }
-    await chatProvider.runCodingAgentAndReveal(prompt.trim());
-  };
-  register('quantsmind.runCodingAgent', runCodingAgent);
   register(COMMANDS.inspectWorkspace, inspectWorkspace);
   register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
   register(COMMANDS.showVersion, showVersion);

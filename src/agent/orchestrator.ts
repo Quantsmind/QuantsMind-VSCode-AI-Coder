@@ -808,7 +808,9 @@ export class AgentOrchestrator implements IAgentController {
       return undefined;
     }
     if (currentBytes + addition > budget) {
-      return `The agentic engine cumulative patch budget of ${budget} characters of proposed change content was reached (quantsmind.agenticEngine.maxPatchSizeChars).`;
+      // No public setting exists for this budget; describe it as an internal
+      // limit instead of pointing at a nonexistent setting id.
+      return `The agentic engine cumulative patch budget (${budget} characters of proposed change content) was reached. Narrow the change or split the task.`;
     }
     return undefined;
   }
@@ -819,7 +821,9 @@ export class AgentOrchestrator implements IAgentController {
       return undefined;
     }
     if (current.providerCalls >= limits.maxProviderRequests) {
-      return `The agentic engine provider budget of ${limits.maxProviderRequests} provider request(s) was reached (quantsmind.agenticEngine.maxProviderRequests).`;
+      // No public setting exists for this budget; describe it as an internal
+      // limit instead of pointing at a nonexistent setting id.
+      return `The agentic engine provider budget (${limits.maxProviderRequests} provider request(s)) was reached. Split the task or add context more narrowly.`;
     }
     if (taskId !== undefined) {
       const execution = current.executions.find((candidate) => candidate.taskId === taskId);

@@ -187,7 +187,8 @@ suite('orchestrator execution budgets (v2.5.7)', () => {
 
     expect(harness.counters.complete).to.equal(1); // the change-plan model call is refused by the shared budget
     expect(afterApprove.state).to.equal('failed');
-    expect(afterApprove.error ?? '').to.contain('maxProviderRequests');
+    expect(afterApprove.error ?? '').to.contain('provider budget');
+    expect(afterApprove.error ?? '').to.not.contain('maxProviderRequests'); // no public setting id exists for the internal budget
     expect(harness.counters.apply).to.equal(0);
   });
 
