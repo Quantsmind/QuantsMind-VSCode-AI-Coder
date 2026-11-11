@@ -287,7 +287,10 @@ export class McpClient {
     if (signal?.aborted === true) {
       throw new McpError('cancelled', 'The MCP call was cancelled before it started.');
     }
-    const limit = Math.max(1_000, Math.min(maxOutputChars ?? this.config.maxToolOutputChars ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS, 200_000));
+    const configured = maxOutputChars ?? this.config.maxToolOutputChars ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS;
+    const limit = Number.isFinite(configured)
+      ? Math.max(1_000, Math.min(configured, 200_000))
+      : DEFAULT_MAX_TOOL_OUTPUT_CHARS;
     const result = await this.request('tools/call', { name: toolName, arguments: args ?? {} }, signal);
     const parsed = result as { isError?: unknown; content?: unknown };
     const isError = parsed.isError === true;
