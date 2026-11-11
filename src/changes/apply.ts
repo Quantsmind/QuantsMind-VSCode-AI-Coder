@@ -24,6 +24,8 @@ export interface AppliedFile {
   readonly before?: string;
   readonly after?: string;
   readonly backupName: string;
+  /** Set when the before-image is missing or unreadable; the restore is impossible. */
+  readonly corrupt?: string;
 }
 
 export interface ApplyOutcome {
@@ -273,6 +275,14 @@ export async function undoAppliedChanges(
   for (const file of [...applied].reverse()) {
     const base = { changeId: file.changeId, path: file.path };
     try {
+      if (file.corrupt !== undefined) {
+        // The before-image for an applied change is missing or unreadable —
+        // the restore cannot succeed. Report it as failed, never restored.
+        results.push(
+          statusFor({ ...base, status: 'failed', message: file.corrupt }),
+        );
+        continue;
+      }
       switch (file.kind) {
         case 'create': {
           if (!(await fs.exists(file.path))) {

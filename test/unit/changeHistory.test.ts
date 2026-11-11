@@ -196,7 +196,7 @@ suite('undo from history', () => {
     expect(fs.files.get('src/a.ts')).to.equal('user edit');
   });
 
-  test('skips files without applied status or a backup', async () => {
+  test('skips non-applied files; a missing backup surfaces as an explicit failure', async () => {
     const fs = new MemoryChangeFs();
     const outcome = await undoHistoryEntry(
       entry('t1', {
@@ -208,18 +208,26 @@ suite('undo from history', () => {
       }),
       fs,
     );
-    expect(outcome.results).to.deep.equal([]);
+    // Files without applied status or without a backup record produce no restore at all.
+    expect(outcome.results).to.have.length(1);
+    expect(outcome.results[0]?.status).to.equal('failed');
+    expect(outcome.results[0]?.message).to.contain('missing');
     expect(outcome.restored).to.equal(0);
+    expect(outcome.failed).to.equal(1);
   });
 
-  test('ignores corrupt backup records without throwing', async () => {
+  test('reports corrupt backup records as failed without throwing', async () => {
     const fs = new MemoryChangeFs({ 'src/a.ts': 'current' });
     fs.backups.set('change-1.json', '{not json');
     const outcome = await undoHistoryEntry(
       entry('t1', { files: [file({ kind: 'modify', path: 'src/a.ts' })] }),
       fs,
     );
-    expect(outcome.results).to.deep.equal([]);
+    expect(outcome.restored).to.equal(0);
+    expect(outcome.conflicts).to.equal(0);
+    expect(outcome.failed).to.equal(1);
+    expect(outcome.results[0]?.status).to.equal('failed');
+    expect(outcome.results[0]?.message).to.contain('parse');
   });
 
   test('round-trips a real apply through history undo', async () => {

@@ -7,10 +7,24 @@ import {
 } from '../../src/security/workspaceTrust';
 
 suite('workspace trust decisions', () => {
-  test('uses the supplied check and fails open only when none is supplied', () => {
+  test('a missing check fails closed', () => {
+    expect(isTrusted(undefined)).to.equal(false);
+  });
+
+  test('only an exact `true` grants trust', () => {
     expect(isTrusted(() => true)).to.equal(true);
     expect(isTrusted(() => false)).to.equal(false);
-    expect(isTrusted(undefined)).to.equal(true);
+    expect(isTrusted(() => 1 as unknown as boolean)).to.equal(false);
+    expect(isTrusted(() => 'true' as unknown as boolean)).to.equal(false);
+    expect(isTrusted(() => undefined as unknown as boolean)).to.equal(false);
+  });
+
+  test('a check that throws fails closed instead of denying loudly or granting silently', () => {
+    expect(
+      isTrusted(() => {
+        throw new Error('host trust API unavailable');
+      }),
+    ).to.equal(false);
   });
 
   test('reads the check on every call instead of caching a decision', () => {

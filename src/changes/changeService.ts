@@ -1,6 +1,5 @@
-import * as path from 'node:path';
-import * as fsp from 'node:fs/promises';
 import * as vscode from 'vscode';
+import { backupRetentionKey, pruneBackupFolders, safeBackupSegment } from './prune';
 import type { SettingsService } from '../config/settings';
 import { isPathExcluded } from '../context/filters';
 import type { Logger } from '../security/logger';
@@ -58,56 +57,28 @@ export class ChangeService {
   }
 
   private safeTaskId(taskId: string): string {
-    return taskId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'task';
+    return safeBackupSegment(taskId);
   }
 
   /**
-   * Deletes backup directories under `backupRoot` whose change set is no longer
-   * in the bounded history store. Plaintext before-images must not accumulate
+   * Deletes backup leaves under `backupRoot` whose change set is no longer in
+   * the bounded history store. Plaintext before-images must not accumulate
    * forever. Best-effort: a failed sweep is logged, never applied to the result.
+   * The sweep preserves leaves holding non-backup content (see prune.ts).
    */
   private async pruneBackups(): Promise<void> {
     try {
-      const keep = new Map<string, Set<string>>();
+      const keep = new Set<string>();
       for (const entry of this.history.list()) {
-        const taskKey = this.safeTaskId(entry.taskId);
-        const applyKey = this.safeTaskId(entry.applyId);
-        const set = keep.get(taskKey) ?? new Set<string>();
-        set.add(applyKey);
-        keep.set(taskKey, set);
+        keep.add(backupRetentionKey(entry.taskId, entry.applyId));
       }
-      const root = path.resolve(this.backupRoot.fsPath);
-      const taskDirs = await fsp.readdir(root, { withFileTypes: true });
-      for (const taskDir of taskDirs) {
-        if (!taskDir.isDirectory()) {
-          continue;
-        }
-        const taskKey = this.safeTaskId(taskDir.name);
-        const applyRoot = path.resolve(root, taskDir.name);
-        if (applyRoot !== root && !applyRoot.startsWith(root + path.sep)) {
-          continue;
-        }
-        const applyDirs = await fsp.readdir(applyRoot, { withFileTypes: true });
-        const keepSet = keep.get(taskKey);
-        for (const applyDir of applyDirs) {
-          if (!applyDir.isDirectory()) {
-            continue;
-          }
-          const applyKey = this.safeTaskId(applyDir.name);
-          const applyPath = path.resolve(applyRoot, applyDir.name);
-          if (!applyPath.startsWith(applyRoot + path.sep)) {
-            continue;
-          }
-          if (keepSet === undefined || !keepSet.has(applyKey)) {
-            await fsp.rm(applyPath, { recursive: true, force: true });
-          }
-        }
-        // Best effort: drop the task directory itself when nothing was kept.
-        const remaining = await fsp.readdir(applyRoot);
-        if (remaining.length === 0) {
-          await fsp.rmdir(applyRoot).catch(() => undefined);
-        }
+      const result = await pruneBackupFolders(this.backupRoot.fsPath, keep);
+      for (const item of result.skipped) {
+        this.logger.warn(`change backup sweep skipped ${item.path}: ${item.reason}`);
       }
+      this.logger.info(
+        `change backup sweep: kept=${result.kept.length} pruned=${result.deleted.length} skipped=${result.skipped.length}`,
+      );
     } catch (error) {
       this.logger.warn(
         `change backup pruning skipped: ${error instanceof Error ? error.message : 'unknown error'}`,
