@@ -59,6 +59,21 @@ the Gate 3 qualification remediation.
 
 ### Added
 
+**v2.5.5 — advanced coding workflows.** Substantial coding tasks now flow
+through a structured, evidence-grounded plan instead of an inline edit:
+deterministic routing and task categorization (bugfix, feature, refactor,
+test, docs, dependency, cross-language), an envelope distinguishing locally
+established evidence from model assumptions, expected-file scope tracking
+with in-scope/unexpected/missing classification, patch cancellation between
+files (unprocessed files are reported as skipped), workflow checkpoint phases
+persisted as session events with validated transitions, crash/interruption
+restoration that forces file inspection instead of silently re-applying, and
+a `detect_build_system` validation plan grounded in detected tooling (no
+invented commands; `not-run`/`passed`/`failed`/`skipped`/`blocked`/
+`inconclusive` outcome reporting). Simple tasks are untouched; all approval
+boundaries, the allowlist command runner, workspace trust, MCP behavior and
+v2.5.2–v2.5.4 semantics are unchanged.
+
 **v2.5.4 — multi-language intelligence.** New central language capability
 registry (`src/languages/registry.ts`, 20 families with qualification levels
 `analysis`/`detection`) and a bounded, deterministic, content-free workspace

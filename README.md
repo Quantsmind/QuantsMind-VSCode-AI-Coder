@@ -117,6 +117,14 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **Coding workflows (v2.5.5).** Substantial tasks get structured,
+  evidence-grounded plans with explicit evidence-vs-assumption labels; change
+  sets are tracked against the plan (in-scope, unexpected, missing); the
+  apply pipeline supports cancellation between files; session restoration
+  after an interrupted edit forces inspection instead of silently
+  re-running; `detect_build_system` returns a bounded validation plan grounded
+  in what was actually detected. See the
+  [coding workflows documentation](docs/CODING_WORKFLOWS.md).
 - **Language intelligence (v2.5.4).** The extension understands your
   workspace's language mix: a bounded inventory identifies primary and
   supporting languages (with detection confidence), language-adaptive
@@ -357,6 +365,7 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 ## Documentation
 
 - [Agent workflow](docs/AGENT_WORKFLOW.md)
+- [Coding workflows](docs/CODING_WORKFLOWS.md)
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)
 - [Language intelligence](docs/LANGUAGE_INTELLIGENCE.md)
 - [Execution, build and test integration](docs/BUILD_AND_TEST.md)

@@ -42,6 +42,17 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
+## Coding workflows (v2.5.5) — structured plans and validation
+
+See [Coding workflows](CODING_WORKFLOWS.md) for the full contract:
+structured plans for substantial tasks (routing, categories, evidence
+vs assumptions), multi-file change tracking against the plan, patch safety
+and cancellation, checkpoint phases and crash restoration, and the
+detect-then-propose validation workflow. v2.5.5 composes existing systems
+(development planner, repository/language intelligence, change-set/apply
+pipeline, continuation planner) without enabling any autonomous execution or
+changing any approval boundary.
+
 ## Language intelligence (WP1–WP6) — added in v2.5.4
 
 See [Language intelligence](LANGUAGE_INTELLIGENCE.md) for the full contract:
