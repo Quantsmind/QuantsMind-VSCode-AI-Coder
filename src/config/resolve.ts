@@ -1,4 +1,5 @@
 import { parseMcpEndpoint } from '../mcp/endpoint';
+import { AGENT_LIMIT_BOUNDS, AGENT_LIMIT_DEFAULTS } from '../agent/limits';
 import {
   getProviderProfile,
 } from '../providers/profiles';
@@ -533,5 +534,33 @@ export function resolveLanguageIntelligenceSettings(
 ): ResolvedLanguageIntelligenceSettings {
   return {
     enabled: booleanValue(raw.enabled, DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED),
+  };
+}
+export interface RawAgenticEngineSettings {
+  readonly maxIterations?: unknown;
+  readonly maxToolCalls?: unknown;
+  readonly maxPlanRevisions?: unknown;
+  readonly maxDurationSeconds?: unknown;
+  readonly maxChangedFiles?: unknown;
+}
+
+export interface ResolvedAgenticEngineSettings {
+  readonly maxIterations: number;
+  readonly maxToolCalls: number;
+  readonly maxPlanRevisions: number;
+  readonly maxDurationMs: number;
+  readonly maxChangedFiles: number;
+}
+
+/** Agentic engine limits; conservative defaults, strict bounds, never disables anything. */
+export function resolveAgenticEngineSettings(raw: RawAgenticEngineSettings): ResolvedAgenticEngineSettings {
+  const b = AGENT_LIMIT_BOUNDS;
+  const d = AGENT_LIMIT_DEFAULTS;
+  return {
+    maxIterations: numberValue(raw.maxIterations, d.maxIterations, b.maxIterations.min, b.maxIterations.max, true),
+    maxToolCalls: numberValue(raw.maxToolCalls, d.maxToolCalls, b.maxToolCalls.min, b.maxToolCalls.max, true),
+    maxPlanRevisions: numberValue(raw.maxPlanRevisions, d.maxPlanRevisions, b.maxPlanRevisions.min, b.maxPlanRevisions.max, true),
+    maxDurationMs: numberValue(typeof raw.maxDurationSeconds === 'number' && Number.isFinite(raw.maxDurationSeconds as number) ? (raw.maxDurationSeconds as number) * 1000 : undefined, d.maxDurationMs, b.maxDurationMs.min, b.maxDurationMs.max, true),
+    maxChangedFiles: numberValue(raw.maxChangedFiles, d.maxChangedFiles, b.maxChangedFiles.min, b.maxChangedFiles.max, true),
   };
 }

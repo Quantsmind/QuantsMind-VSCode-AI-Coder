@@ -339,6 +339,15 @@ export interface AgentRunResult {
   readonly iterations: number;
   readonly toolResults: readonly AgentToolResult[];
   readonly messages: readonly ChatMessage[];
+  /** Engine provenance (v2.5.6): raw status/assessment for UI and diagnostics; additive. */
+  readonly engineOutcome?: {
+    readonly status: string;
+    readonly evaluation: string;
+    readonly toolCalls: number;
+    readonly revisions: number;
+    readonly filesChanged: number;
+    readonly limitReached?: string;
+  };
 }
 
 export interface RunCodingAgentOptions {

@@ -354,12 +354,57 @@
           "order": 10,
           "markdownDescription": "Enables language-adaptive prompts and language-aware context scoring. When enabled (default), the workspace language inventory (bounded, deterministic, privacy-aware) is used to focus the coding agent and chat guidance on the languages actually present and to surface cross-language relationships in context selection. Disabling restores the generic prompts and path-only context ranking. Nothing is sent anywhere; all analysis happens locally and bounded."
         },
+        "quantsmind.agenticEngine.maxIterations": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 32,
+          "scope": "application",
+          "order": 11,
+          "markdownDescription": "Maximum model turns per agentic task (v2.5.6). Hard limit enforced by the agent engine independently of the model; non-finite or out-of-range values fall back to the default."
+        },
+        "quantsmind.agenticEngine.maxToolCalls": {
+          "type": "number",
+          "default": 40,
+          "minimum": 1,
+          "maximum": 200,
+          "scope": "application",
+          "order": 12,
+          "markdownDescription": "Maximum tool dispatches per agentic task, including calls refused by policy or limits. The engine stops with an honest limit outcome instead of pretending the task completed."
+        },
+        "quantsmind.agenticEngine.maxPlanRevisions": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 5,
+          "scope": "application",
+          "order": 13,
+          "markdownDescription": "Maximum evidence-triggered plan revisions per task. After the budget is exhausted the engine stops as blocked rather than looping or expanding scope."
+        },
+        "quantsmind.agenticEngine.maxDurationSeconds": {
+          "type": "number",
+          "default": 600,
+          "minimum": 60,
+          "maximum": 1800,
+          "scope": "application",
+          "order": 14,
+          "markdownDescription": "Maximum wall-clock seconds per agentic task. The engine halts at the deadline with an honest limit outcome."
+        },
+        "quantsmind.agenticEngine.maxChangedFiles": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 100,
+          "scope": "application",
+          "order": 15,
+          "markdownDescription": "Maximum distinct files the agent engine may target with mutating tools (write/create/rename/delete/folder ops). Excess requests are refused before dispatch regardless of approvals downstream."
+        },
         "quantsmind.mcp.servers": {
           "type": "array",
           "default": [],
           "scope": "application",
           "order": 9,
-          "markdownDescription": "MCP (Model Context Protocol) servers the agent may use. Each entry names a local stdio process (`command`) or a remote Streamable HTTP endpoint (`url`, HTTPS required except loopback development). Tool calls always require explicit approval and tool output is treated as untrusted data. Servers send and receive newline-delimited JSON-RPC over stdio (stdio transport) or JSON/SSE framed JSON-RPC 2.0 over HTTP POST (streamable-http transport). Both per-request timeout (`timeoutMs`, default 10,000 ms, 250Ã¢â‚¬â€œ300,000 ms) and tool-output cap (`maxToolOutputChars`, default 20,000, 1,000Ã¢â‚¬â€œ200,000) are configurable per server. Existing configurations without these properties keep the defaults.",
+          "markdownDescription": "MCP (Model Context Protocol) servers the agent may use. Each entry names a local stdio process (`command`) or a remote Streamable HTTP endpoint (`url`, HTTPS required except loopback development). Tool calls always require explicit approval and tool output is treated as untrusted data. Servers send and receive newline-delimited JSON-RPC over stdio (stdio transport) or JSON/SSE framed JSON-RPC 2.0 over HTTP POST (streamable-http transport). Both per-request timeout (`timeoutMs`, default 10,000 ms, 250ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ300,000 ms) and tool-output cap (`maxToolOutputChars`, default 20,000, 1,000ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ200,000) are configurable per server. Existing configurations without these properties keep the defaults.",
           "items": {
             "type": "object",
             "required": [
@@ -410,14 +455,14 @@
                 "default": 10000,
                 "minimum": 250,
                 "maximum": 300000,
-                "markdownDescription": "Per-request timeout in milliseconds (10,000 default; 250Ã¢â‚¬â€œ300,000 clamp). Applies to both initialize and tool-call requests. Client-side clamping enforces the same bounds."
+                "markdownDescription": "Per-request timeout in milliseconds (10,000 default; 250ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ300,000 clamp). Applies to both initialize and tool-call requests. Client-side clamping enforces the same bounds."
               },
               "maxToolOutputChars": {
                 "type": "number",
                 "default": 20000,
                 "minimum": 1000,
                 "maximum": 200000,
-                "markdownDescription": "Maximum characters of MCP tool output returned to the agent (20,000 default; 1,000Ã¢â‚¬â€œ200,000 clamp). Output stays wrapped in the untrusted-data delimiters regardless of this cap."
+                "markdownDescription": "Maximum characters of MCP tool output returned to the agent (20,000 default; 1,000ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ200,000 clamp). Output stays wrapped in the untrusted-data delimiters regardless of this cap."
               },
               "transport": {
                 "type": "string",
@@ -432,7 +477,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 2048,
-                "markdownDescription": "MCP Streamable HTTP endpoint (`streamable-http` transport only). `https:` is required for production remote connections; `http:` is permitted only for loopback development/test endpoints (`localhost`, `127.0.0.1`, `::1`). Userinfo, query strings and fragments are rejected Ã¢â‚¬â€ credentials never belong in the URL; store them with `QuantsMind: Manage MCP Servers` (SecretStorage) instead. Certificate verification is never disabled."
+                "markdownDescription": "MCP Streamable HTTP endpoint (`streamable-http` transport only). `https:` is required for production remote connections; `http:` is permitted only for loopback development/test endpoints (`localhost`, `127.0.0.1`, `::1`). Userinfo, query strings and fragments are rejected ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â credentials never belong in the URL; store them with `QuantsMind: Manage MCP Servers` (SecretStorage) instead. Certificate verification is never disabled."
               },
               "auth": {
                 "type": "string",

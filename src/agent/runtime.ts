@@ -18,8 +18,9 @@ import { selectWorkspaceRoot } from '../workspace/rootPolicy';
 import type { RepositoryIntelligenceService } from '../repository/repositoryIntelligence';
 import { AgentOrchestrator } from './orchestrator';
 import type { AgentSessionView } from './models';
-import { AgentToolRegistry, runCodingAgent, type AgentModelClient } from './codingAgent';
+import { AgentToolRegistry, type AgentModelClient } from './codingAgent';
 import { DEFAULT_SYSTEM_PROMPT } from './codingAgent';
+import { runAgentEngine } from './engine';
 import { buildStackGuidance } from './stackGuidance';
 import { cachedLanguageInventory } from '../languages/inventory';
 import { describeCapabilities } from '../providers/capabilities';
@@ -504,17 +505,43 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
       readonly maxIterations?: number;
       readonly signal?: AbortSignal;
       readonly onEvent?: (event: import('./codingAgent').AgentRunEvent) => void;
-    }) => {
+    }): Promise<import('./codingAgent').AgentRunResult> => {
       const guidance = await buildStackGuidanceForTask();
-      return runCodingAgent({
+      const agentic = deps.settings.getAgenticEngineSettings();
+      const outcome = await runAgentEngine({
         task,
         model,
         tools: toolRegistry.list(),
-        maxIterations: options?.maxIterations,
+        limits: {
+          maxIterations: options?.maxIterations ?? agentic.maxIterations,
+          maxToolCalls: agentic.maxToolCalls,
+          maxPlanRevisions: agentic.maxPlanRevisions,
+          maxDurationMs: agentic.maxDurationMs,
+          maxChangedFiles: agentic.maxChangedFiles,
+        },
         signal: options?.signal,
         onEvent: options?.onEvent,
         ...(guidance.length > 0 ? { systemPrompt: `${DEFAULT_SYSTEM_PROMPT}${guidance}` } : {}),
       });
+      const mappedStatus = outcome.status === 'blocked' || outcome.status === 'recovery-required' || outcome.status === 'paused'
+        ? 'limit'
+        : outcome.status === 'error' ? 'error'
+          : outcome.status;
+      return {
+        status: mappedStatus,
+        finalText: outcome.finalText,
+        iterations: outcome.iterations,
+        toolResults: outcome.toolResults,
+        messages: outcome.messages,
+        engineOutcome: {
+          status: outcome.status,
+          evaluation: outcome.evaluation,
+          toolCalls: outcome.toolCalls,
+          revisions: outcome.revisions,
+          filesChanged: outcome.filesChanged.length,
+          ...(outcome.limitReached !== undefined ? { limitReached: outcome.limitReached } : {}),
+        },
+      };
     },
   };
   const listeners = new Set<(view: AgentSessionView) => void>();

@@ -5,6 +5,8 @@ import {
   resolveCommandSettings,
   resolveContextSettings,
   resolveMcpSettings,
+  type ResolvedAgenticEngineSettings,
+  resolveAgenticEngineSettings,
   resolveLanguageIntelligenceSettings,
   resolveProviderSettings,
   resolveWorkspaceSettings,
@@ -84,6 +86,17 @@ export class SettingsService {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     return resolveLanguageIntelligenceSettings({
       enabled: config.get<unknown>('languageIntelligence.enabled'),
+    });
+  }
+
+  getAgenticEngineSettings(): ResolvedAgenticEngineSettings {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    return resolveAgenticEngineSettings({
+      maxIterations: config.get<unknown>('agenticEngine.maxIterations'),
+      maxToolCalls: config.get<unknown>('agenticEngine.maxToolCalls'),
+      maxPlanRevisions: config.get<unknown>('agenticEngine.maxPlanRevisions'),
+      maxDurationSeconds: config.get<unknown>('agenticEngine.maxDurationSeconds'),
+      maxChangedFiles: config.get<unknown>('agenticEngine.maxChangedFiles'),
     });
   }
 
