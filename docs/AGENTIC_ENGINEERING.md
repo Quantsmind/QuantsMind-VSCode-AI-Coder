@@ -164,6 +164,17 @@ when supported, with the text-envelope fallback unchanged.
 Invalid values fall back to defaults (duration clamps to 60–1,800 s). No
 setting exists that disables workspace trust, approvals or limits.
 
+## General Availability (v3.0.0) — 2026-11-11
+
+The v3.0.0 GA milestone closes the four v2.5.7 contract gaps so both agent entry paths honor the same bounded guarantees end to end:
+
+1. **Task-level duration budgets.** A task's budget is measured from the task's own `startedAt` — never from session creation — so a long-lived session cannot consume a newly started task's budget, and a restored task with a spent budget is refused instead of silently resumed.
+2. **Honest tool-call accounting.** Outcomes carry real `toolCalls` (dispatched) and `refusedToolCalls` (authorization denials) counted at the shared dispatch boundary; counts are never synthesized from provider evidence or model text.
+3. **Cumulative patch-size protection.** Prepared and repair change sets are cumulatively budget-checked before any approval is built — the engine's refuse-before-dispatch and the orchestrator's refuse-before-approval agree at the same limit.
+4. **Consistent consecutive-failure handling.** Both paths use `maxConsecutiveFailures`; a passing validation resets the sequence; the third consecutive failure stops the session with an honest outcome, never a repair loop.
+
+The v2.5.7 approval semantics, evidence discipline and backward compatibility are unchanged; the v2.5.7 section below is the mechanics reference.
+
 ## Unified runtime (v2.5.7) — same guarantees, both doors
 
 The extension has two agent entry paths. Since v2.5.6 they shared the

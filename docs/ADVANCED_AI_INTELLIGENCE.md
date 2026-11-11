@@ -42,6 +42,10 @@ paths; nothing bypasses the existing approval or trust boundaries.
 - `estimateTokens` (chars/4) is a deterministic estimate; provider-reported
   usage remains authoritative.
 
+## General Availability (v3.0.0) — 2026-11-11
+
+The unified bounded execution runtime now closes the four v2.5.7 contract gaps: task-level duration budgets (from `startedAt`, not session creation), honest tool-call accounting (`toolCalls`, `refusedToolCalls`), cumulative patch-size protection across prepared and repair change sets (enforced before any approval is built), and a shared `maxConsecutiveFailures` sequence reset by a passing validation. Completion is decided from tool evidence on both paths. See [agentic engineering](AGENTIC_ENGINEERING.md) and [CODING_WORKFLOWS.md](CODING_WORKFLOWS.md).
+
 ## Release candidate (v2.5.7) — unified agent runtime
 
 As of v2.5.7 both agent entry paths (chat agent and approval-oriented

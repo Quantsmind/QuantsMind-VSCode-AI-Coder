@@ -5,6 +5,19 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.0.0] - 2026-11-11
+
+General Availability. Unified bounded agent execution across both agent entry paths; four v2.5.7 contract gaps closed; three hard limits per task; backward compatible with all v2.5.x series settings.
+
+### Fixed
+
+**v2.5.7 GA-gap closures.** (1) Per-task duration budget: task executions now measure elapsed time from the task's first startedAt, not from session creation; a long-lived session cannot consume a newly started task's budget, and a restored task with a spent budget is refused instead of silently resumed. (2) Honest tool-call accounting: outcomes report actual dispatched and refused tool calls counted at the shared dispatch boundary, never inferred from provider calls or model plans. (3) Repair-envelope patch-size protection: prepared and repair change sets are checked before any approval is built, including the cumulative patch budget across the session, not just the largest single change set; refuse-before-dispatch (engine) and refuse-before-approval (orchestrator) now agree. (4) Consistent consecutive-failure handling: both entry paths use the same maxConsecutiveFailures accounting semantics; a passing validation resets the sequence; the third consecutive failure stops the session with an honest outcome instead of repairing forever. All are covered by new deterministic regression tests in test/unit/v3GapClosure.test.ts.
+
+### Changed
+
+**Version: 3.0.0.** quantsmind.agenticEngine.* defaults and bounds are unchanged. Completion reporting is evidence-based on both paths (failed tool calls, failed validations, over-budget patches and unapproved actions can never read as complete). The VS Code engine range, configuration schema, and MCP/transport guarantees are unchanged.
 ## [2.0.0] - 2026-11-08
 
 Release bundling the agentic coding work merged on top of 1.3.0 and
@@ -54,225 +67,6 @@ the Gate 3 qualification remediation.
 - Integration suite: 65 passing on a single extension host, reproducibly.
 - `npm run verify` passes end to end (package, VSIX inspection, packaged-host
   tests, install verification).
-
-## [Unreleased]
-
-### Added
-
-**v2.5.7 — unified agent runtime and release-candidate hardening.** Both
-agent entry paths now share one execution substrate: the chat agent and the
-approval orchestrator both enforce the validated
-`quantsmind.agenticEngine.*` bundle (provider requests 12, duration 10
-minutes, changed files 25); the orchestrator applies the provider-request and
-duration budgets before every model call and refuses a proposed change set
-that exceeds the changed-files or cumulative patch budget **before any
-approval is built** (engine-symmetric refuse-before-dispatch). A shared
-typed outcome contract (`EngineeringOutcome`) maps both paths onto the same
-completed/partial/blocked/failed/paused/cancelled/recovery-required
-reporting with an evidence-based evaluation; sessions carry a bounded typed
-`Outcome:` timeline note. Approval flow, workspace trust, MCP behavior and
-v2.5.1–v2.5.6 guarantees are unchanged; settings are backward compatible.
-Establishes the qualification baseline for v3.0.0 GA.
-
-**v2.5.6 — agentic engineering.** A bounded agent execution engine
-(`src/agent/engine.ts`) now drives the coding-agent path: plan → execute →
-observe → evaluate loops with explicit, validated state and hard,
-model-independent limits (iterations: 10; tool calls: 40; provider requests:
-12; plan revisions: 2; duration: 10 minutes; per-result output clamp;
-cumulative patch budget; changed-file budget; consecutive-failure stop).
-Completion is determined from tool evidence (no claim of success from model
-text alone); repeated identical failures trigger a bounded plan revision
-before the run stops as blocked; uncertain mutating-tool failures yield
-`recovery-required` instead of blind retries; mutation budgets (files, patch
-bytes) refuse out-of-scope or oversized work before dispatch regardless of
-downstream approvals. Five validated `quantsmind.agenticEngine.*` settings
-(defaults conservative, non-finite/out-of-range values clamp or fall back);
-the chat agent path now reports `engineOutcome` (status/evaluation/counts) for
-honest completion reporting. Existing approvals, workspace trust, MCP
-behavior and v2.5.2–v2.5.5 semantics are unchanged; no unrestricted autonomy,
-no auto-install, no auto-deploy.
-
-**v2.5.5 — advanced coding workflows.** Substantial coding tasks now flow
-through a structured, evidence-grounded plan instead of an inline edit:
-deterministic routing and task categorization (bugfix, feature, refactor,
-test, docs, dependency, cross-language), an envelope distinguishing locally
-established evidence from model assumptions, expected-file scope tracking
-with in-scope/unexpected/missing classification, patch cancellation between
-files (unprocessed files are reported as skipped), workflow checkpoint phases
-persisted as session events with validated transitions, crash/interruption
-restoration that forces file inspection instead of silently re-applying, and
-a `detect_build_system` validation plan grounded in detected tooling (no
-invented commands; `not-run`/`passed`/`failed`/`skipped`/`blocked`/
-`inconclusive` outcome reporting). Simple tasks are untouched; all approval
-boundaries, the allowlist command runner, workspace trust, MCP behavior and
-v2.5.2–v2.5.4 semantics are unchanged.
-
-**v2.5.4 — multi-language intelligence.** New central language capability
-registry (`src/languages/registry.ts`, 20 families with qualification levels
-`analysis`/`detection`) and a bounded, deterministic, content-free workspace
-language inventory (`src/languages/inventory.ts`): primary vs supporting
-languages, `confident`/`partial`/`unknown` detection, manifest markers by
-path only, 10k-entry/5 MB scan bounds, vendored/generated directories
-excluded, content-keyed memoization with automatic invalidation. The coding
-agent's system prompt gains a bounded language block (primary + secondary
-languages, tooling, explicit uncertainty note when detection is partial/unknown)
-and the chat prompt gains a bounded active-document block; both degrade
-gracefully for unknown languages. Context selection now accepts deterministic
-cross-language relationships (shared API contracts, SQL schema ↔ model symbols,
-client ↔ server route layers, build files ↔ compiled sources) with labelled
-`cross-language` candidates that cannot outrank direct matches or bypass
-token/character budgets. New setting `quantsmind.languageIntelligence.enabled`
-(application scope, default `true`); existing configurations need no migration.
-Repository overview and self-diagnostics report the inventory; no file
-contents or secrets are exposed.
-
-**v2.5.3 — MCP Streamable HTTP: secure remote connectivity.** The MCP client
-now supports remote servers over Streamable HTTP alongside stdio, behind one
-transport interface. Remote servers are configured with
-`transport: "streamable-http"` and an HTTPS `url` (plain HTTP only for
-loopback development/test); userinfo, query strings, fragments and all
-non-HTTP(S) schemes are rejected. Optional bearer authentication stores the
-token in VS Code SecretStorage only (per-server key
-`quantsmind.mcp.credential.<name>`), never in settings, logs or tool output;
-`QuantsMind: Manage MCP Servers` can set/replace/remove credentials. The HTTP
-transport captures `Mcp-Session-Id` (404 expires the session; the next
-operation initializes a fresh one), sends `MCP-Protocol-Version` after
-negotiation, refuses redirects, reads response bodies with a hard byte cap,
-supports JSON and SSE framing, fails server-initiated requests closed with
-JSON-RPC -32601, drops the connection on network/5xx/protocol-fatal failures
-(requests are never replayed), and terminates sessions with a best-effort
-`DELETE` on deactivation. All stdio behaviour, v2.5.2 limits, approval flow,
-workspace trust, delimiting and truncation are unchanged; remote connections
-reuse the same approval/trust/invalidation model, now fingerprinted over
-transport, endpoint, auth scheme and limits. Remote interoperability is only
-fixture-qualified in this build; OAuth is not implemented.
-
-**v2.5.2 — per-server MCP limits, user-configurable.** `quantsmind.mcp.servers`
-now accepts per-server `timeoutMs` (default 10,000 ms, clamped 250–300,000 ms)
-and `maxToolOutputChars` (default 20,000, clamped 1,000–200,000). Legacy
-configurations without these properties keep the defaults and need no migration.
-Values are validated at resolve time (non-finite/out-of-range fall back to the
-documented bounds) and re-clamped at runtime as defense in depth. Changing any
-launch-relevant setting (command, args, timeout, output cap or enabled)
-invalidates the cached connection and revokes its launch approval, so the next
-operation launches with the new settings and a fresh approval. Diagnostics
-report the configured limits. The JSON schema now describes both properties
-with IntelliSense documentation.
-
-**v2.5.1 — MCP security, integration and UX hardening.** MCP server launch now
-requires explicit per-window approval naming the executable, arguments and
-launch origin (application setting), never persisted, revoked on
-reconfiguration. `McpServerManager` caches connections (no duplicate process
-launches), detects crash/exit, reconnects on the next operation and terminates
-every child on extension deactivation. Protocol correctness: version
-negotiation (`2025-06-18` / `2024-11-05`), initialize result validation,
-bounded frames (oversized messages drop the connection), oversized-schema
-guards, newline-delimited JSON-RPC with per-request timeouts and
-`notifications/cancelled` for cancellation. Agent invocation remains
-per-call approval-gated with the tool's description shown; discovery never
-runs tools. New `QuantsMind: Manage MCP Servers` command (palette +
-status-bar menu): view/add/edit/enable/disable/connect/disconnect/restart,
-tool discovery, diagnostics to the `QuantsMind MCP` output channel. No
-secrets displayed or forwarded (environment allowlist only). Continuation
-recovery now covered by tests: restore marks interrupted tasks failed without
-replaying them; applied-file hash drift fails restore; cancellation state
-round-trips; an approve/cancel pair is enforced by the restore report.
-Third-party MCP servers are **not** verified in this build (registry metadata
-for `@modelcontextprotocol/server-filesystem@2.2.0` is reachable; no download or
-execution without explicit local approval).
-
-**v2.5.0 — advanced AI intelligence.** Multi-provider usage reporting and cost
-accounting with explicit rate cards only; a per-window paid-provider consent
-gate for autonomous agent calls (`PaidConsentError` blocks paid calls without
-explicit consent); a bounded, per-task shared context store with
-`context_set` / `context_get` / `context_list` agent tools; a token-budget
-allocator with selection visibility attached to retrieval results
-(`RetrievalResult.budget`); a real MCP (Model Context Protocol) stdio/JSON-RPC
-client with approval-gated `mcp_list_tools` / `mcp_call` agent tools and
-untrusted-output delimiting; an interrupted-session continuation planner
-(`computeContinuationPlan`) surfaced in the session restore path; a
-stack-aware system prompt for the coding agent (evidence-based languages,
-package manager and Karkain posture); `get_usage` tool for session usage
-visibility; new `quantsmind.mcp.servers` application setting. Known limits:
-MCP support is stdio JSON-RPC for self-configured servers (no auto-execution,
-no streamable-HTTP transport yet); usage is reported only for providers that
-send it; cost requires an explicit rate card; no third-party MCP server has
-been exercised in an automated way.
-
-Milestone work layered on top of the 2.0.0 release commit (see the
-implementation reports at the repository root for qualification evidence):
-
-- **v2.2.0 — project and Karkain intelligence.** Framework detection
-  (Spring Boot, Angular, React, Next.js, Vue, Svelte, Django, Flask,
-  FastAPI, Express, NestJS, Gin, Pytest, JUnit, GoogleTest), backend /
-  frontend / shared layering with explicit unknowns, role inference, an
-  evidence-based component relationship graph, monorepo detection
-  (pnpm/turbo/nx/lerna/nested manifests), syntax-aware Karkain `.kark`
-  project detection, module resolution, cycle reporting, multi-file
-  context collection and agent tools (`get_architecture`,
-  `get_karkain_project`, `get_karkain_context`); the repository card in
-  the chat sidebar renders the architecture analysis and Karkain module
-  graph. The real Karkain compiler cannot execute on this machine;
-  analysis is built from the compiler's grammar and fixtures.
-- **v2.3.0 — execution, build and test integration.** Bounded in-memory
-  execution history with duplicate-invocation protection, cancellation
-  and timeouts; 22 build-system adapters (npm/pnpm/yarn, Maven, Gradle,
-  Go, Cargo, CMake, Make, Ninja, pip/Poetry/uv/Hatch, dotnet, MSBuild,
-  Composer, Bundler, Dart, Flutter, Swift, Karkain) with local detection
-  and toolchain probing; `run_build`, `run_tests`, `detect_build_system`
-  and `get_toolchain` agent tools that execute through the shared
-  approved command runner; conservative test-output parsing (JUnit,
-  pytest, mocha/jest/vitest, go test, cargo test, dotnet test, CTest,
-  RSpec); compiler diagnostics extraction feeding the bounded repair loop.
-- **v2.4.0 — Git, GitHub and change management.** Local Git service
-  (repository detection, branch/HEAD, staged/unstaged/untracked/deleted/
-  renamed/conflict detection, porcelain v1 `-z` parsing, merge/rebase
-  state, credential-stripped remotes, detached HEAD, recent history);
-  content-snapshot checkpoints bound to task IDs with conflict-safe
-  restore that never overwrites diverging user edits; agent tools
-  `git_status`, `git_diff`, `git_log`, `git_branch_list`, `git_remotes`,
-  `git_stage`, `git_unstage`, `git_commit`, `git_create_branch`,
-  `git_switch_branch`, `git_delete_branch`, `create_checkpoint`,
-  `restore_checkpoint`, `list_checkpoints`; explicit approval required
-  for every mutation; broad staging (`git add .`, `-a`, `*`) refused;
-  commits only from staged files with the user-approved message and SHA
-  reporting; GitHub REST integration for issues and pull requests via the
-  VS Code GitHub session token (`github_list_issues`,
-  `github_create_issue`, `github_list_pull_requests`,
-  `github_create_pull_request`), fixture-tested against a mocked REST API
-  and never verified against the live GitHub API; GitHub is optional and
-  ordinary local Git features work without it; a **Git status** card in
-  the chat sidebar shows branch, HEAD, remote, counts, in-progress
-  merge/rebase flags, recent commits, checkpoints and (when authenticated)
-  open issue/PR counts.
-
-### Fixed
-
-- Deleting a conversation no longer promotes an empty one as the new active chat; the
-  next conversation that actually holds messages is selected, and an all-empty store
-  falls back to a fresh chat.
-- `src/extension.ts` contained raw Windows-1252 separator bytes, so the compiled status
-  bar rendered a replacement character instead of the intended separator. The file is
-  now valid UTF-8 end to end.
-- The CI release job uploaded `quantsmind-vscode-ai-coder-0.3.0.vsix`, a name no build
-  has produced since 0.3.0, with `if-no-files-found: error` — so the job could only ever
-  fail on a current release.
-
-### Changed
-
-- Release verification is version-agnostic: artefact names, the installed-extension
-  identity check and the VSIX identity marker are derived from `package.json`, so a
-  version bump no longer requires editing scripts, test configs and assertions.
-- New `npm run verify:release` guard fails the chain when an artefact name, extension id
-  or user-agent is pinned to a literal version; new `npm run release` performs the
-  package.json and lockfile bump and prints the follow-up steps without committing,
-  tagging or publishing; new `npm run sha256` records artefact checksums.
-- The provider `User-Agent` reports the version supplied at activation instead of a
-  string baked into the source, which would otherwise keep shipping the previous
-  release's number.
-- CI now also runs on `release/**` branches and manual dispatch, executes the literal
-  guard, reports (without blocking on) `npm audit --audit-level=high`, and publishes the
-  VSIX plus its SHA-256 checksum as build artifacts.
 
 ## [1.1.0] - 2026-11-07
 
@@ -361,7 +155,7 @@ implementation reports at the repository root for qualification evidence):
   the most recently updated record; without a selection it falls back to the newest
   conversation that still has messages, so it can no longer land on an empty chat.
 - Empty conversations are no longer offered as history entries. The dropdown keeps the
-  conversation currently open and labels it `New chat — current, empty`, so a New Chat
+  conversation currently open and labels it `New chat ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â current, empty`, so a New Chat
   placeholder can no longer be mistaken for the `New chat` action row.
 - Saving a conversation with no messages keeps its previous `updatedAt`, so clearing a
   conversation or re-saving a placeholder no longer moves it to the top of the history.
@@ -482,7 +276,7 @@ been staged for an unreleased 0.1.1 build.
 ### Security
 
 - Fixed provider-masked API-key redaction: the exact stored credential and
-  masked forms such as `sk-…abcd` are now scrubbed from prompts, error bodies,
+  masked forms such as `sk-ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦abcd` are now scrubbed from prompts, error bodies,
   and logs.
 - Authorization headers, URL userinfo, JWTs, bearer tokens, and common provider
   key formats are sanitized before display or logging.

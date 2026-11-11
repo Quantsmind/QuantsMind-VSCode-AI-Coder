@@ -117,6 +117,13 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **General Availability (v3.0.0).** Both agent entry paths operate inside one
+  bounded, evidence-based execution runtime: per-task budget accounting,
+  honest tool-call accounting, cumulative patch-size protection and a shared
+  consecutive-failure budget; completion is decided from tool evidence on
+  both paths. See the [agentic engineering documentation](docs/AGENTIC_ENGINEERING.md),
+  the [release notes](CHANGELOG.md#300---2026-11-11) and
+  [advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md).
 - **Release candidate (v2.5.7).** Both agent entry paths now share one bounded
   execution runtime: the same validated limits (provider requests, duration,
   changed files, patch size), one outcome contract (`EngineeringOutcome`) and
