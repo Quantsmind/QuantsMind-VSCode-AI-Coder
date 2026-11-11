@@ -167,9 +167,11 @@ At a glance:
 
 - No GitHub/marketplace publication from this branch; no release.
 - Cost figures are unavailable until a host supplies an explicit rate card.
-- MCP is stdio JSON-RPC only; servers are user-configured; the server process
-  is not sandboxed by this extension (see the MCP page for the exact boundary).
-- Third-party MCP servers have **not** been verified in this build; the MCP
-  page lists the exact steps to authorize and run that verification.
+- MCP supports two transports (stdio JSON-RPC and Streamable HTTP); servers are
+  user-configured; the server process is not sandboxed by this extension (see
+  the MCP page for the exact boundary).
+- Third-party MCP servers have been verified in this lineage for stdio only
+  (see the MCP page); Streamable HTTP endpoints remain covered by the
+  fixture-based suite.
 - Karkain tooling remains syntax-aware; the real compiler cannot run on every
   machine and fixture evidence is not compiler evidence.

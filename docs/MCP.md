@@ -229,7 +229,7 @@ runs.
   redirects, sends no credentials to non-loopback plain-HTTP endpoints
   (impossible — they are rejected), keeps the bearer token in SecretStorage,
   and never reuses a connection whose configuration changed.
-- **Output**: response bodies are read with a hard byte cap (4 MiB); an
+- **Output**: response bodies are read with a hard byte cap (4,000,000 bytes); an
   oversized response drops the connection with a protocol error rather than
   buffering without bound. Server stderr (stdio) is bounded; stdout/SSE
   messages are bounded; everything server-originated is redacted for

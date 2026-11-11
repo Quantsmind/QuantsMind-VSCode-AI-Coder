@@ -16,7 +16,7 @@ VS Code host
         |         webviewHtml.ts
         |
         +-- CompletionService (provider-neutral request orchestration)
-        |     +-- registry.ts -> openaiCompatible.ts
+        |     +-- registry.ts -> openaiCompatible.ts, geminiCompatible.ts
         |           +-- endpoint.ts, cancellation.ts, errors.ts, sse.ts
         |
         +-- ContextService (explicit VS Code file/editor access)
@@ -50,9 +50,8 @@ limited to `extension.ts`, `config/settings.ts`, `context/contextService.ts`,
 `workspace/indexService.ts`, `changes/changeService.ts`, `changes/fs.ts`,
 `agent/runtime.ts`, and `chat/chatViewProvider.ts`.
 
-`src/agent/taskRunner.ts` is the legacy v0.2.0 single-task runner. It remains
-compiled and unit-tested but is not wired into the extension; the v0.3.0 control
-center uses `AgentOrchestrator`.
+The v0.2.0 single-task runner (`taskRunner`) has been removed; the control
+center and agent sessions use `AgentOrchestrator`.
 
 ## Activation and deactivation
 
@@ -85,9 +84,12 @@ deactivation. All disposables are registered in the extension context.
 - `CompletionResult` with text, model, finish reason, and usage.
 - `AiProvider` with `id`, `displayName`, and `complete`.
 
-`src/providers/registry.ts` maps a provider type to a factory. v0.3.0 registers
-only `openai-compatible`. Adding a provider means implementing `AiProvider` and
-registering it; the chat and agent layers do not change. See
+`src/providers/registry.ts` maps a provider type to a factory. It registers two
+adapters — the OpenAI-compatible adapter (all OpenAI-compatible profiles:
+OpenAI, Groq, OpenRouter, Ollama, LM Studio, llama.cpp, vLLM, Pollinations and
+the generic endpoint) and the Google Gemini adapter — fed by ten provider
+profiles in `profiles.ts`. Adding a provider means implementing `AiProvider` and
+registering a factory; the chat and agent layers do not change. See
 [PROVIDERS.md](PROVIDERS.md).
 
 `CompletionService` reads settings and the credential, validates the endpoint,
@@ -112,8 +114,10 @@ normalizes errors. Its log lines contain request metadata only.
   events when streaming is enabled.
 - Supports message content as a string or an array of text parts, and refusal
   text.
-- Rejects tool-call responses, because v0.3.0 does not send executable tool
-  definitions.
+- Native tool calling on tool-capable models sends and parses `tools` /
+  `tool_calls` across the JSON and SSE paths (see PROVIDER_CONFIGURATION.md);
+  the agent engine and the approval-gated orchestrator use them there. Image,
+  audio and other multimodal inputs are not supported.
 - Bounds error bodies to 64 KB, JSON bodies to 20 MB, a single SSE event to
   1,000,000 characters, and request content to 2,000,000 characters.
 
@@ -381,8 +385,10 @@ everything" message.
 `src/config/settings.ts` reads configuration on demand and exposes a change
 listener.
 
-Provider settings are `application` scoped; context, workspace, agent, and
-command settings are `resource` scoped. The API key is not a setting.
+Provider settings are `application` scoped; `context.*` and `workspace.*`
+settings are `resource` scoped; `agent.*`, `commands.*`, `agenticEngine.*`,
+`languageIntelligence.*` and `mcp.*` settings are `application` scoped. The
+API key is not a setting.
 
 ## Security boundaries
 

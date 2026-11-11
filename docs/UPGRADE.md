@@ -1,12 +1,15 @@
-# Upgrading from 0.2.0
+# Upgrading between releases
 
-v0.3.0 is a feature release on the same extension identity. Settings, the API
-key storage key, and the provider contract remain compatible.
+v3.0.0 ships on the same extension identity (`quantsmind.quantsmind-vscode-ai-coder`).
+Settings, the API key storage key, and the provider contract remain compatible.
+Historically, no v2.5.x VSIX was published; the most recent released artifact in
+this repository's history is the 2.0.0 candidate line, and the v3.0.0 line is
+the first GA-qualified build.
 
 ## Install
 
 ```bash
-code --install-extension quantsmind-vscode-ai-coder-0.3.0.vsix
+code --install-extension quantsmind-vscode-ai-coder-3.0.0.vsix
 ```
 
 Reload the window if VS Code requests it. The extension ID remains
@@ -31,7 +34,7 @@ Reload the window if VS Code requests it. The extension ID remains
 - Repairs are bounded by `quantsmind.agent.maxRepairIterations` and are reviewed
   and approved like any other change set.
 
-Everything from v0.2.0 remains: workspace index and retrieval, approval-first
+Everything from earlier builds remains: workspace index and retrieval, approval-first
 changes, diffs, backups, undo, change history, conversation persistence, and
 redaction.
 
@@ -44,10 +47,10 @@ redaction.
 | Provider settings | Unchanged; still application-scoped |
 | Endpoint rules | Unchanged; HTTPS remote, loopback HTTP opt-in |
 | Context exclusions | Unchanged; built-ins still mandatory |
-| Command allowlist | Unchanged defaults; risk classification is new |
-| v0.2.0 conversations | Unchanged; stored separately from agent sessions |
-| v0.2.0 change history | Unchanged; backups remain valid |
-| Agent sessions | New `quantsmind.agent.sessions.v1` store; no v0.2.0 equivalent |
+| Command allowlist | Default now includes `npm run verify`; risk classification enforced |
+| Prior conversations | Unchanged; stored separately from agent sessions |
+| Prior change history | Unchanged; backups remain valid |
+| Agent sessions | `quantsmind.agent.sessions.v1` store |
 | Existing workspace files | Untouched until you approve a change |
 
 ## Recommended first run
@@ -63,10 +66,10 @@ redaction.
 
 ## Rollback
 
-Installing the 0.2.0 VSIX again restores the previous single-task workflow.
-Agent-session records remain in extension global storage but are ignored by
-0.2.0; remove them manually if you want a clean rollback. Files and backups
-created by 0.3.0 are not removed automatically.
+Installing the previous VSIX again restores the previous build. Agent-session
+records remain in extension global storage but are ignored by older builds;
+remove them manually if you want a clean rollback. Files and backups created by
+the current build are not removed automatically.
 
 ## Breaking changes
 

@@ -24,7 +24,7 @@ started through the approved path, including long-running ones:
 ## Build adapters
 
 `src/build/adapters.ts` provides a common adapter interface implemented by
-every registered build system (Maven, Gradle, npm/pnpm/yarn/bun, pip/Poetry/uv/
+every registered build system (Maven, Gradle, npm/pnpm/yarn, pip/Poetry/uv/
 Hatch, Go, Cargo, CMake, Make, Ninja, dotnet, MSBuild, Composer, Bundler,
 Dart, Flutter, Swift and Karkain). Detection is local and path-based with
 manifest-content confirmation; nothing executes during detection.

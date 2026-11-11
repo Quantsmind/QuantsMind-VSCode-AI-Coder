@@ -186,7 +186,7 @@ execution limits and configuration resolution:
 |---|---|---|
 | Engine | `runAgentEngine` (direct) | Shared execution budget enforced before each provider call |
 | Provider-requests budget (`agenticEngine.maxProviderRequests`) | hard stop per task | enforced at plan/execute/repair funnels; over-budget sessions fail closed |
-| Duration budget (`maxDurationSeconds`) | engine deadline | enforced at the same funnels from `createdAt` |
+| Duration budget (`maxDurationSeconds`) | engine deadline | enforced at the same funnels from the task's `startedAt` anchor (never `createdAt`) |
 | Changed-file / patch-size budget | refuses out-of-budget mutations pre-dispatch | refuses the proposed change set **before any approval is built** |
 | Approvals | tools self-approve (trust + allowlist + per-call) | plan → change-set → repair approvals, unchanged |
 | Pause/resume | step-boundary `paused` outcome | session pause/resume, unchanged |
@@ -209,7 +209,8 @@ keeps its interaction model. No authority is shared or elevated:
   independent gates — both must pass for consequential actions.
 - Approvals restore never silently replays an uncertain operation.
 
-Next milestone: **v3.0.0 GA**.
+**v3.0.0 GA shipped 2026-11-11** on `feature/v3.0.0-ga`; see CHANGELOG `[3.0.0]` and
+`docs/audit/V3.0.0-PROJECT-WIDE-GAP-AUDIT.md`.
 
 ## Known limitations
 

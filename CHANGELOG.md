@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0] - 2026-11-11
 
-General Availability. Unified bounded agent execution across both agent entry paths; four v2.5.7 contract gaps closed; three hard limits per task; backward compatible with all v2.5.x series settings.
+General Availability. Unified bounded agent execution across both agent entry paths; four v2.5.7 contract gaps closed; the per-task and session-wide budgets are enforced at execution boundaries; backward compatible with v2.5.x-series settings where they were ever combined into a build (the 2.5.x line was an internal milestone series and was never tagged in package.json — this is the first 3.x release).
+
+### Security (v3.0.0 project-wide qualification remediation)
+
+**Project-wide audit and fix pass** (`docs/audit/V3.0.0-PROJECT-WIDE-GAP-AUDIT.md`, commit `1c650f9` and follow-ups): a launch-gate bypass in the MCP management UI (`discoverTools` connected/launched servers without workspace trust or launch approval — fixed with a shared approval gate); command runner, orchestrator and runtime authorization defaults fail closed; approval binds to the exact command/cwd shown and is re-validated before execution; secret redaction no longer falls back across provider credential scopes; tool exceptions and MCP server error payloads are redacted before they reach the model; Streamable HTTP timeouts can no longer collapse to NaN; mid-stream responses are never retried (no duplicated generation); changed-file/patch budgets charge only for calls that succeeded; the cumulative patch budget is charged only for changes actually applied (rejected proposals no longer consume it, with an apply-time backstop); failed restores keep history `partial`/`undoable` instead of reading as undone; plaintext backup before-images are retention-bounded (`src/changes/prune.ts`) and pruning preserves non-backup content; path-containment coverage added (`test/unit/workspacePathSafety.test.ts`).
 
 ### Fixed
 
@@ -17,7 +21,7 @@ General Availability. Unified bounded agent execution across both agent entry pa
 
 ### Changed
 
-**Version: 3.0.0.** quantsmind.agenticEngine.* defaults and bounds are unchanged. Completion reporting is evidence-based on both paths (failed tool calls, failed validations, over-budget patches and unapproved actions can never read as complete). The VS Code engine range, configuration schema, and MCP/transport guarantees are unchanged.
+**Version: 3.0.0.** quantsmind.agenticEngine.* defaults and bounds are unchanged. Completion reporting is evidence-based on both paths (failed tool calls, failed validations, over-budget patches and unapproved actions can never read as complete). The VS Code engine range (`^1.95.0`), configuration schema, and MCP/transport guarantees are unchanged. The extension was never published to a registry; publication is a separate, explicitly authorized decision.
 ## [2.0.0] - 2026-11-08
 
 Release bundling the agentic coding work merged on top of 1.3.0 and

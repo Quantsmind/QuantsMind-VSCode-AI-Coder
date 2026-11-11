@@ -197,13 +197,14 @@ requirement
 
 - VS Code **1.95.0** or newer (desktop).
 - An OpenAI-compatible provider endpoint and API key, or a local model server
-  that exposes the same API shape.
-- Node.js **20 or newer** only if you are building or testing from source.
+  that exposes the same API shape (or a Gemini API key; see provider notes).
+- Node.js 20 or newer only if you are building or testing from source
+  (`.nvmrc` pins 22; CI tests on Node 20, 22 and 24).
 
 ## Install from a VSIX
 
 ```bash
-code --install-extension quantsmind-vscode-ai-coder-0.3.0.vsix
+code --install-extension quantsmind-vscode-ai-coder-3.0.0.vsix
 ```
 
 Reload the window if VS Code requests it. Open the QuantsMind icon in the
@@ -278,12 +279,19 @@ answer the port, so every request that uses it writes one warn-level line to the
 | `quantsmind.workspace.maxIndexedFiles` | `5000` | resource | Local index cap |
 | `quantsmind.workspace.maxRetrievedFiles` | `8` | resource | Files retrieved per request |
 | `quantsmind.workspace.retrievalMaxChars` | `40000` | resource | Retrieved-context budget |
-| `quantsmind.agent.maxSteps` | `6` | resource | Provider calls per agent session |
-| `quantsmind.agent.maxRepairIterations` | `1` | resource | Repair passes after failure |
-| `quantsmind.agent.timeoutMs` | `180000` | resource | Agent step timeout |
-| `quantsmind.commands.allowlist` | five npm commands | resource | Approved validation commands |
-| `quantsmind.commands.timeoutMs` | `120000` | resource | Validation command timeout |
-| `quantsmind.commands.maxOutputChars` | `120000` | resource | Captured output cap |
+| `quantsmind.agent.maxSteps` | `6` | application | Agent steps per legacy single-task flow |
+| `quantsmind.agent.maxRepairIterations` | `1` | application | Repair passes after failure |
+| `quantsmind.agent.timeoutMs` | `180000` | application | Agent step timeout |
+| `quantsmind.commands.allowlist` | five npm commands | application | Approved validation commands |
+| `quantsmind.commands.timeoutMs` | `120000` | application | Validation command timeout |
+| `quantsmind.commands.maxOutputChars` | `120000` | application | Captured output cap |
+| `quantsmind.languageIntelligence.enabled` | `true` | application | Language inventory and language-aware prompts |
+| `quantsmind.agenticEngine.maxIterations` | `10` | application | Model turns per agentic task |
+| `quantsmind.agenticEngine.maxToolCalls` | `40` | application | Tool dispatches per agentic task |
+| `quantsmind.agenticEngine.maxPlanRevisions` | `2` | application | Plan revisions before refusing |
+| `quantsmind.agenticEngine.maxDurationSeconds` | `600` | application | Per-task wall-clock duration budget |
+| `quantsmind.agenticEngine.maxChangedFiles` | `25` | application | Maximum files an agentic task may change |
+| `quantsmind.mcp.servers` | `[]` | application | MCP servers (see `docs/MCP.md`) |
 
 Provider settings are application-scoped so a workspace cannot redirect your
 stored credential to a different host. Built-in exclusions for secrets,
@@ -292,7 +300,7 @@ patterns add to them.
 
 The default allowlist is `npm run compile`, `npm run lint`, `npm test`,
 `npm run test:unit` and `npm run verify`. Add project-specific commands to the
-resource-scoped setting only if you would approve running that exact string.
+application-scoped setting only if you would approve running that exact string.
 
 ## Commands
 
@@ -305,15 +313,22 @@ resource-scoped setting only if you would approve running that exact string.
 - **QuantsMind: Set API Key**
 - **QuantsMind: Clear API Key**
 - **QuantsMind: Configure Provider**
+- **QuantsMind: Select Provider Profile**
 - **QuantsMind: Select Model**
+- **QuantsMind: Test Provider Connection**
 - **QuantsMind: Show Log**
 - **QuantsMind: Summarize Workspace**
 - **QuantsMind: Attach Relevant Workspace Files**
 - **QuantsMind: Start Agent Session**
 - **QuantsMind: Show Change History**
+- **QuantsMind: About QuantsMind / Version**
+- **QuantsMind: Inspect Workspace (Read-Only)**
+- **QuantsMind: Run Complete Self-Diagnostics**
+- **QuantsMind: Manage MCP Servers**
 
 The internal **QuantsMind: Show Menu** command backs the status bar item and is
-hidden from the Command Palette.
+hidden from the Command Palette. Set API Key requires a trusted workspace for
+some actions; chat itself remains available in Restricted Mode.
 
 ## Security model
 
@@ -377,9 +392,8 @@ Then open an issue with the report attached:
 key "to help debug" — a `sk-…` value in an issue is a live credential, and the logs
 are built so that you never need to.
 
-Behaviour that is expected but looks wrong at first glance — for example pre-0.3.4
-conversations reporting `capturedContext=0` or `legacy` attachment chips after an
-upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
+Behaviour that is expected but looks wrong at first glance is listed in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Documentation
@@ -402,32 +416,32 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 - [Provider configuration](docs/PROVIDER_CONFIGURATION.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Architecture overview](docs/ARCHITECTURE.md)
-- [v0.3.0 system architecture](docs/architecture/V030_SYSTEM_ARCHITECTURE.md)
-- [Execution state machine](docs/architecture/V030_EXECUTION_STATE_MACHINE.md)
-- [Security model](docs/architecture/V030_SECURITY_MODEL.md)
-- [Data model](docs/architecture/V030_DATA_MODEL.md)
-- [Provider and tool contracts](docs/architecture/V030_PROVIDER_AND_TOOL_CONTRACTS.md)
-- [Feature completion matrix](docs/FEATURES.md)
+- [v0.3.0 system architecture (historical)](docs/architecture/V030_SYSTEM_ARCHITECTURE.md)
+- [Execution state machine (historical)](docs/architecture/V030_EXECUTION_STATE_MACHINE.md)
+- [Security model (historical)](docs/architecture/V030_SECURITY_MODEL.md)
+- [Data model (historical)](docs/architecture/V030_DATA_MODEL.md)
+- [Provider and tool contracts (historical)](docs/architecture/V030_PROVIDER_AND_TOOL_CONTRACTS.md)
+- [Feature completion matrix (v0.3.0 campaign)](docs/FEATURES.md)
 - [Providers](docs/PROVIDERS.md)
 - [Workspace intelligence](docs/WORKSPACE.md)
 - [Editing and approval workflow](docs/EDITING.md)
 - [Terminal and command security](docs/TERMINAL_SECURITY.md)
 - [Limitations](docs/LIMITATIONS.md)
-- [Upgrading from 0.2.0](docs/UPGRADE.md)
+- [Upgrading between releases](docs/UPGRADE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Testing guide](docs/TESTING.md)
 - [Live provider validation](docs/LIVE_PROVIDER_VALIDATION.md)
-- [v0.3.0 implementation report](docs/reports/V030_IMPLEMENTATION_REPORT.md)
-- [v2.2.0 implementation report](V2.2.0_IMPLEMENTATION_REPORT.md)
-- [v2.3.0 implementation report](V2.3.0_IMPLEMENTATION_REPORT.md)
-- [v2.4.0 implementation report](V2.4.0_IMPLEMENTATION_REPORT.md)
-- [v0.3.0 completion report](docs/reports/V030_COMPLETION_REPORT.md)
-- [v0.3.0 test and validation report](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
-- [v0.3.0 security report](docs/reports/V030_SECURITY_REPORT.md)
-- [v0.3.4 final qualification status](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
-- [GA security and trust audit](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
-- [Release-candidate validation protocol](docs/RC_VALIDATION_PROTOCOL.md)
-- [Path to General Availability](docs/ROADMAP_GA.md)
+- [v0.3.0 implementation report (historical)](docs/reports/V030_IMPLEMENTATION_REPORT.md)
+- [v2.2.0 implementation report (historical)](V2.2.0_IMPLEMENTATION_REPORT.md)
+- [v2.3.0 implementation report (historical)](V2.3.0_IMPLEMENTATION_REPORT.md)
+- [v2.4.0 implementation report (historical)](V2.4.0_IMPLEMENTATION_REPORT.md)
+- [v0.3.0 completion report (historical)](docs/reports/V030_COMPLETION_REPORT.md)
+- [v0.3.0 test and validation report (historical)](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
+- [v0.3.0 security report (historical)](docs/reports/V030_SECURITY_REPORT.md)
+- [v0.3.4 final qualification status (historical)](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
+- [GA security and trust audit (historical)](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
+- [Release-candidate validation protocol (historical, superseded)](docs/RC_VALIDATION_PROTOCOL.md)
+- [Path to General Availability (historical, superseded by v3.0.0 GA)](docs/ROADMAP_GA.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Development
@@ -461,8 +475,10 @@ tests and clean-install verification. `npm run release -- --bump patch|minor|maj
 performs the manifest and lockfile bump and prints the commit, tag and checksum
 steps; it never commits, tags, pushes or publishes on its own.
 
-This baseline is **not published** to the Visual Studio Marketplace, Open VSX,
-or any other registry. Do not treat it as a GA release.
+This baseline is a **GA-qualified local candidate**: it is **not published** to
+the Visual Studio Marketplace, Open VSX, or any other registry. Publication
+remains a separate, explicitly authorized decision; until then the build is
+verified locally, not made public.
 
 ## Independence
 

@@ -5,20 +5,24 @@ and approve them. There is no automatic apply path.
 
 ## Start a task
 
-Run **QuantsMind: Start Agent Task (Plan Changes)**, or use the task control in
-the chat view, and describe the change. The extension then:
+Run **QuantsMind: Start Agent Session** (or use the agent control in the chat
+view) and describe the requirement. The v3.0.0 session pipeline then:
 
-1. Selects relevant workspace files locally.
-2. Sends the request, the summary, and the selected context to the provider.
-3. Parses a JSON change plan.
+1. Inspects the workspace locally (indexed, bounded, trust-gated) and builds context.
+2. Proposes a development plan (summary, approach, risks, tasks, dependencies,
+   acceptance criteria) and stops for your approval.
+3. On approval, executes each task, producing a per-file change set and stopping
+   again for approval before anything is written.
+4. Captures validation evidence via an allowlisted command; on failure it can
+   propose a bounded, approval-gated repair.
 
-A plan contains a `summary`, optional `notes`, and a `changes` array. Each change
+The change-set wire format is a `summary` plus a `changes` array. Each change
 has a `kind` (`create`, `modify`, `delete`, or `rename`), a workspace-relative
 `path`, a short `summary`, plus `content` for create/modify or `fromPath` for
 rename.
 
 If the request is ambiguous, the documented response is an empty `changes`
-array. The task still stops at approval, and you can reject it.
+array. The session still stops at approval, and you can reject it.
 
 ## Review
 

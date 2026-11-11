@@ -1,4 +1,8 @@
-# Feature completion matrix (v0.3.0)
+# Feature completion matrix (v0.3.0 campaign, kept for traceability)
+
+> This matrix documents the v0.3.0 campaign. It is retained for traceability;
+> v3.0.0 ships a superset of these workstreams with v2.5.7 execution contracts
+> and the 2026 project-wide audit remediation — see `docs/audit/`.
 
 This matrix maps the v0.3.0 campaign workstreams to shipped behavior and
 evidence in this build. It describes what exists; it does not claim that every
@@ -19,7 +23,7 @@ external gate has passed. The consolidated results are in
 | V030-08 | Persistent sessions and resume | Versioned store, validation on read, legacy migration, event caps, applied-hash revalidation, `needs-review` on drift, explicit restore | `src/sessions/repository.ts`, `test/unit/sessionRepository.test.ts`, `test/unit/agentOrchestrator.test.ts` |
 | V030-09 | Developer control center | Sidebar session list, state/stage timeline, plan and task cards, diff approvals, repair and validation controls, diagnostics, report, pause/resume/cancel/restore/delete/undo | `src/chat/webviewHtml.ts`, `src/chat/protocol.ts`, `media/chat.js`, `media/chat.css`, `test/unit/protocol.test.ts`, `test/unit/webviewHtml.test.ts` |
 | V030-10 | Provider and context layer | Provider-neutral completion, capability descriptor, application-scoped provider settings, explicit retrieval, exclusions, redaction and budgets | `src/providers/*`, `src/context/*`, `src/workspace/*`, `src/agent/runtime.ts` |
-| V030-11 | Security and reliability | Strict webview parser, no model-to-tool channel, approval ids validated against the pending request, secret isolation, hash preflight, fail-closed parsing | `src/chat/protocol.ts`, `src/agent/orchestrator.ts`, `docs/architecture/V030_SECURITY_MODEL.md` |
+| V030-11 | Security and reliability | Strict webview parser, notification/command routing stays typed, approvals are bound to exact operations and valid ids, secret isolation, hash preflight, fail-closed parsing | `src/chat/protocol.ts`, `src/agent/orchestrator.ts`, `docs/architecture/V030_SECURITY_MODEL.md` |
 
 ## Acceptance scenarios A-L
 
@@ -48,7 +52,6 @@ occurred; see `docs/LIVE_PROVIDER_VALIDATION.md`.
 
 ## Explicit non-goals in this build
 
-- Native tool calling or a model-controlled executor.
 - Image input, audio, or multimodal messages.
 - Automatic apply, automatic command execution, or automatic resume of an
   interrupted side effect.

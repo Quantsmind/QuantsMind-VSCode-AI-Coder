@@ -1,5 +1,11 @@
 # QuantsMind VS Code AI Coder — General Availability Plan
 
+> **Historical planning document (superseded).** This plan was written for the
+> v0.4.0 milestone. v3.0.0 is the build that actually reached GA-qualified
+> status; the milestone mapping in this file (branch names, version targets,
+> verdicts) no longer applies. It is retained as a record of the historical
+> GA decision process; current status lives in `docs/audit/`.
+
 **Document created:** 2026-11-04
 **Repository state at creation:** branch `feature/v0.3.3`, HEAD `402d163`, 31 uncommitted entries
 before this file was written (32 with it)

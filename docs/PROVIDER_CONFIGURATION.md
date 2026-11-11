@@ -1,10 +1,10 @@
 # Provider configuration
 
 QuantsMind is provider-neutral. This build supports the OpenAI-compatible chat
-completions shape, including OpenAI, OpenRouter-compatible endpoints, and local
-servers that expose the same API.
-
-Implementation: [src/providers](../src/providers),
+completions shape (OpenAI, OpenRouter-compatible endpoints, and local servers
+that expose the same API) and the Google Gemini protocol; the two share one
+adapter contract and are selected by `quantsmind.provider.type` (the profile
+catalog in `src/providers/profiles.ts`). Implementation: [src/providers](../src/providers),
 [src/config](../src/config).
 
 ## Configure a provider
@@ -142,13 +142,15 @@ interface ProviderCapabilities {
 }
 ```
 
-In this build `nativeToolCalling` is always `false`: executable tool definitions
-are never sent to a provider. `structuredOutput` is `true` because the prompt
-requests JSON and the local parser validates it, not because the provider has a
-native structured-output mode. `streaming` follows the configured setting.
-`maxContextChars` is advisory guidance derived from the retrieval budget
-(`retrievalMaxChars`, clamped by `maxTotalChars`); it is not a provider-enforced
-limit.
+On an OpenAI-compatible adapter with a tool-capable model id (for example,
+`gpt-4o-mini`), `nativeToolCalling` is `true` and the agent engine and approval-
+gated orchestrator send and parse tool definitions (`tools` / `tool_calls`).
+Gemini profiles do not advertise tool calling. `structuredOutput` is `true`
+because the prompt requests JSON and the local parser validates it, not because
+the provider has a native structured-output mode. `streaming` follows the
+configured setting. `maxContextChars` is advisory guidance derived from the
+retrieval budget (`retrievalMaxChars`, clamped by `maxTotalChars`); it is not a
+provider-enforced limit.
 
 ## Streaming and non-streaming
 

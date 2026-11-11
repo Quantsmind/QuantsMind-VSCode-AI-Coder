@@ -152,7 +152,8 @@ executable is available, so set `VSCODE_EXECUTABLE` in that case.
 npm run package
 ```
 
-Output: `quantsmind-vscode-ai-coder-0.3.0.vsix`.
+Output: `quantsmind-vscode-ai-coder-3.0.0.vsix` (the name follows `package.json`;
+it stays `<version>`-named for future releases).
 
 `.vscodeignore` excludes source, tests, docs, scripts, CI, source maps, and
 TypeScript declarations. `vsce` includes the compiled `out/src` tree, `media`,
