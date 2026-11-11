@@ -243,6 +243,7 @@ export interface IFileChangeService {
     taskId: string,
     summary: string,
     applyId?: string,
+    shouldCancel?: () => boolean,
   ): Promise<ApplyReportLike>;
   undo(taskId: string): Promise<UndoOutcomeLike | undefined>;
 }

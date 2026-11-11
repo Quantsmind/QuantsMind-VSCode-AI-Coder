@@ -58,6 +58,8 @@ interface BackupRecord {
 
 export interface ApplyOptions {
   readonly approvedIds?: readonly string[];
+  /** Cooperative cancellation between files; checked before each mutation. */
+  readonly shouldCancel?: () => boolean;
 }
 
 function backupName(changeId: string): string {
@@ -163,6 +165,16 @@ export async function applyChangePlan(
   }
 
   for (const change of selected) {
+    if (options.shouldCancel?.() === true) {
+      results.push({
+        changeId: change.id,
+        path: change.path,
+        kind: change.kind,
+        status: 'skipped',
+        message: 'Cancelled before this file was processed.',
+      });
+      continue;
+    }
     const check = preflightByChange.get(change.id);
     if (check === undefined || 'message' in check) {
       results.push({

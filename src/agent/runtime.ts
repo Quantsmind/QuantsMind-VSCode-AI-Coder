@@ -239,6 +239,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
     entries: () => deps.workspaceIndex.getEntries(),
     commandTools,
     executionService,
+    languageIntelligence: () => deps.settings.getLanguageIntelligenceSettings().enabled,
   });
   const checkpointService = new CheckpointService();
   const usageLedger = new UsageLedger();

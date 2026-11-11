@@ -147,6 +147,7 @@ export class ChangeService {
     taskId: string,
     summary: string,
     applyId?: string,
+    shouldCancel?: () => boolean,
   ): Promise<ApplyReport> {
     this.requireTrusted('apply file changes');
     const resolvedApplyId =
@@ -154,7 +155,7 @@ export class ChangeService {
         ? applyId
         : `${taskId}-apply-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const fs = this.createApplyFs(taskId, resolvedApplyId);
-    const outcome = await applyChangePlan(plan, fs, { approvedIds });
+    const outcome = await applyChangePlan(plan, fs, { approvedIds, ...(shouldCancel !== undefined ? { shouldCancel } : {}) });
     const appliedCount = outcome.applied.length;
     const total = plan.changes.length;
     const status =

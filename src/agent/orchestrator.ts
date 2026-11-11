@@ -45,6 +45,9 @@ import {
 } from './models';
 import { buildDevelopmentPlanMessages, buildTaskRequest, parseDevelopmentPlan } from './planning';
 import { computeContinuationPlan } from './continuation';
+import { buildCodingTaskPlan, expectedFilesOf, formatCodingTaskPlan } from '../workflow/plan';
+import { checkChangeScope } from '../workflow/scope';
+import { makeCheckpointMessage, computeWorkflowRestoration } from '../workflow/checkpoint';
 import { buildCompletionReport } from './report';
 import { canTransitionTaskStatus, findTask, nextRunnableTasks, refreshBlockedTasks, schedule, updateTask } from './scheduler';
 import { canPause, deriveProgress, deriveStages, transitionSession, STATE_LABELS } from './stateMachine';
@@ -1009,11 +1012,29 @@ export class AgentOrchestrator implements IAgentController {
       }
 
       current = { ...current, plan: parsed.plan, tasks: parsed.plan.tasks };
+      // v2.5.5: structured envelope — evidence (local) vs assumptions (model),
+      // category, objective-scoped file expectations and validation posture.
+      // No extra inspection happens here; the envelope is derived from the
+      // requirement and the validated plan alone (the inspection pass already
+      // ran at task start).
+      let envelopeDetail: string;
+      let envelopeCategory: string | undefined;
+      try {
+        const envelope = buildCodingTaskPlan({
+          plan: parsed.plan,
+          requirementText: current.requirement.text,
+        });
+        envelopeDetail = formatCodingTaskPlan(envelope, 1_600);
+        envelopeCategory = envelope.category;
+      } catch {
+        envelopeDetail = '';
+      }
       current = this.withEvent(
         current,
         'note',
-        `The development plan contains ${parsed.plan.tasks.length} task(s).`,
+        `The development plan contains ${parsed.plan.tasks.length} task(s).${envelopeCategory !== undefined ? ` Category: ${envelopeCategory}.` : ''}`,
       );
+      current = this.withEvent(current, 'note', makeCheckpointMessage('planned', envelopeCategory));
       const request: ApprovalRequest = {
         id: this.nextId('approval'),
         sessionId: id,
@@ -1021,6 +1042,7 @@ export class AgentOrchestrator implements IAgentController {
         title: `Plan approval: ${clampText(parsed.plan.summary, 160)}`,
         detail: [
           parsed.plan.approach,
+          ...(envelopeDetail.length > 0 ? ['', envelopeDetail] : []),
           ...parsed.plan.risks.map((risk) => `Risk: ${risk}`),
           ...parsed.plan.warnings,
         ]
@@ -1444,6 +1466,7 @@ export class AgentOrchestrator implements IAgentController {
             eventId: this.nextId('event'),
             message: `The change set for task "${task.title}" is awaiting approval.`,
           });
+    next = this.withEvent(next, 'note', makeCheckpointMessage('awaiting-review', taskId));
     await this.checkpoint(next, taskId);
     return this.record(next);
   }
@@ -1656,6 +1679,7 @@ export class AgentOrchestrator implements IAgentController {
           historyTaskId,
           changeSet.summary,
           applyId,
+          () => token.isCancellationRequested,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -1767,6 +1791,8 @@ export class AgentOrchestrator implements IAgentController {
         eventId: this.nextId('event'),
         message: `Change set "${changeSet.id}" applied.`,
       });
+      done = this.withEvent(done, 'note', makeCheckpointMessage('editing', changeSet.id));
+      done = this.withEvent(done, 'note', makeCheckpointMessage('changes-applied', changeSet.id));
       if (otherActive) {
         done = transitionSession(done, 'awaiting-change-approval', {
           at: this.timestamp(),
@@ -2395,6 +2421,7 @@ export class AgentOrchestrator implements IAgentController {
           historyTaskId,
           proposal.summary,
           applyId,
+          () => token.isCancellationRequested,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -2837,21 +2864,56 @@ export class AgentOrchestrator implements IAgentController {
     return this.finishWithReport(current);
   }
 
+  private scopeReport(session: AgentSession): string | undefined {
+    if (session.plan === undefined || session.plan.tasks.length === 0) {
+      return undefined;
+    }
+    const expected = expectedFilesOf(session.plan);
+    const actual = session.executions.flatMap((execution) =>
+      (execution.appliedFiles ?? []).map((file) => file.path),
+    );
+    if (expected.length === 0 && actual.length === 0) {
+      return undefined;
+    }
+    const check = checkChangeScope(expected, actual);
+    const format = (list: readonly string[]): string =>
+      list
+        .slice(0, 6)
+        .join(', ')
+        .concat(list.length > 6 ? ` +${list.length - 6} more` : '');
+    const parts: string[] = [`${check.matched.length}/${expected.length} expected file(s) applied`];
+    if (check.unexpected.length > 0) {
+      parts.push(`unexpected: ${format(check.unexpected)}`);
+    }
+    if (check.missing.length > 0) {
+      parts.push(`missing: ${format(check.missing)}`);
+    }
+    return parts.join('; ');
+  }
+
   private async finishWithReport(session: AgentSession): Promise<AgentSessionView> {
     const at = this.timestamp();
-    const report = buildCompletionReport(session, at);
+    const withLifecycleNote =
+      session.state === 'completed' ? this.withEvent(session, 'note', makeCheckpointMessage('completed'))
+        : session.state === 'cancelled' ? this.withEvent(session, 'note', makeCheckpointMessage('cancelled'))
+          : this.withEvent(session, 'note', makeCheckpointMessage('blocked'));
+    const scope = this.scopeReport(withLifecycleNote);
+    const edited = scope === undefined
+      ? withLifecycleNote
+      : this.withEvent(withLifecycleNote, 'note', `Change scope: ${scope}`);
+    const report = buildCompletionReport(edited, at);
     const event: SessionEvent = {
       id: this.nextId('event'),
       at,
       type: 'report',
-      state: session.state,
+      state: edited.state,
       message: `Completion report generated with outcome "${report.outcome}".`,
     };
     const withReport: AgentSession = {
-      ...session,
+      ...edited,
       updatedAt: at,
       report,
-      events: [...session.events, event].slice(-MAX_SESSION_EVENTS),
+      events: [...edited.events, event].slice(-MAX_SESSION_EVENTS),
     };
     return this.record(withReport);
   }
@@ -3082,12 +3144,18 @@ export class AgentOrchestrator implements IAgentController {
     }
 
     const unverified = this.deps.hashFile === undefined;
+    const workflowRestoration = computeWorkflowRestoration(
+      (current.events ?? []).map((event) => ({ type: event.type, message: event.message })),
+    );
     let restored: AgentSession = {
       ...current,
       state,
       pausedFrom,
-      needsReview: unverified,
+      needsReview: unverified || workflowRestoration.requiresInspection,
     };
+    if (workflowRestoration.requiresInspection && workflowRestoration.note !== undefined) {
+      restored = this.withEvent(restored, 'note', workflowRestoration.note);
+    }
     const continuation = computeContinuationPlan(
       restored.tasks.map((task) => ({ id: task.id, status: task.status, dependencies: task.dependsOn })),
     );
