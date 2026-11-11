@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+import * as fsp from 'node:fs/promises';
 import * as vscode from 'vscode';
 import type { SettingsService } from '../config/settings';
 import { isPathExcluded } from '../context/filters';
@@ -57,6 +59,60 @@ export class ChangeService {
 
   private safeTaskId(taskId: string): string {
     return taskId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'task';
+  }
+
+  /**
+   * Deletes backup directories under `backupRoot` whose change set is no longer
+   * in the bounded history store. Plaintext before-images must not accumulate
+   * forever. Best-effort: a failed sweep is logged, never applied to the result.
+   */
+  private async pruneBackups(): Promise<void> {
+    try {
+      const keep = new Map<string, Set<string>>();
+      for (const entry of this.history.list()) {
+        const taskKey = this.safeTaskId(entry.taskId);
+        const applyKey = this.safeTaskId(entry.applyId);
+        const set = keep.get(taskKey) ?? new Set<string>();
+        set.add(applyKey);
+        keep.set(taskKey, set);
+      }
+      const root = path.resolve(this.backupRoot.fsPath);
+      const taskDirs = await fsp.readdir(root, { withFileTypes: true });
+      for (const taskDir of taskDirs) {
+        if (!taskDir.isDirectory()) {
+          continue;
+        }
+        const taskKey = this.safeTaskId(taskDir.name);
+        const applyRoot = path.resolve(root, taskDir.name);
+        if (applyRoot !== root && !applyRoot.startsWith(root + path.sep)) {
+          continue;
+        }
+        const applyDirs = await fsp.readdir(applyRoot, { withFileTypes: true });
+        const keepSet = keep.get(taskKey);
+        for (const applyDir of applyDirs) {
+          if (!applyDir.isDirectory()) {
+            continue;
+          }
+          const applyKey = this.safeTaskId(applyDir.name);
+          const applyPath = path.resolve(applyRoot, applyDir.name);
+          if (!applyPath.startsWith(applyRoot + path.sep)) {
+            continue;
+          }
+          if (keepSet === undefined || !keepSet.has(applyKey)) {
+            await fsp.rm(applyPath, { recursive: true, force: true });
+          }
+        }
+        // Best effort: drop the task directory itself when nothing was kept.
+        const remaining = await fsp.readdir(applyRoot);
+        if (remaining.length === 0) {
+          await fsp.rmdir(applyRoot).catch(() => undefined);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `change backup pruning skipped: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+    }
   }
 
   async prepare(plan: ChangePlan, taskId: string): Promise<PreparedPlan> {
@@ -178,6 +234,9 @@ export class ChangeService {
       undoable: appliedCount > 0,
     };
     await this.history.add(entry);
+    // Bounded retention: the history store is capped, so backup directories for
+    // entries that fell out of the cap are deleted (best-effort, never fatal).
+    await this.pruneBackups();
     this.logger.info(
       `change set ${taskId} apply ${resolvedApplyId}: applied=${appliedCount} conflicts=${outcome.conflicts.length} failed=${outcome.failed.length}`,
     );
@@ -198,21 +257,24 @@ export class ChangeService {
     const results: UndoResult[] = [];
     let restored = 0;
     let conflicts = 0;
+    let failed = 0;
     for (const entry of [...entries].reverse()) {
       const fs = this.createApplyFs(taskId, entry.applyId);
       const outcome = await undoHistoryEntry(entry, fs);
       results.push(...outcome.results);
       restored += outcome.restored;
       conflicts += outcome.conflicts;
+      failed += outcome.failed;
+      const complete = outcome.conflicts === 0 && outcome.failed === 0;
       await this.history.update(entry.applyId, {
-        status: outcome.conflicts > 0 ? 'partial' : 'undone',
-        undoable: outcome.conflicts > 0,
+        status: complete ? 'undone' : 'partial',
+        undoable: !complete,
       });
     }
     this.logger.info(
-      `change set ${taskId} undo: restored=${restored} conflicts=${conflicts}`,
+      `change set ${taskId} undo: restored=${restored} conflicts=${conflicts} failed=${failed}`,
     );
-    return { results, restored, conflicts };
+    return { results, restored, conflicts, failed };
   }
 
   async undoWithFiles(
@@ -221,9 +283,10 @@ export class ChangeService {
   ): Promise<UndoOutcome> {
     const fs = this.createFs(taskId);
     const outcome = await undoAppliedChanges(applied, fs);
+    const complete = outcome.conflicts === 0 && outcome.failed === 0;
     await this.history.update(taskId, {
-      status: outcome.conflicts > 0 ? 'partial' : 'undone',
-      undoable: outcome.conflicts > 0,
+      status: complete ? 'undone' : 'partial',
+      undoable: !complete,
     });
     return outcome;
   }

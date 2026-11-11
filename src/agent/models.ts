@@ -233,6 +233,7 @@ export interface ApplyReportLike {
 export interface UndoOutcomeLike {
   readonly restored: number;
   readonly conflicts: number;
+  readonly failed?: number;
 }
 
 export interface IFileChangeService {

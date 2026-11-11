@@ -97,7 +97,7 @@ export function parseRetryAfterMs(headers: RetryAfterHeaders): number | undefine
 
 /**
  * Single source of truth for automatic retry eligibility. `normalizeHttpError`
- * derives the `retryable` flag from this same rule so the metadata surfaced to
+ * and `normalizeThrownError` derive the `retryable` flag from this same rule so the metadata surfaced to
  * the user cannot disagree with what `withProviderRetry` actually does.
  */
 function isRetryableClassification(code: ProviderErrorCode, status?: number): boolean {
@@ -352,7 +352,7 @@ export function normalizeThrownError(error: unknown, secret?: string): ProviderE
     return new ProviderError(
       'timeout',
       `The connection timed out. Check the endpoint and try again.${suffix}`,
-      { cause: error, retryable: true },
+      { cause: error },
     );
   }
 

@@ -22,6 +22,11 @@ SECURITY.md
 *.txt
 *.py
 worktrees/**
+# Compiled artifacts of preserved untracked working-tree files (must not ship)
+out/src/providers/profiles.new.js
+out/src/providers/profiles.new.js.map
+**/profiles.new.*
+
 # Internal remediation and packaged-GUI acceptance reports (not for distribution)
 FINAL_GUI_ACCEPTANCE_REPORT.md
 FINAL_V2.0.0_MANUAL_SMOKE_REPORT.md

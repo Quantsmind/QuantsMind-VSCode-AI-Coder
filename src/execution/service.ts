@@ -1,5 +1,13 @@
+import * as path from 'node:path';
 import { runApprovedCommand, type CommandResult } from '../commands/runner';
 import type { Diagnostic } from '../agent/models';
+
+/** Case-insensitive on win32; path.resolve also normalizes separators and dot segments. */
+function sameCwd(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
 
 export type ExecutionKind = 'command' | 'build' | 'test';
 export type ExecutionStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timed-out';
@@ -94,8 +102,9 @@ export class ExecutionService {
     return [...this.records].reverse();
   }
 
+  /** Newest-first records for one task; ordering matches {@link list}. */
   historyForTask(taskId: string | undefined): readonly ExecutionRecord[] {
-    return this.records.filter((record) => record.taskId === taskId);
+    return [...this.records].reverse().filter((record) => record.taskId === taskId);
   }
 
   isRunning(): boolean {
@@ -188,7 +197,7 @@ export class ExecutionService {
     const trimmedCommand = raw.trim();
     // Duplicate protection: never run the same invocation twice concurrently in the same directory.
     for (const active of this.activeRecords()) {
-      if (active.command === trimmedCommand && active.cwd === options.cwd) {
+      if (active.command === trimmedCommand && sameCwd(active.cwd, options.cwd)) {
         const blocked: ExecutionRecord = {
           id,
           kind: options.kind,

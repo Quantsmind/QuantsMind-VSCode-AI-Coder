@@ -241,9 +241,20 @@ async function inspectWorkingDirectory(
       return { ok: false, reason: 'The working directory is not a folder.' };
     }
     realCwd = await fs.promises.realpath(cwd);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { ok: false, reason: 'The working directory does not exist.' };
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      return { ok: false, reason: 'The working directory cannot be inspected (permission denied).' };
+    }
+    return { ok: false, reason: 'The working directory could not be inspected.' };
+  }
+  try {
     realRoot = await fs.promises.realpath(workspaceRoot);
   } catch {
-    return { ok: false, reason: 'The working directory does not exist.' };
+    return { ok: false, reason: 'The workspace root could not be inspected.' };
   }
   if (!isWithinWorkspace(realCwd, realRoot)) {
     return { ok: false, reason: 'The working directory resolves outside the workspace.' };
@@ -278,7 +289,7 @@ export async function runApprovedCommand(
     error,
   });
 
-  if (options.trusted === false) {
+  if (options.trusted !== true) {
     return {
       command: raw,
       cwd: path.resolve(options.cwd),
@@ -356,7 +367,7 @@ export async function runApprovedCommand(
         output: redacted.text,
         timedOut,
         cancelled,
-        truncated: output.truncated || redacted.count > 0,
+        truncated: output.truncated,
         durationMs: Date.now() - startedAt,
         error: spawnError,
       });

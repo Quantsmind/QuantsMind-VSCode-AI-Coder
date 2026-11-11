@@ -116,8 +116,28 @@ async function hashWorkspaceFile(
  * redacted items reach the provider.
  */
 export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime {
-  const trustCheck: TrustCheck = deps.isTrusted ?? (() => vscode.workspace.isTrusted);
+  const trustCheck: TrustCheck = deps.isTrusted ?? (() => false);
   const trusted = (): boolean => isTrusted(trustCheck);
+
+  // Secret redaction candidates: prefer the active provider's scoped key,
+  // fall back to the legacy openai-compatible key when the scoped read fails
+  // or yields nothing. Never a silently different provider's key.
+  const activeProviderSecret = async (): Promise<string | undefined> => {
+    const providerType = deps.settings.getProviderSettings().type;
+    try {
+      const scoped = await deps.secrets.forProvider(providerType).get();
+      if (typeof scoped === 'string' && scoped.length > 0) {
+        return scoped;
+      }
+    } catch {
+      // fall through to the legacy key
+    }
+    try {
+      return await deps.secrets.get();
+    } catch {
+      return undefined;
+    }
+  };
   const source: ProjectWorkspaceSource = {
     rootName: () => workspaceRoot()?.name ?? 'workspace',
     listEntries: async () => (trusted() ? deps.workspaceIndex.getEntries() : []),
@@ -127,7 +147,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
         const summary = await deps.workspaceIndex.summarize();
         return { summary, items: [], reasons: {}, skipped: [] };
       }
-      const secret = await deps.secrets.get();
+      const secret = await activeProviderSecret();
       return deps.workspaceIndex.retrieve(query, secret);
     },
   };
@@ -224,7 +244,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
     allowlist: () => deps.settings.getCommandSettings().allowlist,
     timeoutMs: () => deps.settings.getCommandSettings().timeoutMs,
     maxOutputChars: () => deps.settings.getCommandSettings().maxOutputChars,
-    secret: () => deps.secrets.get(),
+    secret: () => activeProviderSecret(),
     trusted,
     approval: async (request) => {
       const answer = await vscode.window.showWarningMessage(
@@ -310,7 +330,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
           modal: true,
           detail: `Operation: ${request.operation}${
             request.files !== undefined && request.files.length > 0
-              ? `\nFiles: ${request.files.slice(0, 12).join(', ')}${request.files.length > 12 ? ' …' : ''}`
+              ? `\nFiles: ${request.files.slice(0, 12).join(', ')}${request.files.length > 12 ? ' â€¦' : ''}`
               : ''
           }`,
         },
@@ -568,7 +588,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
         allowlist: commandSettings.allowlist,
         timeoutMs: commandSettings.timeoutMs,
         maxOutputChars: commandSettings.maxOutputChars,
-        secret: await deps.secrets.get(),
+        secret: await activeProviderSecret(),
         trusted: trusted(),
         signal,
         kind: 'command',

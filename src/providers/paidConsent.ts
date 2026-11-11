@@ -40,8 +40,16 @@ export class PaidProviderConsent {
   }
 
   grantConsent(providerType: string): void {
+    if (this.granted.has(providerType)) {
+      return;
+    }
     if (this.granted.size >= MAX_TRACKED) {
-      this.granted.clear();
+      // Evict the oldest tracked consent (insertion order) instead of
+      // wiping every consent granted in this window.
+      const oldest = this.granted.values().next().value;
+      if (oldest !== undefined) {
+        this.granted.delete(oldest);
+      }
     }
     this.granted.add(providerType);
   }

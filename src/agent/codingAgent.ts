@@ -2,6 +2,7 @@
 // by callers; this module intentionally has no VS Code dependency.
 
 import type { ChatMessage } from '../providers/types';
+import { redactSecrets } from '../security/redact';
 
 export interface AgentToolCall {
   readonly id: string;
@@ -180,10 +181,11 @@ export class AgentToolRegistry implements AgentToolRegistryLike {
       return outcome.result;
     }
     if (outcome.kind === 'error') {
+      const detail = redactSecrets(outcome.error instanceof Error ? outcome.error.message : 'Tool execution failed.').text;
       return {
         ok: false,
         tool: call.name,
-        error: outcome.error instanceof Error ? outcome.error.message : 'Tool execution failed.',
+        error: detail,
         durationMs,
       };
     }

@@ -72,6 +72,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     changeService,
     sessionStore: context.globalState,
     mcpCredentials: context.secrets,
+    isTrusted: () => vscode.workspace.isTrusted,
   });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
@@ -498,8 +499,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
         void vscode.window.showWarningMessage('QuantsMind: this change set has no backups to restore.');
         return;
       }
+      const failedSuffix = outcome.failed > 0 ? `; ${outcome.failed} restore(s) failed` : '';
       void vscode.window.showInformationMessage(
-        `QuantsMind: restored ${outcome.restored} file(s); ${outcome.conflicts} conflict(s).`,
+        `QuantsMind: restored ${outcome.restored} file(s); ${outcome.conflicts} conflict(s)${failedSuffix}.`,
       );
     } catch (error) {
       logger.error('undo from history failed', error);

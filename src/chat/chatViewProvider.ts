@@ -224,7 +224,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const providerType = this.deps.settings.getProviderSettings().type;
       return await this.deps.secrets.forProvider(providerType).get();
     } catch {
-      return await this.deps.secrets.get();
+      // Never fall back to a different provider's credential; a failed read
+      // must not silently cross credential boundaries.
+      this.deps.logger.warn('QuantsMind: could not read the active provider credential; secrets will not be redacted from outbound messages.');
+      return undefined;
     }
   }
 
@@ -2249,13 +2252,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           .filter((entry) => entry.message !== undefined)
           .map((entry) => entry.message as string),
       });
+      const incomplete = outcome.conflicts > 0 || outcome.failed > 0;
       this.post({
         type: 'notice',
-        level: outcome.conflicts === 0 ? 'info' : 'warn',
-        message:
-          outcome.conflicts === 0
-            ? 'The applied files were restored from backups. The session report keeps its original evidence.'
-            : 'Some files could not be restored because they changed after apply.',
+        level: incomplete ? 'warn' : 'info',
+        message: incomplete
+          ? 'Some files could not be restored because they changed after apply or failed to restore.'
+          : 'The applied files were restored from backups. The session report keeps its original evidence.',
       });
     } catch (error) {
       this.deps.logger.error('session undo failed', error);

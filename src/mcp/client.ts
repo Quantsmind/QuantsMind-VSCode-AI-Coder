@@ -57,6 +57,8 @@ export interface McpTool {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema?: unknown;
+  /** Set when the server advertised an input schema larger than the supported cap; the tool is kept but the schema is not forwarded. */
+  readonly schemaOmitted?: boolean;
 }
 
 export interface McpToolResult {
@@ -296,16 +298,19 @@ export class McpClient {
           continue;
         }
         const inputSchema = record.inputSchema;
+        let schemaOmitted = false;
         if (inputSchema !== undefined) {
           const serialized = JSON.stringify(inputSchema);
           if (serialized.length > MAX_SCHEMA_CHARS) {
-            continue; // schema too large to trust or forward
+            // Keep the tool discoverable; the oversized schema is not forwarded.
+            schemaOmitted = true;
           }
         }
         tools.push({
           name,
           ...(typeof record.description === 'string' ? { description: record.description.slice(0, 400) } : {}),
-          ...(inputSchema !== undefined ? { inputSchema } : {}),
+          ...(inputSchema !== undefined && !schemaOmitted ? { inputSchema } : {}),
+          ...(schemaOmitted ? { schemaOmitted: true } : {}),
         });
       }
     }
@@ -500,7 +505,9 @@ export class McpClient {
     }
     if (message.error !== undefined && message.error !== null) {
       const record = message.error;
-      const detail = typeof record.message === 'string' ? record.message.slice(0, 300) : 'unknown error';
+      const detail = redactSecrets(
+        typeof record.message === 'string' ? record.message.slice(0, 300) : 'unknown error',
+      ).text;
       pending.reject(new McpError('server', `The MCP server "${this.config.name}" reported an error: ${detail}`));
       return;
     }

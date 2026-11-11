@@ -137,7 +137,17 @@ export class McpTools {
       }
       try {
         const tools = await this.env.manager.listTools(this.serverDescriptor(server));
-        output[server.name] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? '' }));
+        const omitted = tools.filter((tool) => tool.schemaOmitted === true).map((tool) => tool.name);
+        output[server.name] = {
+          tools: tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description ?? '',
+            ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema } : {}),
+          })),
+          ...(omitted.length > 0
+            ? { meta: { warnings: [`inputSchema omitted (over the supported size) for: ${omitted.slice(0, 10).join(', ')}${omitted.length > 10 ? ', …' : ''}`] } }
+            : {}),
+        };
       } catch (error) {
         output[server.name] = { error: error instanceof Error ? error.message : 'Could not reach the MCP server.' };
       }
@@ -210,7 +220,7 @@ export class McpTools {
     return [
       {
         name: 'mcp_list_tools',
-        description: 'List tools exposed by configured MCP servers. Read-only but may launch the configured server process.',
+        description: 'List tools exposed by configured MCP servers. Read-only but may launch the configured server process; requires the same trust and approval as connect. Each entry carries the tool name, description and (size-bounded) inputSchema when the server advertises one.',
         parameters: {
           type: 'object',
           properties: {

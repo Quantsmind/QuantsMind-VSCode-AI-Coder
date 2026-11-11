@@ -44,6 +44,8 @@ export interface UndoOutcome {
   readonly results: readonly UndoResult[];
   readonly restored: number;
   readonly conflicts: number;
+  /** Restore attempts that errored (e.g. unsupported change, I/O failure). Never silently counted as undone. */
+  readonly failed: number;
 }
 
 interface BackupRecord {
@@ -370,5 +372,6 @@ export async function undoAppliedChanges(
     results,
     restored: results.filter((result) => result.status === 'restored').length,
     conflicts: results.filter((result) => result.status === 'conflict').length,
+    failed: results.filter((result) => result.status === 'failed').length,
   };
 }

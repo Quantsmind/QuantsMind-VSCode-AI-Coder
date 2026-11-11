@@ -44,6 +44,7 @@ function fingerprint(server: {
   args?: readonly string[];
   url?: string;
   auth?: 'none' | 'bearer';
+  env?: Readonly<Record<string, string>>;
   timeoutMs?: number;
   maxToolOutputChars?: number;
 }): string {
@@ -53,6 +54,11 @@ function fingerprint(server: {
     args: [...(server.args ?? [])],
     url: server.url ?? null,
     auth: server.auth ?? 'none',
+    env: server.env === undefined
+      ? null
+      : Object.keys(server.env)
+          .sort()
+          .map((key) => [key, server.env?.[key]]),
     timeoutMs: server.timeoutMs ?? null,
     maxToolOutputChars: server.maxToolOutputChars ?? null,
   });
@@ -98,8 +104,16 @@ export class McpServerManager {
   }
 
   grantLaunchApproval(name: string): void {
+    if (this.approvedLaunches.has(name)) {
+      return;
+    }
     if (this.approvedLaunches.size >= MAX_TRACKED_SERVERS) {
-      this.approvedLaunches.clear();
+      // Evict the oldest tracked approval (insertion order) instead of
+      // wiping every approval granted in this window.
+      const oldest = this.approvedLaunches.values().next().value;
+      if (oldest !== undefined) {
+        this.approvedLaunches.delete(oldest);
+      }
     }
     this.approvedLaunches.add(name);
   }

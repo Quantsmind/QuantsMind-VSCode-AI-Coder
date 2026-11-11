@@ -236,6 +236,7 @@ export async function runAgentEngine(options: AgentEngineOptions): Promise<Agent
     if (state !== to) {
       // Deliberate engine walks: enforce the table so a bug cannot smuggle an illegal state.
       if (!canTransitionAgentEngineState(state, to)) {
+        emit({ type: 'error', message: `Illegal engine state transition from "${state}" to "${to}"; the run was stopped as failed.`, iteration: 0 });
         state = 'failed';
         return;
       }
@@ -443,11 +444,15 @@ export async function runAgentEngine(options: AgentEngineOptions): Promise<Agent
         }),
         limits.maxToolOutputChars,
       );
-      if (mutating && patchBytes + callBytes <= limits.maxPatchSizeChars) {
-        patchBytes += callBytes;
-      }
-      if (mutating && targetPath !== undefined) {
-        filesChanged.add(targetPath.replace(/\\/g, '/'));
+      // Budgets are charged only for calls that succeeded; a failed mutation
+      // did not apply its bytes or touch the file.
+      if (result.ok) {
+        if (mutating && patchBytes + callBytes <= limits.maxPatchSizeChars) {
+          patchBytes += callBytes;
+        }
+        if (mutating && targetPath !== undefined) {
+          filesChanged.add(targetPath.replace(/\\/g, '/'));
+        }
       }
       toolResults.push(result);
       emit({

@@ -168,27 +168,45 @@ function serverApprovalDetail(server: ServerRef): string {
   );
 }
 
-async function connectWithApproval(
+/**
+ * Shared launch gate for MCP servers from the management UI: requires workspace
+ * trust, then a modal approval, and records the launch approval on success.
+ * Callers still own the actual connect afterwards so they can use the correct
+ * transport-specific error handling.
+ */
+async function ensureMcpLaunchApproved(
   deps: McpManagerDependencies,
   server: ServerRef,
-): Promise<void> {
+  action: { title: string; button: string; trustAction: string },
+): Promise<boolean> {
   if (!deps.trusted()) {
-    void vscode.window.showWarningMessage('Workspace trust is required to connect MCP servers.');
-    return;
+    void vscode.window.showWarningMessage(`Workspace trust is required to ${action.trustAction} MCP servers.`);
+    return false;
   }
   const approved = await vscode.window.showWarningMessage(
-    `Connect to MCP server "${server.name}"?`,
+    `${action.title} "${server.name}"?`,
     {
       modal: true,
       detail: serverApprovalDetail(server),
     },
-    'Connect server',
+    action.button,
   );
-  if (approved !== 'Connect server') {
-    deps.outputChannel.appendLine(`[${new Date().toISOString()}] Connection to "${server.name}" was not approved; nothing was launched.`);
-    return;
+  if (approved !== action.button) {
+    deps.outputChannel.appendLine(`[${new Date().toISOString()}] ${action.title} on "${server.name}" was not approved; nothing was launched.`);
+    return false;
   }
   deps.manager.grantLaunchApproval(server.name);
+  return true;
+}
+
+async function connectWithApproval(
+  deps: McpManagerDependencies,
+  server: ServerRef,
+): Promise<void> {
+  const approved = await ensureMcpLaunchApproved(deps, server, { title: 'Connect to MCP server', button: 'Connect server', trustAction: 'connect to' });
+  if (!approved) {
+    return;
+  }
   try {
     await deps.manager.connectApproved(toDescriptor(server));
     deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${server.name}" connected.`);
@@ -203,6 +221,12 @@ async function discoverTools(
   deps: McpManagerDependencies,
   server: ServerRef,
 ): Promise<void> {
+  // Discovery connects (or reuses a connection to) the server, so it must pass
+  // the same trust and launch-approval gate as an explicit connect.
+  const approved = await ensureMcpLaunchApproved(deps, server, { title: 'Discover tools on MCP server', button: 'Discover tools', trustAction: 'discover tools on' });
+  if (!approved) {
+    return;
+  }
   try {
     const tools = await deps.manager.listTools(toDescriptor(server));
     if (tools.length === 0) {

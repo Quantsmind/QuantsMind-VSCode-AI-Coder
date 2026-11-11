@@ -782,8 +782,24 @@ export class AgentOrchestrator implements IAgentController {
     if (cumulative !== undefined) {
       return cumulative;
     }
-    this.addPatchBytes(sessionId, bytes);
+    // Pure check: the bytes are charged only for changes that are actually
+    // applied (see chargeApprovedChangeSet) so rejected or failed proposals
+    // never consume the cumulative budget.
     return undefined;
+  }
+
+  private chargeAppliedPatchBytes(
+    sessionId: string,
+    changes: readonly { path?: unknown; fromPath?: unknown; kind?: unknown; content?: unknown }[],
+    appliedChangeIds: ReadonlySet<string>,
+  ): void {
+    const applied = changes.filter((change) => {
+      const id = (change as { readonly id?: unknown }).id;
+      return typeof id === 'string' && appliedChangeIds.has(id);
+    });
+    if (applied.length > 0) {
+      this.addPatchBytes(sessionId, patchBytesOf(applied));
+    }
   }
 
   private cumulativePatchBreach(currentBytes: number, addition: number): string | undefined {
@@ -994,7 +1010,7 @@ export class AgentOrchestrator implements IAgentController {
   }
 
   private requireTrusted(action: string): void {
-    if ((this.deps.isTrusted ?? (() => true))() === false) {
+    if ((this.deps.isTrusted ?? (() => false))() !== true) {
       throw new AgentSessionError(
         `Workspace trust is required to ${action}. Open a trusted workspace or grant trust before using agent mode.`,
       );
@@ -1808,6 +1824,19 @@ export class AgentOrchestrator implements IAgentController {
       }
       this.applyingChangeSets.add(sessionId);
       this.incrementCounter(this.toolDispatches, sessionId);
+      // Apply-time backstop for the cumulative patch budget: approvals that
+      // were individually within budget at proposal time can overcommit when
+      // applied back-to-back, so the exact set being applied is re-checked
+      // against bytes applied so far. No apply happens when this trips.
+      const selectedChanges = changeSet.plan.changes.filter((change) => selected.includes(change.id));
+      const applyBreach = this.cumulativePatchBreach(
+        this.patchBytesAccumulated.get(sessionId) ?? 0,
+        patchBytesOf(selectedChanges),
+      );
+      if (applyBreach !== undefined) {
+        this.applyingChangeSets.delete(sessionId);
+        return this.failSession(sessionId, applyBreach);
+      }
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -1828,6 +1857,12 @@ export class AgentOrchestrator implements IAgentController {
         return this.viewOf(sessionId);
       }
 
+      // Only bytes that actually landed on disk consume the cumulative budget.
+      this.chargeAppliedPatchBytes(
+        sessionId,
+        changeSet.plan.changes,
+        new Set(outcome.applied.map((file) => file.changeId)),
+      );
       const appliedFiles = await this.appliedFilesOf(outcome);
       let next = this.require(sessionId);
       const previous = next.executions.find((execution) => execution.taskId === changeSet.taskId)?.appliedFiles ?? [];
@@ -2576,6 +2611,16 @@ export class AgentOrchestrator implements IAgentController {
       const historyTaskId = this.changeTaskId(sessionId, proposal.taskId);
       const applyId = this.nextId('apply');
       this.incrementCounter(this.toolDispatches, sessionId);
+      // Apply-time backstop for the cumulative patch budget, same as the
+      // change-set path: re-check the exact set against bytes applied so far.
+      const selectedRepairChanges = proposal.plan.changes.filter((change) => selected.includes(change.id));
+      const repairApplyBreach = this.cumulativePatchBreach(
+        this.patchBytesAccumulated.get(sessionId) ?? 0,
+        patchBytesOf(selectedRepairChanges),
+      );
+      if (repairApplyBreach !== undefined) {
+        return this.failSession(sessionId, repairApplyBreach);
+      }
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -2594,6 +2639,12 @@ export class AgentOrchestrator implements IAgentController {
         return this.viewOf(sessionId);
       }
 
+      // Only bytes that actually landed on disk consume the cumulative budget.
+      this.chargeAppliedPatchBytes(
+        sessionId,
+        proposal.plan.changes,
+        new Set(outcome.applied.map((file) => file.changeId)),
+      );
       const appliedFiles = await this.appliedFilesOf(outcome);
       let next = this.require(sessionId);
       const previous = next.executions.find((execution) => execution.taskId === proposal.taskId)?.appliedFiles ?? [];
@@ -3167,7 +3218,7 @@ export class AgentOrchestrator implements IAgentController {
       this.sessions.set(session.id, loaded);
     }
 
-    if (this.deps.isTrusted === undefined || this.deps.isTrusted()) {
+    if (this.deps.isTrusted !== undefined && this.deps.isTrusted()) {
       for (const session of [...this.sessions.values()]) {
         if (isTerminalAgentState(session.state)) {
           continue;

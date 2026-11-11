@@ -46,6 +46,22 @@ export interface McpTransportHandlers {
   readonly onClose: (error: McpError) => void;
 }
 
+/**
+ * Hard cap for remote (Streamable HTTP) MCP calls and the effective timeout shown in errors.
+ * Evaluated lazily: transport.ts and client.ts import each other (error class /
+ * timeout constant), so reading the constant only at call time avoids a stale
+ * binding when this module loads first.
+ */
+function maxHttpTimeoutMs(): number {
+  return DEFAULT_MCP_TIMEOUT_MS * 30;
+}
+
+function httpTimeoutMs(configured: number | undefined): number {
+  return Number.isFinite(configured) && (configured as number) > 0
+    ? Math.min(configured as number, maxHttpTimeoutMs())
+    : DEFAULT_MCP_TIMEOUT_MS;
+}
+
 export interface McpSendContext {
   /** JSON-RPC request id; null for notifications. */
   readonly id: number | null;
@@ -161,14 +177,37 @@ export class StdioTransport implements McpTransport {
     if (child === undefined || !this.isConnected()) {
       return Promise.reject(new McpError('closed', `The MCP server "${this.config.name}" is not connected.`));
     }
-    try {
-      child.stdin?.write(`${message}\n`);
-      return Promise.resolve();
-    } catch (error) {
-      return Promise.reject(
-        new McpError('protocol', `Could not write to the MCP server "${this.config.name}": ${error instanceof Error ? error.message : 'write failed'}`),
-      );
+    const stdin = child.stdin;
+    if (stdin === undefined || stdin === null || stdin.destroyed) {
+      return Promise.reject(new McpError('closed', `The MCP server "${this.config.name}" is not connected.`));
     }
+    // A server that dies mid-write must not surface an unhandled stream
+    // 'error' event into the extension host; both the callback and the
+    // one-shot error listener funnel into the same rejection.
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const done = (error?: Error | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        stdin.removeListener('error', onError);
+        if (error) {
+          reject(
+            new McpError('protocol', `Could not write to the MCP server "${this.config.name}": ${error.message}`),
+          );
+          return;
+        }
+        resolve();
+      };
+      const onError = (error: Error): void => done(error);
+      stdin.once('error', onError);
+      try {
+        stdin.write(`${message}\n`, done);
+      } catch (error) {
+        done(error instanceof Error ? error : new Error('write failed'));
+      }
+    });
   }
 
   async close(): Promise<void> {
@@ -311,9 +350,7 @@ export class StreamableHttpTransport implements McpTransport {
       throw new McpError('closed', 'The MCP server is not connected.');
     }
     const controller = new AbortController();
-    const timeoutMs = Number.isFinite(context.timeoutMs) && context.timeoutMs > 0
-      ? Math.min(context.timeoutMs, DEFAULT_MCP_TIMEOUT_MS * 30)
-      : DEFAULT_MCP_TIMEOUT_MS;
+    const timeoutMs = httpTimeoutMs(context.timeoutMs);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let onRequestAbort: (() => void) | undefined;
     if (context.signal !== undefined) {
@@ -513,7 +550,7 @@ export class StreamableHttpTransport implements McpTransport {
       if (context.signal?.aborted === true) {
         throw new McpError('cancelled', 'The MCP call was cancelled.');
       }
-      throw new McpError('timeout', `The MCP server did not respond within ${Math.round(Math.min(context.timeoutMs, DEFAULT_MCP_TIMEOUT_MS * 30))}ms.`);
+      throw new McpError('timeout', `The MCP server did not respond within ${Math.round(httpTimeoutMs(context.timeoutMs))}ms.`);
     }
     const raw = error instanceof Error ? error.message : String(error);
     const cause = (error as { cause?: unknown })?.cause;
