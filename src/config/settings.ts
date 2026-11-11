@@ -79,19 +79,42 @@ export class SettingsService {
   }
 
   async setMcpServers(
-    servers: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean; readonly timeoutMs?: number; readonly maxToolOutputChars?: number }[],
+    servers: readonly {
+      readonly name: string;
+      readonly transport?: 'stdio' | 'streamable-http';
+      readonly command?: string;
+      readonly args?: readonly string[];
+      readonly url?: string;
+      readonly auth?: 'none' | 'bearer';
+      readonly enabled: boolean;
+      readonly timeoutMs?: number;
+      readonly maxToolOutputChars?: number;
+    }[],
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     await config.update(
       'mcp.servers',
-      servers.map((entry) => ({
-        name: entry.name,
-        command: entry.command,
-        args: [...entry.args],
-        enabled: entry.enabled,
-        ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
-        ...(entry.maxToolOutputChars !== undefined ? { maxToolOutputChars: entry.maxToolOutputChars } : {}),
-      })),
+      servers.map((entry) => {
+        const transport = entry.transport ?? 'stdio';
+        const base = {
+          name: entry.name,
+          transport,
+          enabled: entry.enabled,
+          ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
+          ...(entry.maxToolOutputChars !== undefined ? { maxToolOutputChars: entry.maxToolOutputChars } : {}),
+        };
+        return transport === 'streamable-http'
+          ? {
+              ...base,
+              ...(entry.url !== undefined ? { url: entry.url } : {}),
+              ...(entry.auth !== undefined ? { auth: entry.auth } : {}),
+            }
+          : {
+              ...base,
+              command: entry.command ?? '',
+              args: [...(entry.args ?? [])],
+            };
+      }),
       vscode.ConfigurationTarget.Global,
     );
   }

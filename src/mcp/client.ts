@@ -1,5 +1,12 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { redactSecrets } from '../security/redact';
+import {
+  StdioTransport,
+  StreamableHttpTransport,
+  STREAMABLE_HTTP_CONNECT_ATTEMPTS,
+  STREAMABLE_HTTP_RETRY_BACKOFF_MS,
+  mcpRetrySleep,
+  type McpTransport,
+} from './transport';
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2024-11-05'] as const;
@@ -9,7 +16,10 @@ export const MAX_STDERR_CHARS = 4_000;
 export const MAX_MESSAGE_CHARS = 1_000_000;
 export const MAX_SCHEMA_CHARS = 32_768;
 
-export type McpErrorCode = 'connect' | 'timeout' | 'protocol' | 'server' | 'closed' | 'disabled' | 'cancelled';
+// Re-exported for backwards compatibility (tests and the manager import it from here).
+export { mcpChildEnv } from './transport';
+
+export type McpErrorCode = 'connect' | 'timeout' | 'protocol' | 'server' | 'closed' | 'disabled' | 'cancelled' | 'auth';
 
 export class McpError extends Error {
   constructor(
@@ -23,9 +33,22 @@ export class McpError extends Error {
 
 export interface McpServerConfig {
   readonly name: string;
-  readonly command: string;
+  /** Transport selection. Absent means stdio (backwards compatible with v2.5.1/v2.5.2). */
+  readonly transport?: 'stdio' | 'streamable-http';
+  /** Required for stdio; ignored for streamable-http. */
+  readonly command?: string;
   readonly args?: readonly string[];
+  /** Required for streamable-http; must pass https/loopback rules. Never carries credentials. */
+  readonly url?: string;
   readonly env?: Readonly<Record<string, string>>;
+  /** Authentication scheme declared in settings; the token itself is never in settings. */
+  readonly auth?: 'none' | 'bearer';
+  /**
+   * Bearer token for streamable-http servers. In-memory only: fetched from
+   * VS Code SecretStorage at connect time, never written to settings, logs,
+   * fingerprints, or tool output.
+   */
+  readonly bearerToken?: string;
   readonly timeoutMs?: number;
   readonly maxToolOutputChars?: number;
 }
@@ -49,58 +72,44 @@ export interface McpServerInfo {
   readonly version: string;
 }
 
-/**
- * Executable tokens must avoid shell metacharacters. Spaces are allowed
- * (Windows install paths contain them) as long as no word contains a
- * shell-special character.
- */
-const FORBIDDEN_IN_COMMAND = /["';&|<>$`(){}[\]*?!^~%\r\n\0]/;
-const ENV_INHERITED = new Set(['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'ComSpec', 'COMSPEC', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'LANG', 'LC_ALL', 'TERM']);
-
-/** Builds the sanitized child environment for an MCP server; never inherits secrets. */
-export function mcpChildEnv(override?: Readonly<Record<string, string>>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && ENV_INHERITED.has(key)) {
-      env[key] = value;
-    }
-  }
-  // Deterministic line-delimited JSON-RPC over pipes.
-  env.MCP_CLIENT = 'QuantsMind-VSCode-AI-Coder';
-  return { ...env, ...(override ?? {}) };
-}
-
-interface JsonRpcResponse {
+interface JsonRpcInbound {
   readonly jsonrpc?: unknown;
   readonly id?: unknown;
   readonly result?: unknown;
   readonly error?: { readonly code?: unknown; readonly message?: unknown };
+  readonly method?: unknown;
+  readonly params?: unknown;
 }
 
 /**
- * Minimal, real MCP (Model Context Protocol) client over stdio using
- * newline-delimited JSON-RPC 2.0. It implements exactly the handshake and
- * the tools surface: initialize, notifications/initialized, tools/list and
- * tools/call. Everything else fails closed.
+ * Minimal, real MCP (Model Context Protocol) client. Two transports are
+ * supported, selected per server via `McpServerConfig.transport`:
  *
- * Security boundary: the server is an arbitrary local process chosen by the
- * user. It is not sandboxed, jailed or containerized by this client. The
- * only protections are explicit configuration approval, a sanitized child
- * environment, bounded output and never treating server output as trusted
- * instructions. On Windows, `SystemRoot`/`ComSpec` are inherited so the
- * server's own child processes can launch; no other ambient variable is.
+ * - `stdio` (default, backwards compatible): newline-delimited JSON-RPC 2.0
+ *   over the child's pipes.
+ * - `streamable-http`: MCP Streamable HTTP (2025-06-18) against a single
+ *   HTTPS endpoint with optional bearer authentication from SecretStorage.
  *
- * Every tool result is marked untrusted: the output of an external process
- * is data, and it is never interpreted as instructions.
+ * Protocol semantics are transport-agnostic and identical to v2.5.1/v2.5.2:
+ * the client implements exactly the handshake and the tools surface
+ * (initialize, notifications/initialized, tools/list, tools/call);
+ * everything else fails closed. Server-initiated requests are answered with
+ * JSON-RPC `-32601` (method not found) rather than executed or hung.
+ *
+ * Security boundary: a configured server (local process or remote endpoint)
+ * is not trusted, sandboxed or sandboxable by this client. The protections
+ * are explicit configuration approval, workspace trust, SecretStorage-backed
+ * credentials, sanitized environments (stdio), TLS certificate verification
+ * (http), redirect refusal, bounded frames and output, no replay of failed
+ * requests and never treating server output as trusted instructions.
  */
 export class McpClient {
-  private child: ChildProcess | undefined;
+  private transport: McpTransport | undefined;
   private connecting: Promise<void> | undefined;
-  private buffer = '';
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private toolsCache: readonly McpTool[] | undefined;
-  private stderrBuffer = '';
+  private notificationsReceived = 0;
   private serverInfoCache: McpServerInfo | undefined;
   private serverCapabilitiesCache: Record<string, unknown> | undefined;
   private negotiatedProtocolVersion: string | undefined;
@@ -112,16 +121,21 @@ export class McpClient {
   }
 
   lastStderr(): string {
-    return this.stderrBuffer;
+    return this.transport?.lastStderr() ?? '';
   }
 
   isConnected(): boolean {
-    return this.child !== undefined && this.child.exitCode === null && this.child.signalCode === null;
+    return this.transport?.isConnected() === true;
   }
 
   /** Number of tools served from cache after at least one listTools() call. */
   cachedToolCount(): number | undefined {
     return this.toolsCache?.length;
+  }
+
+  /** Number of notifications received from the server (diagnostics). */
+  notificationCount(): number {
+    return this.notificationsReceived;
   }
 
   /** Server info captured during initialize; undefined until a handshake succeeds. */
@@ -144,7 +158,7 @@ export class McpClient {
     if (this.connecting !== undefined) {
       return this.connecting;
     }
-    this.connecting = this.connectInternal();
+    this.connecting = this.connectWithBoundedRetry();
     try {
       await this.connecting;
     } finally {
@@ -152,48 +166,68 @@ export class McpClient {
     }
   }
 
-  private async connectInternal(): Promise<void> {
+  /**
+   * Streamable HTTP connections may retry the idempotent initialize handshake
+   * once after a network failure (bounded retries with backoff). Authentication,
+   * protocol and configuration failures are never retried, and tool calls are
+   * never replayed.
+   */
+  private async connectWithBoundedRetry(): Promise<void> {
+    const isStreamableHttp = this.config.transport === 'streamable-http';
+    const attempts = isStreamableHttp ? STREAMABLE_HTTP_CONNECT_ATTEMPTS : 1;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await this.connectOnce();
+        return;
+      } catch (error) {
+        lastError = error;
+        const code = error instanceof McpError ? error.code : undefined;
+        const retriable = isStreamableHttp && code === 'connect';
+        await this.close().catch(() => undefined);
+        if (!retriable || attempt === attempts) {
+          break;
+        }
+        await mcpRetrySleep(STREAMABLE_HTTP_RETRY_BACKOFF_MS);
+      }
+    }
+    throw lastError instanceof McpError
+      ? lastError
+      : new McpError('connect', `The MCP server "${this.config.name}" did not complete the initialize handshake.`);
+  }
+
+  private createTransport(): McpTransport {
+    if (this.config.transport === 'streamable-http') {
+      const url = this.config.url;
+      if (typeof url !== 'string' || url.trim().length === 0) {
+        throw new McpError('disabled', 'An MCP streamable-http server requires an endpoint URL.');
+      }
+      return new StreamableHttpTransport({
+        name: this.config.name,
+        url,
+        ...(this.config.bearerToken !== undefined ? { bearerToken: this.config.bearerToken } : {}),
+      });
+    }
     const command = this.config.command;
-    if (
-      command.length === 0 ||
-      command.length > 260 ||
-      command !== command.trim() ||
-      FORBIDDEN_IN_COMMAND.test(command)
-    ) {
+    if (command === undefined) {
       throw new McpError('disabled', 'The MCP server command is not a permitted executable token.');
     }
-    const args = [...(this.config.args ?? [])];
-    if (args.some((arg) => arg.includes('\0'))) {
-      throw new McpError('disabled', 'The MCP server arguments contain a null byte.');
-    }
+    return new StdioTransport({
+      name: this.config.name,
+      command,
+      ...(this.config.args !== undefined ? { args: this.config.args } : {}),
+      ...(this.config.env !== undefined ? { env: this.config.env } : {}),
+    });
+  }
 
-    this.buffer = '';
-    this.stderrBuffer = '';
-    this.toolsCache = undefined;
-    this.serverInfoCache = undefined;
-    this.serverCapabilitiesCache = undefined;
-    this.negotiatedProtocolVersion = undefined;
-
-    const child = spawn(command, args, {
-      env: mcpChildEnv(this.config.env),
-      shell: false,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
+  private async connectOnce(): Promise<void> {
+    this.resetCaches();
+    const transport = this.createTransport();
+    this.transport = transport;
+    await transport.open({
+      onMessage: (raw) => this.onRawMessage(raw),
+      onClose: (error) => this.failPending(error),
     });
-    this.child = child;
-    child.stdout?.on('data', (chunk: Buffer | string) => this.onStdout(chunk));
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      if (this.stderrBuffer.length < MAX_STDERR_CHARS) {
-        this.stderrBuffer = (this.stderrBuffer + chunk.toString('utf8')).slice(0, MAX_STDERR_CHARS);
-      }
-    });
-    child.on('error', () => {
-      this.failPending(new McpError('connect', `Could not start the MCP server "${this.config.name}".`));
-    });
-    child.on('exit', (code) => {
-      this.failPending(new McpError('closed', `The MCP server "${this.config.name}" exited (code ${String(code)}).`));
-    });
-
     try {
       const result = await this.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
@@ -329,32 +363,20 @@ export class McpClient {
   }
 
   async close(): Promise<void> {
-    const child = this.child;
-    this.child = undefined;
+    const transport = this.transport;
+    this.transport = undefined;
     this.failPending(new McpError('closed', `The MCP client for "${this.config.name}" was closed.`));
-    if (child !== undefined && child.exitCode === null && child.signalCode === null) {
-      child.kill();
-      // Give the server a bounded grace period to exit, then force-kill.
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // Process already gone.
-          }
-          resolve();
-        }, 500);
-        child.once('exit', () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+    this.resetCaches();
+    if (transport !== undefined) {
+      await transport.close().catch(() => undefined);
     }
+  }
+
+  private resetCaches(): void {
     this.toolsCache = undefined;
     this.serverInfoCache = undefined;
     this.serverCapabilitiesCache = undefined;
     this.negotiatedProtocolVersion = undefined;
-    this.buffer = '';
   }
 
   private timeoutMs(): number {
@@ -363,18 +385,19 @@ export class McpClient {
   }
 
   private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
-    const child = this.child;
-    if (child === undefined || !this.isConnected()) {
+    const transport = this.transport;
+    if (transport === undefined || !transport.isConnected()) {
       throw new McpError('closed', `The MCP server "${this.config.name}" is not connected.`);
     }
     const id = this.nextId;
     this.nextId += 1;
+    const timeoutMs = this.timeoutMs();
     const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new McpError('timeout', `The MCP server "${this.config.name}" did not respond to ${method} within ${this.timeoutMs()}ms.`));
-      }, this.timeoutMs());
+        reject(new McpError('timeout', `The MCP server "${this.config.name}" did not respond to ${method} within ${timeoutMs}ms.`));
+      }, timeoutMs);
       const abortSignal = signal;
       let onAbort: (() => void) | undefined;
       if (abortSignal !== undefined) {
@@ -386,13 +409,11 @@ export class McpClient {
           reject(new McpError('cancelled', `The MCP call to "${this.config.name}" was cancelled.`));
         };
         onAbort = handler;
-      }
-      if (abortSignal !== undefined && onAbort !== undefined) {
         if (abortSignal.aborted) {
-          onAbort();
+          handler();
           return;
         }
-        abortSignal.addEventListener('abort', onAbort, { once: true });
+        abortSignal.addEventListener('abort', handler, { once: true });
       }
       this.pending.set(id, {
         resolve: (value) => {
@@ -412,60 +433,66 @@ export class McpClient {
           reject(error);
         },
       });
-      try {
-        child.stdin?.write(`${payload}\n`);
-      } catch (error) {
+      transport.send(payload, { id, timeoutMs, signal, protocolVersion: this.negotiatedProtocolVersion }).catch((error: unknown) => {
+        const pending = this.pending.get(id);
+        if (pending === undefined) {
+          return; // The timer or the abort handler already rejected this request.
+        }
         clearTimeout(timer);
-        if (onAbort !== undefined && signal !== undefined) {
-          signal.removeEventListener('abort', onAbort);
+        if (onAbort !== undefined && abortSignal !== undefined) {
+          abortSignal.removeEventListener('abort', onAbort);
         }
         this.pending.delete(id);
-        reject(new McpError('protocol', `Could not write to the MCP server "${this.config.name}": ${error instanceof Error ? error.message : 'write failed'}`));
-      }
+        pending.reject(
+          error instanceof McpError
+            ? error
+            : new McpError('connect', `The MCP request to "${this.config.name}" failed.`),
+        );
+      });
     });
   }
 
   private notify(method: string, params: unknown): void {
-    try {
-      this.child?.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
-    } catch {
-      // Notifications are best-effort; the next request will surface problems.
-    }
-  }
-
-  private onStdout(chunk: Buffer | string): void {
-    this.buffer += chunk.toString('utf8');
-    if (this.buffer.length > MAX_MESSAGE_CHARS) {
-      this.buffer = '';
-      this.failPending(new McpError('protocol', `The MCP server "${this.config.name}" sent an oversized message; the connection was dropped.`));
-      const child = this.child;
-      this.child = undefined;
-      child?.kill();
+    const transport = this.transport;
+    if (transport === undefined || !transport.isConnected()) {
       return;
     }
-    for (;;) {
-      const newline = this.buffer.indexOf('\n');
-      if (newline === -1) {
-        return;
-      }
-      const raw = this.buffer.slice(0, newline).trim();
-      this.buffer = this.buffer.slice(newline + 1);
-      if (raw.length === 0) {
-        continue;
-      }
-      let message: JsonRpcResponse;
-      try {
-        message = JSON.parse(raw) as JsonRpcResponse;
-      } catch {
-        continue; // Ignore non-JSON noise from the server.
-      }
-      this.dispatch(message);
-    }
+    const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
+    // Notifications are best-effort; the next request surfaces problems.
+    transport.send(payload, { id: null, timeoutMs: this.timeoutMs(), protocolVersion: this.negotiatedProtocolVersion }).catch(() => undefined);
   }
 
-  private dispatch(message: JsonRpcResponse): void {
+  private onRawMessage(raw: string): void {
+    if (raw.length > MAX_MESSAGE_CHARS) {
+      this.failPending(new McpError('protocol', `The MCP server "${this.config.name}" sent an oversized message; the connection was dropped.`));
+      void this.close();
+      return;
+    }
+    let message: JsonRpcInbound;
+    try {
+      message = JSON.parse(raw) as JsonRpcInbound;
+    } catch {
+      return; // Ignore non-JSON noise from the server.
+    }
+    this.dispatch(message);
+  }
+
+  private dispatch(message: JsonRpcInbound): void {
+    if (typeof message.method === 'string' && message.method.length > 0) {
+      const id = message.id;
+      if (id === undefined || id === null) {
+        // Server notification: received, counted, never executed.
+        this.notificationsReceived += 1;
+        return;
+      }
+      // Server-initiated request: fail closed with JSON-RPC -32601.
+      if ((typeof id === 'number' && Number.isFinite(id)) || (typeof id === 'string' && id.length > 0 && id.length <= 64)) {
+        this.respondError(id, -32601, 'This client does not support server-initiated requests.');
+      }
+      return;
+    }
     if (typeof message.id !== 'number') {
-      return; // Notifications from the server carry no id; we do not use them yet.
+      return;
     }
     const pending = this.pending.get(message.id);
     if (pending === undefined) {
@@ -478,6 +505,16 @@ export class McpClient {
       return;
     }
     pending.resolve(message.result);
+  }
+
+  /** Sends a JSON-RPC error response to a server-initiated request. */
+  private respondError(id: number | string, code: number, message: string): void {
+    const transport = this.transport;
+    if (transport === undefined || !transport.isConnected()) {
+      return;
+    }
+    const payload = JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
+    transport.send(payload, { id: null, timeoutMs: this.timeoutMs(), protocolVersion: this.negotiatedProtocolVersion }).catch(() => undefined);
   }
 
   private failPending(error: McpError): void {

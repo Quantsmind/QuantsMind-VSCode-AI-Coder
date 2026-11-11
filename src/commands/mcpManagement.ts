@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
 import type { SettingsService } from '../config/settings';
 import type { McpServerManager, McpServerSnapshot } from '../mcp/serverManager';
+import { parseMcpEndpoint } from '../mcp/endpoint';
+import { deleteMcpCredential, storeMcpCredential } from '../mcp/credentials';
+import { validateCredential } from '../security/credential';
 import { redactSecrets } from '../security/redact';
+import type { SecretStorageLike } from '../security/secretStore';
 
 export interface McpManagerDependencies {
   readonly settings: SettingsService;
   readonly manager: McpServerManager;
   readonly outputChannel: vscode.OutputChannel;
   readonly trusted: () => boolean;
+  /** VS Code SecretStorage, used to store/remove bearer credentials for remote servers. */
+  readonly secrets?: SecretStorageLike;
 }
 
 export interface McpQuickPickEntry {
@@ -18,6 +24,18 @@ export interface McpQuickPickEntry {
   readonly alwaysShow?: boolean;
 }
 
+interface ServerRef {
+  readonly name: string;
+  readonly transport: 'stdio' | 'streamable-http';
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly url?: string;
+  readonly auth?: 'none' | 'bearer';
+  readonly enabled: boolean;
+  readonly timeoutMs?: number;
+  readonly maxToolOutputChars?: number;
+}
+
 const STATE_ICONS: Readonly<Record<string, string>> = {
   connected: '$(plug)',
   connecting: '$(sync~spin)',
@@ -26,13 +44,17 @@ const STATE_ICONS: Readonly<Record<string, string>> = {
   disconnected: '$(circle-outline)',
 };
 
+function isRemote(server: { readonly transport: 'stdio' | 'streamable-http' }): boolean {
+  return server.transport === 'streamable-http';
+}
+
 function serverLabel(server: McpServerSnapshot): string {
   const icon = STATE_ICONS[server.state] ?? '$(circle-outline)';
   return `${icon} ${server.name}`;
 }
 
 function serverDescription(server: McpServerSnapshot): string {
-  const parts: string[] = [server.state];
+  const parts: string[] = [server.state, isRemote(server) ? 'streamable-http' : 'stdio'];
   if (server.protocolVersion !== undefined) {
     parts.push(`protocol ${server.protocolVersion}`);
   }
@@ -43,10 +65,13 @@ function serverDescription(server: McpServerSnapshot): string {
 }
 
 function serverDetail(server: McpServerSnapshot): string {
-  const args = server.args.join(' ');
-  const launch = args.length > 0 ? `${server.command} ${args}` : server.command;
   const limits =
     `${server.timeoutMs ?? '10,000'} ms · ${server.maxToolOutputChars ?? '20,000'} chars`;
+  if (isRemote(server)) {
+    return `${server.url ?? '(no endpoint)'}  (${limits})`;
+  }
+  const args = server.args.join(' ');
+  const launch = args.length > 0 ? `${server.command ?? '(no command)'} ${args}` : server.command ?? '(no command)';
   return `${launch}  (${limits})`;
 }
 
@@ -73,16 +98,20 @@ export function buildServerActionItems(server: McpServerSnapshot): McpQuickPickE
   if (server.enabled) {
     items.push(
       server.state === 'connected'
-        ? { id: 'disconnect', label: '$(debug-disconnect) Disconnect', description: 'Stop the server process' }
-        : { id: 'connect', label: '$(plug) Connect and approve launch', description: 'Launch the server with explicit approval' },
+        ? { id: 'disconnect', label: '$(debug-disconnect) Disconnect', description: 'Close the connection to the server' }
+        : { id: 'connect', label: '$(plug) Connect and approve launch', description: 'Connect with explicit approval' },
     );
     items.push({ id: 'discover-tools', label: '$(tools) Discover tools', description: 'List the tools this server exposes' });
+    if (isRemote(server) && server.auth === 'bearer') {
+      items.push({ id: 'auth-set', label: '$(key) Set or replace bearer credential', description: 'Store a fresh credential in VS Code SecretStorage' });
+      items.push({ id: 'auth-remove', label: '$(trash) Remove stored credential', description: 'Delete the stored bearer credential from SecretStorage' });
+    }
     items.push({ id: 'disable', label: '$(circle-slash) Disable', description: 'Keep the configuration but stop offering it' });
   } else {
     items.push({ id: 'enable', label: '$(play) Enable', description: 'Allow this server to be launched' });
   }
-  items.push({ id: 'diagnostics', label: '$(info) Diagnostics', description: 'Server info, protocol, last error and stderr tail' });
-  items.push({ id: 'edit', label: '$(edit) Edit command and arguments…', description: 'Change how this server is launched' });
+  items.push({ id: 'diagnostics', label: '$(info) Diagnostics', description: 'Server info, transport, protocol, last error' });
+  items.push({ id: 'edit', label: isRemote(server) ? '$(edit) Edit endpoint…' : '$(edit) Edit command and arguments…', description: isRemote(server) ? 'Change the endpoint URL' : 'Change how this server is launched' });
   items.push({ id: 'restart', label: '$(debug-restart) Restart server', description: 'Disconnect and reconnect' });
   items.push({ id: 'remove', label: '$(trash) Remove server…', description: 'Delete this configuration' });
   items.push({ id: 'back', label: '$(arrow-left) Back' });
@@ -97,33 +126,71 @@ async function pickFrom(items: readonly McpQuickPickEntry[], title: string, plac
   return picked === undefined ? undefined : (picked as { id: string }).id;
 }
 
+function toDescriptor(server: ServerRef): ServerRef {
+  if (server.transport === 'streamable-http') {
+    return {
+      name: server.name,
+      transport: 'streamable-http',
+      ...(server.url !== undefined ? { url: server.url } : {}),
+      auth: server.auth ?? 'none',
+      enabled: server.enabled,
+      ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+      ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+    };
+  }
+  return {
+    name: server.name,
+    transport: 'stdio',
+    ...(server.command !== undefined ? { command: server.command } : {}),
+    args: server.args ?? [],
+    auth: 'none',
+    enabled: server.enabled,
+    ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+    ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+  };
+}
+
+function serverApprovalDetail(server: ServerRef): string {
+  if (server.transport === 'streamable-http') {
+    return (
+      `  Endpoint: ${server.url ?? '(missing endpoint)'}\n` +
+      '  Transport: Streamable HTTP\n' +
+      `  Authentication: ${server.auth === 'bearer' ? 'Bearer (credential from SecretStorage)' : 'none'}\n` +
+      'Origin: application setting quantsmind.mcp.servers\n\n' +
+      'This connects to a remote server chosen by your configuration. Its output is untrusted data. Only connect to servers you trust.'
+    );
+  }
+  return (
+    `  Command: ${server.command ?? '(missing command)'}\n` +
+    `  Arguments: ${(server.args ?? []).join(' ') || '(none)'}\n` +
+    'Origin: application setting quantsmind.mcp.servers\n\n' +
+    'This starts an external process chosen by your configuration. It is not sandboxed. Only launch servers you trust.'
+  );
+}
+
 async function connectWithApproval(
   deps: McpManagerDependencies,
-  server: { readonly name: string; readonly command: string; readonly args: readonly string[] },
+  server: ServerRef,
 ): Promise<void> {
   if (!deps.trusted()) {
-    void vscode.window.showWarningMessage('Workspace trust is required to launch MCP servers.');
+    void vscode.window.showWarningMessage('Workspace trust is required to connect MCP servers.');
     return;
   }
   const approved = await vscode.window.showWarningMessage(
-    `Launch MCP server "${server.name}"?`,
+    `Connect to MCP server "${server.name}"?`,
     {
       modal: true,
-      detail:
-        `  Command: ${server.command}\n` +
-        `  Arguments: ${server.args.join(' ') || '(none)'}\n` +
-        'Origin: application setting quantsmind.mcp.servers\n\n' +
-        'This starts an external process chosen by your configuration. It is not sandboxed. Only launch servers you trust.',
+      detail: serverApprovalDetail(server),
     },
-    'Launch server',
+    'Connect server',
   );
-  if (approved !== 'Launch server') {
-    deps.outputChannel.appendLine(`[${new Date().toISOString()}] Launch of "${server.name}" was not approved; server not started.`);
+  if (approved !== 'Connect server') {
+    deps.outputChannel.appendLine(`[${new Date().toISOString()}] Connection to "${server.name}" was not approved; nothing was launched.`);
     return;
   }
   deps.manager.grantLaunchApproval(server.name);
   try {
-    await deps.manager.connectApproved(server);
+    await deps.manager.connectApproved(toDescriptor(server));
     deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${server.name}" connected.`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Connection failed.';
@@ -134,10 +201,10 @@ async function connectWithApproval(
 
 async function discoverTools(
   deps: McpManagerDependencies,
-  server: { readonly name: string; readonly command: string; readonly args: readonly string[] },
+  server: ServerRef,
 ): Promise<void> {
   try {
-    const tools = await deps.manager.listTools(server);
+    const tools = await deps.manager.listTools(toDescriptor(server));
     if (tools.length === 0) {
       void vscode.window.showInformationMessage(`MCP server "${server.name}" reports no tools.`);
       return;
@@ -160,11 +227,13 @@ function diagnosticsFor(deps: McpManagerDependencies, server: McpServerSnapshot)
     `[${new Date().toISOString()}] Diagnostics for MCP server "${server.name}"`,
     `  state: ${server.state}`,
     `  enabled: ${server.enabled}`,
-    `  launch origin: ${server.launchOrigin}`,
-    `  command: ${server.command}`,
-    `  args: ${server.args.join(' ') || '(none)'}`,
+    `  transport: ${server.transport}`,
+    ...(server.transport === 'streamable-http'
+      ? [`  endpoint: ${server.url ?? '(missing endpoint)'}`, `  authentication: ${server.auth}${server.auth === 'bearer' ? ' (credential in SecretStorage; never shown)' : ''}`]
+      : [`  command: ${server.command ?? '(missing command)'}`, `  args: ${server.args.join(' ') || '(none)'}`]),
     `  timeoutMs: ${server.timeoutMs ?? 'default (10000)'}`,
     `  maxToolOutputChars: ${server.maxToolOutputChars ?? 'default (20000)'}`,
+    `  launch origin: ${server.launchOrigin}`,
     ...(server.serverInfo !== undefined ? [`  server: ${server.serverInfo.name} ${server.serverInfo.version}`] : []),
     ...(server.protocolVersion !== undefined ? [`  protocol: ${server.protocolVersion}`] : []),
     ...(server.toolCount !== undefined ? [`  tools cached: ${server.toolCount}`] : []),
@@ -177,15 +246,106 @@ function diagnosticsFor(deps: McpManagerDependencies, server: McpServerSnapshot)
   void vscode.window.showInformationMessage(`Diagnostics written to the MCP output channel (${server.state}).`);
 }
 
+async function setBearerCredential(
+  deps: McpManagerDependencies,
+  target: { readonly name: string },
+): Promise<void> {
+  if (deps.secrets === undefined) {
+    void vscode.window.showErrorMessage('Secure credential storage is unavailable in this context.');
+    return;
+  }
+  const token = await vscode.window.showInputBox({
+    title: `Bearer credential for MCP server "${target.name}"`,
+    prompt: 'Stored in VS Code SecretStorage only. Never written to settings or logs.',
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      try {
+        validateCredential(value);
+        return undefined;
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Invalid credential.';
+      }
+    },
+  });
+  if (token === undefined) {
+    return;
+  }
+  try {
+    await storeMcpCredential(deps.secrets, target.name, token);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not store the credential.';
+    void vscode.window.showErrorMessage(`MCP credential was not stored: ${message}`);
+    return;
+  }
+  // A new credential invalidates any cached connection and launch approval.
+  await deps.manager.disconnect(target.name);
+  deps.manager.revokeLaunchApproval(target.name);
+  deps.outputChannel.appendLine(`[${new Date().toISOString()}] Bearer credential for "${target.name}" stored; previous connection and approval revoked.`);
+  void vscode.window.showInformationMessage(`Bearer credential for "${target.name}" saved in SecretStorage.`);
+}
+
+async function removeBearerCredential(
+  deps: McpManagerDependencies,
+  target: { readonly name: string },
+): Promise<void> {
+  if (deps.secrets === undefined) {
+    void vscode.window.showErrorMessage('Secure credential storage is unavailable in this context.');
+    return;
+  }
+  const confirmed = await vscode.window.showWarningMessage(
+    `Remove the stored bearer credential for MCP server "${target.name}"?`,
+    { modal: true },
+    'Remove credential',
+  );
+  if (confirmed !== 'Remove credential') {
+    return;
+  }
+  await deleteMcpCredential(deps.secrets, target.name);
+  await deps.manager.disconnect(target.name);
+  deps.manager.revokeLaunchApproval(target.name);
+  deps.outputChannel.appendLine(`[${new Date().toISOString()}] Bearer credential for "${target.name}" removed; previous connection and approval revoked.`);
+  void vscode.window.showInformationMessage(`Bearer credential for "${target.name}" removed.`);
+}
+
+function parseArgsInput(argsInput: string): string[] {
+  return (argsInput.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) => token.replace(/^["']|["']$/g, ''));
+}
+
 async function editServer(
   deps: McpManagerDependencies,
-  current: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean }[],
-  target: { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean },
+  current: readonly ServerRef[],
+  target: ServerRef,
 ): Promise<boolean> {
+  if (target.transport === 'streamable-http') {
+    const url = await vscode.window.showInputBox({
+      title: `Edit MCP server — endpoint (${target.name})`,
+      prompt: 'https URL of the MCP endpoint (http only for loopback development; credentials never belong in the URL)',
+      value: target.url ?? '',
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        const parsed = parseMcpEndpoint(value);
+        return parsed.ok ? undefined : parsed.error;
+      },
+    });
+    if (url === undefined) {
+      return false;
+    }
+    const parsed = parseMcpEndpoint(url);
+    if (!parsed.ok) {
+      return false;
+    }
+    const updated = current.map((entry) => (entry.name === target.name ? { ...entry, url: parsed.url } : entry));
+    await deps.settings.setMcpServers(updated);
+    await deps.manager.disconnect(target.name);
+    deps.manager.revokeLaunchApproval(target.name);
+    deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${target.name}" endpoint updated; launch approval revoked.`);
+    return true;
+  }
   const command = await vscode.window.showInputBox({
     title: `Edit MCP server — command (${target.name})`,
     prompt: 'Executable to launch',
-    value: target.command,
+    value: target.command ?? '',
     ignoreFocusOut: true,
     validateInput: (value) => (value.trim().length === 0 ? 'A command is required.' : undefined),
   });
@@ -195,13 +355,13 @@ async function editServer(
   const argsInput = await vscode.window.showInputBox({
     title: `Edit MCP server — arguments (${target.name})`,
     prompt: 'Arguments separated by spaces (quote paths containing spaces like "C:\\Program Files\\…")',
-    value: target.args.join(' '),
+    value: (target.args ?? []).join(' '),
     ignoreFocusOut: true,
   });
   if (argsInput === undefined) {
     return false;
   }
-  const parsedArgs = (argsInput.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) => token.replace(/^["']|["']$/g, ''));
+  const parsedArgs = parseArgsInput(argsInput);
   const updated = current.map((entry) =>
     entry.name === target.name ? { ...entry, command: command.trim(), args: parsedArgs } : entry,
   );
@@ -211,7 +371,105 @@ async function editServer(
   return true;
 }
 
-async function addServer(deps: McpManagerDependencies, current: readonly { readonly name: string; readonly command: string; readonly args: readonly string[]; readonly enabled: boolean }[]): Promise<void> {
+async function addStdioServer(deps: McpManagerDependencies, current: readonly ServerRef[], name: string): Promise<void> {
+  const command = await vscode.window.showInputBox({
+    title: 'Add MCP server — command',
+    prompt: 'Executable to launch, e.g. "node" or "npx"',
+    ignoreFocusOut: true,
+    validateInput: (value) => (value.trim().length === 0 ? 'A command is required.' : undefined),
+  });
+  if (command === undefined) {
+    return;
+  }
+  const argsInput = await vscode.window.showInputBox({
+    title: 'Add MCP server — arguments',
+    prompt: 'Arguments separated by spaces (quote paths containing spaces)',
+    ignoreFocusOut: true,
+  });
+  if (argsInput === undefined) {
+    return;
+  }
+  const args = parseArgsInput(argsInput);
+  const updated = [...current, { name: name.trim(), transport: 'stdio' as const, command: command.trim(), args, enabled: true }];
+  await deps.settings.setMcpServers(updated);
+  deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${name.trim()}" configured and enabled. Launch it from the MCP manager.`);
+  void vscode.window.showInformationMessage(`MCP server "${name.trim()}" added. Connect it from QuantsMind: Manage MCP Servers.`);
+}
+
+async function addHttpServer(deps: McpManagerDependencies, current: readonly ServerRef[], name: string): Promise<void> {
+  const url = await vscode.window.showInputBox({
+    title: 'Add MCP server — endpoint',
+    prompt: 'https URL of the MCP endpoint (http only for loopback development; credentials never belong in the URL)',
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const parsed = parseMcpEndpoint(value);
+      return parsed.ok ? undefined : parsed.error;
+    },
+  });
+  if (url === undefined) {
+    return;
+  }
+  const parsed = parseMcpEndpoint(url);
+  if (!parsed.ok) {
+    return;
+  }
+  const auth = await vscode.window.showQuickPick(
+    [
+      { label: 'none', description: 'The endpoint does not require authentication', value: 'none' as const },
+      { label: 'bearer', description: 'Requires a token stored in VS Code SecretStorage; never written to settings', value: 'bearer' as const },
+    ],
+    { title: 'Add MCP server — authentication', placeHolder: 'How does the server authenticate requests?', ignoreFocusOut: true },
+  );
+  if (auth === undefined) {
+    return;
+  }
+  if (auth.value === 'bearer') {
+    if (deps.secrets === undefined) {
+      void vscode.window.showErrorMessage('Secure credential storage is unavailable; cannot store a bearer credential for this server.');
+      return;
+    }
+    const token = await vscode.window.showInputBox({
+      title: 'Add MCP server — bearer credential',
+      prompt: `Token for "${name.trim()}"; stored in SecretStorage only`,
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        try {
+          validateCredential(value);
+          return undefined;
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Invalid credential.';
+        }
+      },
+    });
+    if (token === undefined) {
+      return;
+    }
+    try {
+      await storeMcpCredential(deps.secrets, name.trim(), token);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not store the credential.';
+      void vscode.window.showErrorMessage(`MCP server "${name.trim()}" was not added: ${message}`);
+      return;
+    }
+  }
+  const updated = [...current, { name: name.trim(), transport: 'streamable-http' as const, url: parsed.url, enabled: true, auth: auth.value }];
+  await deps.settings.setMcpServers(updated);
+  deps.outputChannel.appendLine(`[${new Date().toISOString()}] Remote server "${name.trim()}" configured (streamable-http, auth: ${auth.value}). Connect it from the MCP manager.`);
+  void vscode.window.showInformationMessage(`MCP server "${name.trim()}" added. Connect it from QuantsMind: Manage MCP Servers.`);
+}
+
+async function addServer(deps: McpManagerDependencies, current: readonly ServerRef[]): Promise<void> {
+  const transport = await vscode.window.showQuickPick(
+    [
+      { label: 'stdio (local process)', description: 'Launch a local executable over stdio JSON-RPC', value: 'stdio' as const },
+      { label: 'streamable-http (remote server)', description: 'Connect to an HTTPS MCP endpoint with optional bearer authentication', value: 'streamable-http' as const },
+    ],
+    { title: 'Add MCP server — transport', placeHolder: 'How should QuantsMind reach the server?', ignoreFocusOut: true },
+  );
+  if (transport === undefined) {
+    return;
+  }
   const name = await vscode.window.showInputBox({
     title: 'Add MCP server — name',
     prompt: 'A stable identifier, e.g. "filesystem" or "company-search"',
@@ -230,28 +488,11 @@ async function addServer(deps: McpManagerDependencies, current: readonly { reado
   if (name === undefined) {
     return;
   }
-  const command = await vscode.window.showInputBox({
-    title: 'Add MCP server — command',
-    prompt: 'Executable to launch, e.g. "node" or "npx"',
-    ignoreFocusOut: true,
-    validateInput: (value) => (value.trim().length === 0 ? 'A command is required.' : undefined),
-  });
-  if (command === undefined) {
+  if (transport.value === 'stdio') {
+    await addStdioServer(deps, current, name);
     return;
   }
-  const argsInput = await vscode.window.showInputBox({
-    title: 'Add MCP server — arguments',
-    prompt: 'Arguments separated by spaces (quote paths containing spaces)',
-    ignoreFocusOut: true,
-  });
-  if (argsInput === undefined) {
-    return;
-  }
-  const args = (argsInput.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) => token.replace(/^["']|["']$/g, ''));
-  const updated = [...current, { name: name.trim(), command: command.trim(), args, enabled: true }];
-  await deps.settings.setMcpServers(updated);
-  deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${name.trim()}" configured and enabled. Launch it from the MCP manager.`);
-  void vscode.window.showInformationMessage(`MCP server "${name.trim()}" added. Launch it from QuantsMind: Manage MCP Servers.`);
+  await addHttpServer(deps, current, name);
 }
 
 /** The `quantsmind.manageMcpServers` command. */
@@ -287,7 +528,17 @@ export async function manageMcpServers(deps: McpManagerDependencies): Promise<vo
       if (action === undefined || action === 'back') {
         break;
       }
-      const server = { name: target.name, command: target.command, args: target.args };
+      const server: ServerRef = {
+        name: target.name,
+        transport: target.transport,
+        ...(target.command !== undefined ? { command: target.command } : {}),
+        args: target.args,
+        ...(target.url !== undefined ? { url: target.url } : {}),
+        auth: target.auth,
+        enabled: target.enabled,
+        ...(target.timeoutMs !== undefined ? { timeoutMs: target.timeoutMs } : {}),
+        ...(target.maxToolOutputChars !== undefined ? { maxToolOutputChars: target.maxToolOutputChars } : {}),
+      };
       switch (action) {
         case 'connect':
           await connectWithApproval(deps, server);
@@ -297,6 +548,12 @@ export async function manageMcpServers(deps: McpManagerDependencies): Promise<vo
           break;
         case 'discover-tools':
           await discoverTools(deps, server);
+          break;
+        case 'auth-set':
+          await setBearerCredential(deps, target);
+          break;
+        case 'auth-remove':
+          await removeBearerCredential(deps, target);
           break;
         case 'enable':
         case 'disable': {
@@ -322,7 +579,7 @@ export async function manageMcpServers(deps: McpManagerDependencies): Promise<vo
           diagnosticsFor(deps, target);
           break;
         case 'edit':
-          await editServer(deps, servers, { name: target.name, command: target.command, args: target.args, enabled: target.enabled });
+          await editServer(deps, servers, server);
           break;
         case 'restart': {
           await deps.manager.disconnect(target.name);
@@ -334,7 +591,10 @@ export async function manageMcpServers(deps: McpManagerDependencies): Promise<vo
             `Remove MCP server "${target.name}"?`,
             {
               modal: true,
-              detail: `Command: ${target.command} ${target.args.join(' ')}\n\nThis deletes the configuration. The server process is stopped if it is running.`,
+              detail:
+                server.transport === 'streamable-http'
+                  ? `Endpoint: ${server.url ?? '(missing endpoint)'}\n\nThis deletes the configuration. The stored bearer credential, if any, is removed as well. The connection is closed if active.`
+                  : `Command: ${server.command ?? ''} ${(server.args ?? []).join(' ')}\n\nThis deletes the configuration. The server process is stopped if it is running.`,
             },
             'Remove',
           );
@@ -343,6 +603,10 @@ export async function manageMcpServers(deps: McpManagerDependencies): Promise<vo
           }
           await deps.manager.disconnect(target.name);
           deps.manager.revokeLaunchApproval(target.name);
+          if (server.transport === 'streamable-http' && deps.secrets !== undefined) {
+            await deleteMcpCredential(deps.secrets, target.name).catch(() => undefined);
+            deps.outputChannel.appendLine(`[${new Date().toISOString()}] Stored bearer credential for "${target.name}" removed.`);
+          }
           await deps.settings.setMcpServers(servers.filter((entry) => entry.name !== target.name));
           deps.outputChannel.appendLine(`[${new Date().toISOString()}] Server "${target.name}" removed.`);
           break;

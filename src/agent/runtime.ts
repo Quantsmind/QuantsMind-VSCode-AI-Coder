@@ -5,7 +5,7 @@ import type { SettingsService } from '../config/settings';
 import type { CompletionService } from '../providers/completionService';
 import type { CancellationTokenLike } from '../providers/types';
 import type { Logger } from '../security/logger';
-import type { SecretStore } from '../security/secretStore';
+import type { SecretStore, SecretStorageLike } from '../security/secretStore';
 import { isTrusted, type TrustCheck } from '../security/workspaceTrust';
 import {
   ProjectIntelligenceService,
@@ -49,6 +49,8 @@ export interface AgentRuntimeDependencies {
   readonly changeService: ChangeService;
   readonly sessionStore: KeyValueStore;
   readonly isTrusted?: TrustCheck;
+  /** VS Code SecretStorage for remote MCP bearer credentials (never written to settings). */
+  readonly mcpCredentials?: SecretStorageLike;
 }
 
 export interface AgentRuntime {
@@ -338,19 +340,34 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
   for (const tool of gitTools.toAgentTools()) {
     toolRegistry.register(tool);
   }
-  const mcpServerManager = new McpServerManager();
+  const mcpServerManager = new McpServerManager({
+    ...(deps.mcpCredentials !== undefined ? { credentials: deps.mcpCredentials } : {}),
+  });
   const mcpTools = new McpTools({
     servers: () =>
       deps.settings
         .getMcpSettings()
         .servers.filter((entry) => entry.enabled)
-        .map((entry) => ({
-          name: entry.name,
-          command: entry.command,
-          args: entry.args,
-          timeoutMs: entry.timeoutMs,
-          maxToolOutputChars: entry.maxToolOutputChars,
-        })),
+        .map((entry) =>
+          entry.transport === 'streamable-http'
+            ? {
+                name: entry.name,
+                transport: 'streamable-http' as const,
+                ...(entry.url !== undefined ? { url: entry.url } : {}),
+                auth: entry.auth,
+                timeoutMs: entry.timeoutMs,
+                maxToolOutputChars: entry.maxToolOutputChars,
+              }
+            : {
+                name: entry.name,
+                transport: 'stdio' as const,
+                ...(entry.command !== undefined ? { command: entry.command } : {}),
+                args: entry.args ?? [],
+                auth: 'none' as const,
+                timeoutMs: entry.timeoutMs,
+                maxToolOutputChars: entry.maxToolOutputChars,
+              },
+        ),
     trusted,
     manager: mcpServerManager,
     approval: async (request) => {
@@ -365,17 +382,22 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
       return answer === 'Apply';
     },
     launchApproval: async (request) => {
+      const isRemote = request.transport === 'streamable-http';
+      const detail = isRemote
+        ? `  Endpoint: ${request.endpoint ?? '(missing endpoint)'}\n` +
+          '  Transport: Streamable HTTP\n' +
+          `  Authentication: ${request.auth === 'bearer' ? 'Bearer (credential from SecretStorage)' : 'none'}\n` +
+          `  Origin: ${request.launchOrigin}\n\n` +
+          'This connects to a remote server chosen by your configuration. ' +
+          'Its output is untrusted data. Only connect to servers you trust.'
+        : `  Command: ${request.command}\n` +
+          `  Arguments: ${(request.args ?? []).join(' ') || '(none)'}\n` +
+          `  Origin: ${request.launchOrigin}\n\n` +
+          'This starts an external process chosen by your configuration. ' +
+          'It is not sandboxed. Only launch servers you trust.';
       const answer = await vscode.window.showWarningMessage(
         `Launch MCP server "${request.name}"?`,
-        {
-          modal: true,
-          detail:
-            `  Command: ${request.command}\n` +
-            `  Arguments: ${request.args.join(' ') || '(none)'}\n` +
-            `  Origin: ${request.launchOrigin}\n\n` +
-            'This starts an external process chosen by your configuration. ' +
-            'It is not sandboxed. Only launch servers you trust.',
-        },
+        { modal: true, detail },
         'Launch server',
       );
       return answer === 'Launch server';

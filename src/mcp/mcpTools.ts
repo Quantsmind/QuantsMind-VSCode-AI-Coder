@@ -36,7 +36,14 @@ export class McpTools {
   private resolveServers(): readonly McpServerConfig[] {
     const configs = resolveLive(this.env.servers);
     return Array.isArray(configs)
-      ? configs.filter((entry) => typeof entry?.name === 'string' && typeof entry?.command === 'string' && entry?.enabled !== false)
+      ? configs.filter(
+          (entry) =>
+            typeof entry?.name === 'string' &&
+            entry?.enabled !== false &&
+            (entry.transport === 'streamable-http'
+              ? typeof entry.url === 'string' && entry.url.length > 0
+              : typeof entry?.command === 'string'),
+        )
       : [];
   }
 
@@ -49,26 +56,55 @@ export class McpTools {
     return servers.find((entry) => entry.name === wanted);
   }
 
+  private serverDescriptor(server: McpServerConfig): McpServerConfig {
+    return server.transport === 'streamable-http'
+      ? {
+          name: server.name,
+          transport: 'streamable-http',
+          ...(server.url !== undefined ? { url: server.url } : {}),
+          auth: server.auth ?? 'none',
+          ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+          ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+        }
+      : {
+          name: server.name,
+          transport: 'stdio',
+          ...(server.command !== undefined ? { command: server.command } : {}),
+          args: server.args ?? [],
+          auth: 'none',
+          ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
+          ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
+        };
+  }
+
   private async ensureLaunchApproved(server: McpServerConfig): Promise<{ ok: true } | { ok: false; error: string }> {
     if (this.env.manager.hasLaunchApproval(server.name)) {
       return { ok: true };
     }
+    const isRemote = server.transport === 'streamable-http';
+    const launchDetail = isRemote
+      ? `Launch MCP server "${server.name}"?\n` +
+        `  Endpoint: ${server.url ?? '(missing endpoint)'}\n` +
+        '  Transport: Streamable HTTP\n' +
+        `  Authentication: ${server.auth === 'bearer' ? 'Bearer (credential from SecretStorage)' : 'none'}\n` +
+        'This connects to a remote server chosen by your configuration. ' +
+        'Its output is untrusted data; only continue with servers you trust.'
+      : `Launch MCP server "${server.name}"?\n` +
+        `  Command: ${server.command ?? '(missing command)'}\n` +
+        `  Arguments: ${(server.args ?? []).join(' ') || '(none)'}\n` +
+        'Launching starts an external process chosen by your configuration. ' +
+        'It is not sandboxed; only continue with servers you trust.';
     const approval = this.env.launchApproval ?? (async () => {
-      const answer = await this.env.approval({
-        operation: 'launch MCP server',
-        detail:
-          `Launch MCP server "${server.name}"?\n` +
-          `  Command: ${server.command}\n` +
-          `  Arguments: ${(server.args ?? []).join(' ') || '(none)'}\n` +
-          'Launching starts an external process chosen by your configuration. ' +
-          'It is not sandboxed; only continue with servers you trust.',
-      });
+      const answer = await this.env.approval({ operation: 'launch MCP server', detail: launchDetail });
       return answer;
     });
     const approved = await approval({
       name: server.name,
-      command: server.command,
+      transport: server.transport === 'streamable-http' ? 'streamable-http' : 'stdio',
+      ...(server.command !== undefined ? { command: server.command } : {}),
       args: server.args ?? [],
+      ...(server.url !== undefined ? { endpoint: server.url } : {}),
+      ...(server.auth !== undefined ? { auth: server.auth } : {}),
       launchOrigin: 'Application setting quantsmind.mcp.servers',
     });
     if (!approved) {
@@ -100,7 +136,7 @@ export class McpTools {
         continue;
       }
       try {
-        const tools = await this.env.manager.listTools({ name: server.name, command: server.command, args: server.args ?? [] });
+        const tools = await this.env.manager.listTools(this.serverDescriptor(server));
         output[server.name] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? '' }));
       } catch (error) {
         output[server.name] = { error: error instanceof Error ? error.message : 'Could not reach the MCP server.' };
@@ -136,7 +172,7 @@ export class McpTools {
       if (!approval.ok) {
         return fail('mcp_call', approval.error);
       }
-      knownTools = await this.env.manager.listTools({ name: server.name, command: server.command, args: server.args ?? [] });
+      knownTools = await this.env.manager.listTools(this.serverDescriptor(server));
     } catch (error) {
       return fail('mcp_call', `Could not reach the MCP server "${serverName}": ${error instanceof Error ? error.message : 'unknown error'}`);
     }
@@ -157,7 +193,7 @@ export class McpTools {
       return fail('mcp_call', 'MCP tool calls require explicit approval. The call was not executed.');
     }
     try {
-      const result = await this.env.manager.callTool({ name: server.name, command: server.command, args: server.args ?? [] }, toolName, toolArgs, undefined, context?.signal);
+      const result = await this.env.manager.callTool(this.serverDescriptor(server), toolName, toolArgs, undefined, context?.signal);
       const body =
         `<untrusted-mcp-output server="${serverName}" tool="${toolName}">\n${result.content}\n</untrusted-mcp-output>` +
         (result.truncated ? '\n[output truncated]' : '');

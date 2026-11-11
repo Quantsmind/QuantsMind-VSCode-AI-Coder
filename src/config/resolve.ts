@@ -1,3 +1,4 @@
+import { parseMcpEndpoint } from '../mcp/endpoint';
 import {
   getProviderProfile,
 } from '../providers/profiles';
@@ -216,11 +217,18 @@ export interface RawMcpSettings {
 
 export interface ResolvedMcpServer {
   readonly name: string;
-  readonly command: string;
-  readonly args: readonly string[];
+  /** Transport selection. Absent in legacy configurations, which resolve to stdio. */
+  readonly transport: 'stdio' | 'streamable-http';
   readonly enabled: boolean;
   readonly timeoutMs: number;
   readonly maxToolOutputChars: number;
+  /** Authentication scheme for streamable-http servers; always 'none' for stdio. */
+  readonly auth: 'none' | 'bearer';
+  /** Stdio only. */
+  readonly command?: string;
+  readonly args?: readonly string[];
+  /** Streamable-http only; passes the shared https/loopback rules at resolve time. */
+  readonly url?: string;
 }
 
 export interface ResolvedMcpSettings {
@@ -246,10 +254,77 @@ export function resolveMcpSettings(raw: RawMcpSettings): ResolvedMcpSettings {
       }
       const record = entry as Record<string, unknown>;
       const name = typeof record.name === 'string' ? record.name.trim() : '';
+      if (!MCP_NAME.test(name) || seen.has(name)) {
+        continue;
+      }
+      // Transport selection is explicit and deterministic: absent means stdio
+      // (legacy configurations), unknown values reject the entry.
+      const transportRaw = record.transport;
+      const transport = transportRaw === undefined || transportRaw === 'stdio'
+        ? 'stdio'
+        : transportRaw === 'streamable-http'
+          ? 'streamable-http'
+          : undefined;
+      if (transport === undefined) {
+        continue;
+      }
+      // Authentication selection: absent means none; unknown values reject the entry.
+      const authRaw = record.auth;
+      const auth = authRaw === undefined || authRaw === 'none'
+        ? 'none'
+        : authRaw === 'bearer'
+          ? 'bearer'
+          : undefined;
+      if (auth === undefined) {
+        continue;
+      }
+      if (transport === 'stdio' && auth === 'bearer') {
+        continue; // bearer authentication applies to streamable-http servers only
+      }
+      const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
+      // Per-server overrides; non-finite or out-of-range values fall back to
+      // the documented defaults rather than disabling the runtime guards.
+      const timeoutMs = numberValue(
+        record.timeoutMs,
+        DEFAULT_MCP_TIMEOUT_MS,
+        LIMITS.mcpTimeoutMs.min,
+        LIMITS.mcpTimeoutMs.max,
+        true,
+      );
+      const maxToolOutputChars = numberValue(
+        record.maxToolOutputChars,
+        DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
+        LIMITS.mcpMaxToolOutputChars.min,
+        LIMITS.mcpMaxToolOutputChars.max,
+        true,
+      );
+
+      if (transport === 'streamable-http') {
+        // Remote server: endpoint URL is required and must pass the shared
+        // https/loopback rules. stdio launch fields on the entry are rejected
+        // as ambiguous rather than silently ignored.
+        if (record.command !== undefined || record.args !== undefined) {
+          continue;
+        }
+        const parsed = parseMcpEndpoint(record.url);
+        if (!parsed.ok) {
+          continue; // malformed or non-compliant endpoint rejects the entry
+        }
+        seen.add(name);
+        servers.push({
+          name,
+          transport: 'streamable-http',
+          url: parsed.url,
+          auth,
+          enabled,
+          timeoutMs,
+          maxToolOutputChars,
+        });
+        continue;
+      }
+
       const command = typeof record.command === 'string' ? record.command.trim() : '';
       if (
-        !MCP_NAME.test(name) ||
-        seen.has(name) ||
         command.length === 0 ||
         command.length > 260 ||
         command !== command.trim() ||
@@ -269,24 +344,7 @@ export function resolveMcpSettings(raw: RawMcpSettings): ResolvedMcpSettings {
       ) {
         continue; // malformed or oversized arguments reject the entry, not just the argument
       }
-      const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
-      // Per-server overrides; non-finite or out-of-range values fall back to
-      // the documented defaults rather than disabling the runtime guards.
-      const timeoutMs = numberValue(
-        record.timeoutMs,
-        DEFAULT_MCP_TIMEOUT_MS,
-        LIMITS.mcpTimeoutMs.min,
-        LIMITS.mcpTimeoutMs.max,
-        true,
-      );
-      const maxToolOutputChars = numberValue(
-        record.maxToolOutputChars,
-        DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
-        LIMITS.mcpMaxToolOutputChars.min,
-        LIMITS.mcpMaxToolOutputChars.max,
-        true,
-      );
-      servers.push({ name, command, args: list as string[], enabled, timeoutMs, maxToolOutputChars });
+      servers.push({ name, transport: 'stdio', command, args: list as string[], enabled, auth: 'none', timeoutMs, maxToolOutputChars });
     }
   }
   return { servers };

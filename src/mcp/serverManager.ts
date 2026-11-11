@@ -1,11 +1,18 @@
-import { McpClient, McpError, type McpServerInfo, type McpTool } from './client';
+import { McpClient, McpError, type McpServerConfig, type McpServerInfo, type McpTool } from './client';
+import { redactSecrets } from '../security/redact';
+import type { SecretStorageLike } from '../security/secretStore';
+import { readMcpCredential } from './credentials';
 
 export type McpServerState = 'disabled' | 'disconnected' | 'connecting' | 'connected' | 'error';
+export type McpTransportKind = 'stdio' | 'streamable-http';
 
 export interface McpServerSnapshot {
   readonly name: string;
-  readonly command: string;
+  readonly transport: McpTransportKind;
+  readonly command?: string;
   readonly args: readonly string[];
+  readonly url?: string;
+  readonly auth: 'none' | 'bearer';
   readonly enabled: boolean;
   readonly state: McpServerState;
   readonly timeoutMs?: number;
@@ -19,35 +26,59 @@ export interface McpServerSnapshot {
 
 export interface ApproveMcpLaunchRequest {
   readonly name: string;
-  readonly command: string;
-  readonly args: readonly string[];
+  readonly transport: McpTransportKind;
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly endpoint?: string;
+  readonly auth?: 'none' | 'bearer';
   readonly launchOrigin: string;
 }
 
 const LAUNCH_ORIGIN_LABEL = 'Application setting quantsmind.mcp.servers (user-controlled configuration)';
 const MAX_TRACKED_SERVERS = 10;
 
-/**
- * Launches and supervises MCP server processes for the extension.
- *
- * - Launching a configured server requires explicit user approval per
- *   window (never persisted, never implied by prior discovery or trust).
- * - Connections are cached; repeated tool calls reuse one process.
- * - Crashed or exited servers are detected and disposed; the next call
- *   reconnects (after approval if it lapsed or the server was reconfigured).
- * - `disposeAll()` terminates every child process; wired into extension
- *   deactivation.
- */
 /** Stable fingerprint of a server's launch-relevant configuration. */
-function fingerprint(server: { command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): string {
+function fingerprint(server: {
+  transport?: McpTransportKind;
+  command?: string;
+  args?: readonly string[];
+  url?: string;
+  auth?: 'none' | 'bearer';
+  timeoutMs?: number;
+  maxToolOutputChars?: number;
+}): string {
   return JSON.stringify({
-    command: server.command,
-    args: [...server.args],
+    transport: server.transport ?? 'stdio',
+    command: server.command ?? null,
+    args: [...(server.args ?? [])],
+    url: server.url ?? null,
+    auth: server.auth ?? 'none',
     timeoutMs: server.timeoutMs ?? null,
     maxToolOutputChars: server.maxToolOutputChars ?? null,
   });
 }
 
+export interface McpServerManagerOptions {
+  /** VS Code SecretStorage (or a structural equivalent) for bearer credentials. Optional so tests can omit it. */
+  readonly credentials?: SecretStorageLike;
+}
+
+/**
+ * Launches and supervises MCP server connections for the extension.
+ *
+ * - Launching a configured server requires explicit user approval per
+ *   window (never persisted, never implied by prior discovery or trust).
+ * - Connections are cached; repeated tool calls reuse one connection.
+ * - Crashed or exited connections are detected and disposed; the next call
+ *   reconnects (after approval if it lapsed or the server was reconfigured).
+ * - Configuration fingerprints cover transport, command/args, endpoint,
+ *   authentication scheme and the v2.5.2 limits; any change invalidates the
+ *   cached connection and revokes its launch approval.
+ * - Bearer credentials are read from SecretStorage at connect time; the
+ *   token never appears in settings, logs, fingerprints or snapshots.
+ * - `disconnectAll()` terminates every connection; wired into extension
+ *   deactivation.
+ */
 export class McpServerManager {
   private readonly clients = new Map<string, McpClient>();
   private readonly fingerprints = new Map<string, string>();
@@ -55,6 +86,11 @@ export class McpServerManager {
   private readonly lastErrors = new Map<string, string>();
   private readonly launchOrigin = LAUNCH_ORIGIN_LABEL;
   private readonly approvedLaunches = new Set<string>();
+  private readonly credentials: SecretStorageLike | undefined;
+
+  constructor(options: McpServerManagerOptions = {}) {
+    this.credentials = options.credentials;
+  }
 
   /** True when the user has approved launching this server in this window. */
   hasLaunchApproval(name: string): boolean {
@@ -77,7 +113,7 @@ export class McpServerManager {
   }
 
   /** Returns the connection for a server, reusing a healthy, identically configured one. */
-  async client(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<McpClient | undefined> {
+  async client(server: McpServerConfig): Promise<McpClient | undefined> {
     const desiredFingerprint = fingerprint(server);
     const existingFingerprint = this.fingerprints.get(server.name);
     const existing = this.clients.get(server.name);
@@ -97,25 +133,53 @@ export class McpServerManager {
       await existing.close().catch(() => undefined);
       this.clients.delete(server.name);
       this.fingerprints.delete(server.name);
-      this.setError(server.name, 'The previous server process exited; a reconnect was performed.');
+      this.setError(server.name, 'The previous connection was closed; a reconnect was performed.');
     }
     return undefined;
   }
 
-  async connectApproved(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<McpClient> {
+  async connectApproved(server: McpServerConfig): Promise<McpClient> {
     const cached = await this.client(server);
     if (cached !== undefined) {
       this.setState(server.name, 'connected');
       return cached;
     }
+    const transport = server.transport ?? 'stdio';
     this.setState(server.name, 'connecting');
-    const client = new McpClient({
+    const clientConfig: McpServerConfig = {
       name: server.name,
-      command: server.command,
-      args: server.args,
+      transport,
+      ...(server.command !== undefined ? { command: server.command } : {}),
+      ...(server.args !== undefined ? { args: server.args } : {}),
+      ...(server.url !== undefined ? { url: server.url } : {}),
+      ...(server.env !== undefined ? { env: server.env } : {}),
+      ...(server.auth !== undefined ? { auth: server.auth } : {}),
       ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
       ...(server.maxToolOutputChars !== undefined ? { maxToolOutputChars: server.maxToolOutputChars } : {}),
-    });
+    };
+    if (server.auth === 'bearer') {
+      // Bearer authentication: the token lives in SecretStorage only.
+      if (transport !== 'streamable-http') {
+        this.setState(server.name, 'error');
+        throw new McpError('disabled', 'Bearer authentication is only supported for streamable-http servers.');
+      }
+      if (this.credentials === undefined) {
+        this.setState(server.name, 'error');
+        throw new McpError('auth', 'Secure credential storage is unavailable; cannot authenticate to this server.');
+      }
+      let token: string | undefined;
+      try {
+        token = await readMcpCredential(this.credentials, server.name);
+      } catch {
+        token = undefined;
+      }
+      if (token === undefined) {
+        this.setState(server.name, 'error');
+        throw new McpError('auth', `No bearer credential is stored for MCP server "${server.name}". Configure one with "QuantsMind: Manage MCP Servers" before connecting.`);
+      }
+      (clientConfig as { bearerToken?: string }).bearerToken = token;
+    }
+    const client = new McpClient(clientConfig);
     try {
       await client.connect();
       this.clients.set(server.name, client);
@@ -131,13 +195,13 @@ export class McpServerManager {
     }
   }
 
-  async listTools(server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number }): Promise<readonly McpTool[]> {
+  async listTools(server: McpServerConfig): Promise<readonly McpTool[]> {
     const client = await this.connectApproved(server);
     return client.listTools();
   }
 
   async callTool(
-    server: { name: string; command: string; args: readonly string[]; timeoutMs?: number; maxToolOutputChars?: number },
+    server: McpServerConfig,
     tool: string,
     args: unknown,
     maxOutputChars?: number,
@@ -147,15 +211,19 @@ export class McpServerManager {
     return client.callTool(tool, args, maxOutputChars, signal);
   }
 
-  snapshot(servers: readonly { name: string; command: string; args?: readonly string[]; enabled: boolean; timeoutMs?: number; maxToolOutputChars?: number }[]): readonly McpServerSnapshot[] {
+  snapshot(servers: readonly (McpServerConfig & { readonly enabled: boolean })[]): readonly McpServerSnapshot[] {
     return servers.map((server) => {
       const client = this.clients.get(server.name);
       const connected = client?.isConnected() === true;
+      const transport = server.transport ?? 'stdio';
       const error = this.lastErrors.get(server.name);
       return {
         name: server.name,
-        command: server.command,
+        transport,
+        ...(server.command !== undefined ? { command: server.command } : {}),
         args: server.args ?? [],
+        ...(server.url !== undefined ? { url: server.url } : {}),
+        auth: server.auth ?? 'none',
         enabled: server.enabled,
         state: this.states.get(server.name) ?? (server.enabled ? 'disconnected' : 'disabled'),
         ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}),
@@ -200,7 +268,7 @@ export class McpServerManager {
   }
 
   private setError(name: string, message: string): void {
-    this.lastErrors.set(name, message.slice(0, 400));
+    this.lastErrors.set(name, redactSecrets(message).text.slice(0, 400));
     this.setState(name, 'error');
   }
 }

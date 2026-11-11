@@ -71,6 +71,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     workspaceIndex,
     changeService,
     sessionStore: context.globalState,
+    mcpCredentials: context.secrets,
   });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
@@ -591,6 +592,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       manager: agentRuntime.mcpServerManager,
       outputChannel: mcpOutputChannel,
       trusted: () => vscode.workspace.isTrusted,
+      secrets: context.secrets,
     });
   };
   register(COMMANDS.manageMcpServers, manageMcpServersCommand);
