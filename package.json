@@ -28,6 +28,10 @@
     "type": "git",
     "url": "https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder.git"
   },
+  "bugs": {
+    "url": "https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder/issues"
+  },
+  "homepage": "https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder",
   "galleryBanner": {
     "color": "#0B1020",
     "theme": "dark"
