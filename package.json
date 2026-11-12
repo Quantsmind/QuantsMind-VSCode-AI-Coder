@@ -642,7 +642,7 @@
     "verify": "npm run lint && npm run verify:deps && npm run verify:release && npm run test && npm run package && npm run verify:vsix && npm run test:packaged && npm run verify:install"
   },
   "dependencies": {
-    "minimatch": "11.0.4"
+    "minimatch": "11.0.8"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -658,9 +658,13 @@
     "eslint": "10.14.0",
     "fflate": "0.8.3",
     "globals": "15.15.0",
-    "mocha": "11.8.0",
+    "mocha": "^12.0.3",
     "sinon": "22.1.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.1"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.1.4",
+    "minimatch": "11.0.8"
   }
 }
