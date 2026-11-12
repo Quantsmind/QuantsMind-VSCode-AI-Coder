@@ -5,6 +5,8 @@ import type { SecretStore } from '../security/secretStore';
 import type { WorkspaceIndexService } from '../workspace/indexService';
 import type { Logger } from '../security/logger';
 import { selectWorkspaceRoot } from '../workspace/rootPolicy';
+import { cachedLanguageInventory } from '../languages/inventory';
+import { buildLanguageDiagnostics } from '../languages/prompts';
 
 export interface SelfDiagnosticsDeps {
   readonly version: string;
@@ -46,8 +48,14 @@ export class SelfDiagnosticsService {
     try {
       const entries = await this.deps.workspaceIndex.getEntries();
       const summary = await this.deps.workspaceIndex.summarize();
+      const inventory = cachedLanguageInventory(entries);
       lines.push(`- Indexed files: ${entries.length}`);
       lines.push(`- Summary: ${summary.text.split('\\n')[0]}`);
+      lines.push('- Language intelligence:');
+      for (const line of buildLanguageDiagnostics(inventory).split('\\n')) {
+        lines.push(`  ${line}`);
+      }
+      lines.push(`- Language intelligence guidance enabled: ${this.deps.settings.getLanguageIntelligenceSettings().enabled}`);
     } catch (error) {
       lines.push(`- Index error: ${error instanceof Error ? error.message : 'unknown'}`);
     }

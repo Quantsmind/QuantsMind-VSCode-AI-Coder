@@ -4,8 +4,15 @@
  * and the files they attach, but nothing the extension discovers by itself.
  *
  * This module stays free of the `vscode` import so the decision logic can be
- * unit tested; callers that run inside the extension default `TrustCheck` to
- * `vscode.workspace.isTrusted`, which is the authoritative API.
+ * unit tested; callers that run inside the extension pass the authoritative
+ * `vscode.workspace.isTrusted` check.
+ *
+ * Security contract — every failure mode fails **closed**:
+ * - a missing check is not a grant and returns false;
+ * - a check that throws is not a grant and returns false;
+ * - a check returning anything other than exactly `true` is not a grant.
+ * No permissive default exists at this layer; a caller that wants a grant for
+ * tooling must express it explicitly (`() => true`).
  */
 
 export type TrustCheck = () => boolean;
@@ -17,13 +24,15 @@ export type TrustCheck = () => boolean;
  */
 export type AttachmentOrigin = 'user' | 'workspace';
 
-/**
- * Missing checks fail open so services that are constructed outside the
- * extension host (tests, tooling) keep their previous behaviour; every
- * production call site supplies the authoritative check.
- */
 export function isTrusted(check: TrustCheck | undefined): boolean {
-  return check === undefined || check() === true;
+  if (check === undefined) {
+    return false;
+  }
+  try {
+    return check() === true;
+  } catch {
+    return false;
+  }
 }
 
 export const RESTRICTED_MODE_FEATURE_NOTICE =

@@ -1,27 +1,36 @@
 # Known limitations
 
-These are the boundaries of the v0.3.0 alpha preview. They are deliberate, not
+These are the boundaries of the v3.0.0 build. They are deliberate, not
 undocumented behavior.
 
 ## Provider and model
 
-- Only the OpenAI-compatible `/chat/completions` shape is supported. Provider
-  SDKs, Responses API, and native Anthropic/Gemini protocols are not implemented.
-- Tool calling, function calling, image inputs, audio, and multimodal content
-  are not supported. Tool-call responses are rejected with an error, and no
-  executable tool definitions are sent.
+- The OpenAI-compatible `/chat/completions` shape (OpenAI, OpenRouter-style
+  routers, GitHub-compatible gateways, local OpenAI-compatible servers such as
+  Ollama and LM Studio) and the Google Gemini protocol (`generativelanguage.
+  googleapis.com`) are implemented. Provider SDKs, the Responses API, and native
+  Anthropic SDKs are not implemented.
+- Native tool calling is supported on OpenAI-compatible-class profiles with
+  tool-capable model ids (for example, `gpt-4o-mini` and similar); the engine
+  and orchestrator use approval-gated native tool calls there. Gemini does not
+  advertise tool calling. Image inputs, audio, and other multimodal content are
+  not supported. Tool-call responses on non-tool-capable models are rejected
+  with an error, and no executable tool definitions are sent.
 - The plan and change-set formats are strict JSON contracts. Models that cannot
   follow them produce an `invalid_response` or parse error. There is no general
   schema-repair loop beyond the bounded repair pass.
 - Reasoning or hidden model output is not displayed.
-- A live provider request requires a valid credential. CI never uses one.
+- A live provider request requires a valid credential. CI never uses one; the
+  two Pollinations live tests are pending unless the anonymous service is
+  reachable.
 - Capability flags are descriptive. `maxContextChars` is advisory; the
   extension does not provably enforce a provider's context window.
 
 ## Workspace intelligence
 
-- The index covers the first workspace root only. Multi-root workspaces are not
-  fully indexed.
+- Only one workspace root is indexed (the marker-scored selection from
+  `src/workspace/rootPolicy.ts`). Multi-root workspaces are not fully indexed;
+  the non-selected roots are never scanned.
 - The index is path- and metadata-based. It does not build embeddings, a symbol
   graph, or a semantic code index.
 - Retrieval is lexical ranking, not embedding similarity, so synonyms and
@@ -88,8 +97,8 @@ undocumented behavior.
 - An interrupted write (`applying` or `repairing` at reload) is treated as
   failed rather than resumed, because the extension cannot prove what was
   written.
-- Pausing is only allowed in `ready`, an awaiting-approval state, or
-  `diagnosing`. Running provider or command work must be cancelled instead.
+- Pausing is only allowed in `ready`, an awaiting-approval state, `diagnosing`,
+  or `validating`. Running provider or command work must be cancelled instead.
 - Session events are an audit aid, not a cryptographic log.
 
 ## Conversations
@@ -106,9 +115,10 @@ undocumented behavior.
 
 - The chat view is a webview. Rendering is validated structurally, not visually,
   and has not been audited for screen-reader completeness.
-- Only VS Code desktop 1.95.0 or newer is supported. Web, Virtual Workspaces, and
-  Remote Development are declared compatible but not exercised by the test suite
-  in this baseline.
+- Only VS Code desktop 1.95.0 or newer is supported. Web, Virtual Workspaces,
+  and Remote Development are **not supported** (`capabilities.virtualWorkspaces`
+  is `false` and there is no `browser` target); Restricted Mode is supported
+  for the read-only/attach-your-own-content surface only.
 - Windows, macOS, and Linux CI jobs are configured. See the completion report
   for which platforms and commands were actually executed locally.
 
@@ -152,6 +162,6 @@ undocumented behavior.
 - The extension trusts the configured provider and the local machine.
 - A user who approves a plan or diff without reading it can still apply an
   unwanted change. Review is a required part of the workflow.
-- There is no signing, Marketplace publication, or Open VSX publication in this
-  baseline.
-- The extension is a preview and is not general availability.
+- The extension is a GA-qualified local candidate and is **not published** in
+  this baseline (no signing, no Marketplace/Open VSX publication). Publication
+  remains a separate, explicitly authorized step.

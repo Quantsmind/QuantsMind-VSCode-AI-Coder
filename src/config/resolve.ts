@@ -1,3 +1,5 @@
+import { parseMcpEndpoint } from '../mcp/endpoint';
+import { AGENT_LIMIT_BOUNDS, AGENT_LIMIT_DEFAULTS } from '../agent/limits';
 import {
   getProviderProfile,
 } from '../providers/profiles';
@@ -10,6 +12,9 @@ import {
   DEFAULT_COMMAND_ALLOWLIST,
   DEFAULT_COMMAND_OUTPUT_MAX_CHARS,
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED,
+  DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
+  DEFAULT_MCP_TIMEOUT_MS,
   DEFAULT_EXCLUDE_GLOBS,
   DEFAULT_MAX_FILE_SIZE_KB,
   DEFAULT_MAX_FILES,
@@ -208,6 +213,145 @@ export interface ResolvedCommandSettings {
   readonly maxOutputChars: number;
 }
 
+export interface RawMcpSettings {
+  readonly servers?: unknown;
+}
+
+export interface ResolvedMcpServer {
+  readonly name: string;
+  /** Transport selection. Absent in legacy configurations, which resolve to stdio. */
+  readonly transport: 'stdio' | 'streamable-http';
+  readonly enabled: boolean;
+  readonly timeoutMs: number;
+  readonly maxToolOutputChars: number;
+  /** Authentication scheme for streamable-http servers; always 'none' for stdio. */
+  readonly auth: 'none' | 'bearer';
+  /** Stdio only. */
+  readonly command?: string;
+  readonly args?: readonly string[];
+  /** Streamable-http only; passes the shared https/loopback rules at resolve time. */
+  readonly url?: string;
+}
+
+export interface ResolvedMcpSettings {
+  readonly servers: readonly ResolvedMcpServer[];
+}
+
+const MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MCP_FORBIDDEN_COMMAND = /["';&|<>$`(){}[\]*?!^~%\r\n\0]/;
+const MAX_MCP_SERVERS = 10;
+const MAX_MCP_ARGS = 50;
+const MAX_MCP_ARG_LENGTH = 500;
+
+export function resolveMcpSettings(raw: RawMcpSettings): ResolvedMcpSettings {
+  const servers: ResolvedMcpServer[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(raw.servers)) {
+    for (const entry of raw.servers) {
+      if (servers.length >= MAX_MCP_SERVERS) {
+        break;
+      }
+      if (typeof entry !== 'object' || entry === null) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      const name = typeof record.name === 'string' ? record.name.trim() : '';
+      if (!MCP_NAME.test(name) || seen.has(name)) {
+        continue;
+      }
+      // Transport selection is explicit and deterministic: absent means stdio
+      // (legacy configurations), unknown values reject the entry.
+      const transportRaw = record.transport;
+      const transport = transportRaw === undefined || transportRaw === 'stdio'
+        ? 'stdio'
+        : transportRaw === 'streamable-http'
+          ? 'streamable-http'
+          : undefined;
+      if (transport === undefined) {
+        continue;
+      }
+      // Authentication selection: absent means none; unknown values reject the entry.
+      const authRaw = record.auth;
+      const auth = authRaw === undefined || authRaw === 'none'
+        ? 'none'
+        : authRaw === 'bearer'
+          ? 'bearer'
+          : undefined;
+      if (auth === undefined) {
+        continue;
+      }
+      if (transport === 'stdio' && auth === 'bearer') {
+        continue; // bearer authentication applies to streamable-http servers only
+      }
+      const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
+      // Per-server overrides; non-finite or out-of-range values fall back to
+      // the documented defaults rather than disabling the runtime guards.
+      const timeoutMs = numberValue(
+        record.timeoutMs,
+        DEFAULT_MCP_TIMEOUT_MS,
+        LIMITS.mcpTimeoutMs.min,
+        LIMITS.mcpTimeoutMs.max,
+        true,
+      );
+      const maxToolOutputChars = numberValue(
+        record.maxToolOutputChars,
+        DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS,
+        LIMITS.mcpMaxToolOutputChars.min,
+        LIMITS.mcpMaxToolOutputChars.max,
+        true,
+      );
+
+      if (transport === 'streamable-http') {
+        // Remote server: endpoint URL is required and must pass the shared
+        // https/loopback rules. stdio launch fields on the entry are rejected
+        // as ambiguous rather than silently ignored.
+        if (record.command !== undefined || record.args !== undefined) {
+          continue;
+        }
+        const parsed = parseMcpEndpoint(record.url);
+        if (!parsed.ok) {
+          continue; // malformed or non-compliant endpoint rejects the entry
+        }
+        seen.add(name);
+        servers.push({
+          name,
+          transport: 'streamable-http',
+          url: parsed.url,
+          auth,
+          enabled,
+          timeoutMs,
+          maxToolOutputChars,
+        });
+        continue;
+      }
+
+      const command = typeof record.command === 'string' ? record.command.trim() : '';
+      if (
+        command.length === 0 ||
+        command.length > 260 ||
+        command !== command.trim() ||
+        MCP_FORBIDDEN_COMMAND.test(command)
+      ) {
+        continue;
+      }
+      seen.add(name);
+      const args = record.args;
+      if (args !== undefined && !Array.isArray(args)) {
+        continue;
+      }
+      const list = (args ?? []) as unknown[];
+      if (
+        list.length > MAX_MCP_ARGS ||
+        list.some((item) => typeof item !== 'string' || item.length > MAX_MCP_ARG_LENGTH)
+      ) {
+        continue; // malformed or oversized arguments reject the entry, not just the argument
+      }
+      servers.push({ name, transport: 'stdio', command, args: list as string[], enabled, auth: 'none', timeoutMs, maxToolOutputChars });
+    }
+  }
+  return { servers };
+}
+
 function commandAllowlist(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [...DEFAULT_COMMAND_ALLOWLIST];
@@ -373,5 +517,50 @@ export function resolveContextSettings(raw: RawContextSettings): ResolvedContext
       LIMITS.maxFiles.max,
       true,
     ),
+  };
+}
+
+export interface RawLanguageIntelligenceSettings {
+  readonly enabled?: unknown;
+}
+
+export interface ResolvedLanguageIntelligenceSettings {
+  readonly enabled: boolean;
+}
+
+/** Language-intelligence guidance in prompts; on by default, deterministic and bounded. */
+export function resolveLanguageIntelligenceSettings(
+  raw: RawLanguageIntelligenceSettings,
+): ResolvedLanguageIntelligenceSettings {
+  return {
+    enabled: booleanValue(raw.enabled, DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED),
+  };
+}
+export interface RawAgenticEngineSettings {
+  readonly maxIterations?: unknown;
+  readonly maxToolCalls?: unknown;
+  readonly maxPlanRevisions?: unknown;
+  readonly maxDurationSeconds?: unknown;
+  readonly maxChangedFiles?: unknown;
+}
+
+export interface ResolvedAgenticEngineSettings {
+  readonly maxIterations: number;
+  readonly maxToolCalls: number;
+  readonly maxPlanRevisions: number;
+  readonly maxDurationMs: number;
+  readonly maxChangedFiles: number;
+}
+
+/** Agentic engine limits; conservative defaults, strict bounds, never disables anything. */
+export function resolveAgenticEngineSettings(raw: RawAgenticEngineSettings): ResolvedAgenticEngineSettings {
+  const b = AGENT_LIMIT_BOUNDS;
+  const d = AGENT_LIMIT_DEFAULTS;
+  return {
+    maxIterations: numberValue(raw.maxIterations, d.maxIterations, b.maxIterations.min, b.maxIterations.max, true),
+    maxToolCalls: numberValue(raw.maxToolCalls, d.maxToolCalls, b.maxToolCalls.min, b.maxToolCalls.max, true),
+    maxPlanRevisions: numberValue(raw.maxPlanRevisions, d.maxPlanRevisions, b.maxPlanRevisions.min, b.maxPlanRevisions.max, true),
+    maxDurationMs: numberValue(typeof raw.maxDurationSeconds === 'number' && Number.isFinite(raw.maxDurationSeconds as number) ? (raw.maxDurationSeconds as number) * 1000 : undefined, d.maxDurationMs, b.maxDurationMs.min, b.maxDurationMs.max, true),
+    maxChangedFiles: numberValue(raw.maxChangedFiles, d.maxChangedFiles, b.maxChangedFiles.min, b.maxChangedFiles.max, true),
   };
 }

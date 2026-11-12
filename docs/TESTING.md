@@ -175,9 +175,9 @@ tests, and clean-install verification.
 - `test/unit/projectIntelligence.test.ts`: config detection, package manager and
   script facts, modules and entry points, unparseable package manifests,
   inspection reads, cancellation, and retrieval delegation.
-- `test/unit/agentTaskRunner.test.ts`: the legacy v0.2.0 single-task runner;
-  retained to prove its behavior has not regressed, though it is not wired into
-  the extension.
+- The task-runner tests travel with their module; the v3.0.0 suite covers the
+  orchestrator, engine and unified execution contract (`v3GapClosure.test.ts`,
+  `executionContract.test.ts`, `orchestratorLimits.test.ts`).
 
 ### Command execution
 

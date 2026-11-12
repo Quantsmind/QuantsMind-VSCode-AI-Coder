@@ -103,13 +103,35 @@ export class CommandTools {
       return { ok: false, tool: 'run_command', error: 'The command was cancelled while awaiting approval.', durationMs: 0 };
     }
     // The approval modal can stay open while trust is revoked or the allowlist
-    // changes, so the runner receives a freshly resolved, fail-closed snapshot.
+    // changes, so a fresh fail-closed snapshot is taken right before running.
+    // If the directory the user approved moved in the meantime, the approval no
+    // longer matches the command about to run — refuse instead of drifting.
     const current = this.snapshot();
+    if (current.cwd !== requested.cwd || current.workspaceRoot !== requested.workspaceRoot) {
+      return {
+        ok: false,
+        tool: 'run_command',
+        error: 'The working directory changed while approval was pending; the command was not run. Approve it again.',
+        durationMs: 0,
+      };
+    }
+    const recheck = evaluateCommand(command, current.allowlist);
+    if (!recheck.allowed || recheck.normalized === undefined) {
+      // The allowlist was narrowed underneath us; refuse with the same
+      // canonical reason the runner itself would have produced.
+      return {
+        ok: false,
+        tool: 'run_command',
+        error: recheck.reason ?? 'The command is not in the configured validation allowlist.',
+        output: JSON.stringify(recheck, null, 2),
+        durationMs: 0,
+      };
+    }
     const secret = typeof this.env.secret === 'function' ? await this.env.secret() : this.env.secret;
     const executionKind: ExecutionKind = execution?.kind ?? 'command';
 
     if (this.env.executionService !== undefined) {
-      const finished = await this.env.executionService.run(policy.normalized, {
+      const finished = await this.env.executionService.run(recheck.normalized, {
         cwd: current.cwd,
         workspaceRoot: current.workspaceRoot,
         allowlist: current.allowlist,
@@ -169,7 +191,7 @@ export class CommandTools {
       };
     }
 
-    const result: CommandResult = await runApprovedCommand(policy.normalized, {
+    const result: CommandResult = await runApprovedCommand(recheck.normalized, {
       cwd: current.cwd,
       workspaceRoot: current.workspaceRoot,
       allowlist: current.allowlist,

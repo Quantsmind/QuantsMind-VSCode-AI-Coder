@@ -3,9 +3,12 @@ import { detectBuildAdapters, resolveKarkainEntry } from '../build/adapters';
 import { parseTestOutput, type TestOutputFormat } from '../build/testOutput';
 import { parseSourceDiagnostics } from '../diagnostics/sourceDiagnostics';
 import type { BuildAdapterDetection } from '../build/types';
+import { buildValidationPlan } from '../workflow/validation';
+import { cachedLanguageInventory } from '../languages/inventory';
 import type { CommandTools } from './commandTools';
 import type { AgentTool, AgentToolResult } from './codingAgent';
 import type { WorkspaceEntry } from '../workspace/analyze';
+import { normalizeWorkspacePath } from '../workspace/analyze';
 import type { ExecutionService } from '../execution/service';
 
 export interface BuildToolEnvironment {
@@ -14,6 +17,8 @@ export interface BuildToolEnvironment {
   readonly configContents?: () => Promise<Readonly<Record<string, string>>>;
   readonly commandTools: CommandTools;
   readonly executionService?: ExecutionService;
+  /** Optional gate for the language-intelligence validation plan (defaults to enabled). */
+  readonly languageIntelligence?: () => boolean;
 }
 
 interface DetectedAdapterView {
@@ -94,11 +99,34 @@ export class BuildTools {
       return fail('detect_build_system', 'Workspace trust is required to inspect build systems.');
     }
     try {
-      const { views } = await this.detect();
+      const { views, detections } = await this.detect();
+      // v2.5.5: propose a bounded validation plan grounded in what was detected.
+      const languageIntelligenceEnabled = this.env.languageIntelligence?.() ?? true;
+      let validationPlan: ReturnType<typeof buildValidationPlan> | undefined;
+      if (languageIntelligenceEnabled) {
+        const entries = await this.env.entries();
+        const configNames = new Set(entries.map((entry) => normalizeWorkspacePath(entry.path).split('/').pop()?.toLowerCase() ?? ''));
+        validationPlan = buildValidationPlan({
+          detections,
+          inventory: cachedLanguageInventory(entries),
+          hints: {
+            eslintConfig: configNames.has('.eslintrc') || [...configNames].some((name) => name.startsWith('.eslintrc') || name.startsWith('eslint.config')),
+            tsconfig: configNames.has('tsconfig.json'),
+          },
+        });
+      }
       return {
         ok: true,
         tool: 'detect_build_system',
-        output: JSON.stringify({ detected: views, count: views.length }, null, 2),
+        output: JSON.stringify(
+          {
+            detected: views,
+            count: views.length,
+            ...(validationPlan !== undefined ? { validationPlan } : {}),
+          },
+          null,
+          2,
+        ),
         durationMs: 0,
       };
     } catch (error) {

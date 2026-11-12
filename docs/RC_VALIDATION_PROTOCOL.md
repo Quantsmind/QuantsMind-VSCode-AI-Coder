@@ -1,4 +1,11 @@
-# Release-candidate validation protocol (GA Phase 7)
+# Release-candidate validation protocol (historical — v0.4.0 era, superseded)
+
+> **Historical document (superseded).** The GA gate described here was executed
+> and superseded by later qualification passes; v3.0.0's current verification is
+> `npm run verify` plus the packaged-extension tests and the audit documents in
+> `docs/audit/`. Retained as a historical protocol; the named artifact versions
+> and branch names below are stale. Current artifact names follow
+> `quantsmind-vscode-ai-coder-<version>.vsix`.
 
 This is the procedure that turns the branch build into a *qualified* release candidate.
 Automated tests run against a mock provider in a disposable profile, so they cannot prove

@@ -155,6 +155,7 @@ function createHarness(
         logger,
       ),
       sessionStore: mementoLike,
+      isTrusted: () => vscode.workspace.isTrusted,
     }),
   });
 

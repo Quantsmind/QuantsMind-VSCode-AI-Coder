@@ -38,7 +38,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/**/*.mjs', 'scripts/**/*.cjs', 'scripts/**/*.js', 'test/packaged/**/*.cjs', '**/*.config.mjs', '*.mjs'],
+    files: ['scripts/**/*.mjs', 'scripts/**/*.cjs', 'scripts/**/*.js', 'test/fixtures/**/*.cjs', 'test/packaged/**/*.cjs', '**/*.config.mjs', '*.mjs'],
     languageOptions: {
       globals: globals.node,
     },

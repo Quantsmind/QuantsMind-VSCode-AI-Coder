@@ -57,7 +57,13 @@ export async function* parseServerSentEvents(
       }
 
       buffer += decoder.decode(value, { stream: true });
-      buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      // A trailing CR is held back: a CRLF pair split across chunks must not
+      // be read as a lone CR line ending (which would inject phantom newlines
+      // into multi-line data payloads). It is resolved on the next chunk or
+      // at end-of-stream.
+      const hold = buffer.endsWith('\r') ? 1 : 0;
+      const head = hold === 1 ? buffer.slice(0, -1) : buffer;
+      buffer = head.replace(/\r\n/g, '\n').replace(/\r/g, '\n') + (hold === 1 ? '\r' : '');
 
       let boundary = buffer.indexOf('\n\n');
       while (boundary >= 0) {

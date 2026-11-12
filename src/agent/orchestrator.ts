@@ -44,6 +44,10 @@ import {
   type ValidationRun,
 } from './models';
 import { buildDevelopmentPlanMessages, buildTaskRequest, parseDevelopmentPlan } from './planning';
+import { computeContinuationPlan } from './continuation';
+import { buildCodingTaskPlan, expectedFilesOf, formatCodingTaskPlan } from '../workflow/plan';
+import { checkChangeScope } from '../workflow/scope';
+import { makeCheckpointMessage, computeWorkflowRestoration } from '../workflow/checkpoint';
 import { buildCompletionReport } from './report';
 import { canTransitionTaskStatus, findTask, nextRunnableTasks, refreshBlockedTasks, schedule, updateTask } from './scheduler';
 import { canPause, deriveProgress, deriveStages, transitionSession, STATE_LABELS } from './stateMachine';
@@ -51,6 +55,10 @@ import { bindValidation, changeSetVersion, deriveValidationSuggestions, type Val
 import type { ISessionRepository } from '../sessions/repository';
 import type { CheckpointRepository } from '../sessions/checkpointRepository';
 import { impactSummary, type ChangeImpact } from '../repository/impact';
+import { checkChangeSetBudgets, patchBytesOf } from '../workflow/executionBudgets';
+import { orchestratorSessionToOutcome, renderOutcome } from './execution';
+import type { AgentExecutionLimits } from './limits';
+import { AGENT_LIMIT_DEFAULTS } from './limits';
 
 export interface OrchestratorLogger {
   info(message: string): void;
@@ -72,6 +80,8 @@ export interface OrchestratorDependencies {
   readonly commandSettings: () => ResolvedCommandSettings;
   /** Maximum number of tasks that may run per execution; defaults to 1 and is clamped to 1..3. */
   readonly maxConcurrentTasks?: number;
+  /** Optional shared execution limits (v2.5.7): provider-request and duration budgets enforced BEFORE the model is called. Absent limits preserve legacy behavior. */
+  readonly executionLimits?: () => AgentExecutionLimits;
   readonly hashFile?: (path: string) => Promise<string | undefined>;
   readonly checkpointRepository?: CheckpointRepository;
   readonly analyzeImpact?: (
@@ -213,6 +223,11 @@ export class AgentOrchestrator implements IAgentController {
   private readonly aborters = new Map<string, AbortController>();
   private readonly maxConcurrentTasks: number;
   private readonly applyingChangeSets = new Set<string>();
+  /** v3.0.0 tool accounting and cumulative failure tracking (in-memory, per session). */
+  private readonly toolDispatches = new Map<string, number>();
+  private readonly toolRefusals = new Map<string, number>();
+  private readonly consecutiveFailures = new Map<string, number>();
+  private readonly patchBytesAccumulated = new Map<string, number>();
   private sequence = 0;
 
   constructor(private readonly deps: OrchestratorDependencies) {
@@ -702,6 +717,133 @@ export class AgentOrchestrator implements IAgentController {
     return { ...session, validationRuns: [...session.validationRuns, run] };
   }
 
+  /**
+   * Shared execution-budget gate (v2.5.7, per-task duration in v3.0.0):
+   * provider-request budget is session-wide; the duration budget is
+   * measured from the task's first start when a task id is supplied,
+   * otherwise from session creation (planning). Returns a breach message
+   * when a limit is exhausted.
+   */
+  private incrementCounter(map: Map<string, number>, key: string): void {
+    map.set(key, (map.get(key) ?? 0) + 1);
+  }
+
+  private toolAccountingFor(sessionId: string): { dispatched: number; refused: number } {
+    return {
+      dispatched: this.toolDispatches.get(sessionId) ?? 0,
+      refused: this.toolRefusals.get(sessionId) ?? 0,
+    };
+  }
+
+  private resetSessionAccounting(sessionId: string): void {
+    this.toolDispatches.delete(sessionId);
+    this.toolRefusals.delete(sessionId);
+    this.consecutiveFailures.delete(sessionId);
+    this.patchBytesAccumulated.delete(sessionId);
+  }
+
+  /**
+   * v3.0.0 (Gap 3.4): shared failure accounting. Only a passing validation
+   * (or an apply that validated clean end-to-end) breaks the sequence.
+   */
+  private trackExecutionSuccess(sessionId: string): void {
+    this.consecutiveFailures.delete(sessionId);
+  }
+
+  private trackExecutionFailure(sessionId: string): number {
+    const next = (this.consecutiveFailures.get(sessionId) ?? 0) + 1;
+    this.consecutiveFailures.set(sessionId, next);
+    return next;
+  }
+
+  private consecutiveFailureLimit(): number {
+    return this.deps.executionLimits?.()?.maxConsecutiveFailures ?? AGENT_LIMIT_DEFAULTS.maxConsecutiveFailures;
+  }
+
+  private addPatchBytes(sessionId: string, bytes: number): void {
+    this.patchBytesAccumulated.set(sessionId, (this.patchBytesAccumulated.get(sessionId) ?? 0) + bytes);
+  }
+
+  /** v3.0.0 (Gap 3.3): per-set and cumulative patch protection. */
+  private enforceChangeSetBudgets(
+    sessionId: string,
+    changes: readonly { path?: unknown; fromPath?: unknown; kind?: unknown; content?: unknown }[],
+  ): string | undefined {
+    const limits = this.deps.executionLimits?.();
+    if (limits === undefined) {
+      return undefined;
+    }
+    const check = checkChangeSetBudgets(changes, limits);
+    if (!check.ok) {
+      return `The proposed change set exceeds the agentic execution budget: ${check.detail}. Narrow the change or raise the agentic limits (quantsmind.agenticEngine.*).`;
+    }
+    const bytes = patchBytesOf(changes);
+    const cumulative = this.cumulativePatchBreach(this.patchBytesAccumulated.get(sessionId) ?? 0, bytes);
+    if (cumulative !== undefined) {
+      return cumulative;
+    }
+    // Pure check: the bytes are charged only for changes that are actually
+    // applied (see chargeApprovedChangeSet) so rejected or failed proposals
+    // never consume the cumulative budget.
+    return undefined;
+  }
+
+  private chargeAppliedPatchBytes(
+    sessionId: string,
+    changes: readonly { path?: unknown; fromPath?: unknown; kind?: unknown; content?: unknown }[],
+    appliedChangeIds: ReadonlySet<string>,
+  ): void {
+    const applied = changes.filter((change) => {
+      const id = (change as { readonly id?: unknown }).id;
+      return typeof id === 'string' && appliedChangeIds.has(id);
+    });
+    if (applied.length > 0) {
+      this.addPatchBytes(sessionId, patchBytesOf(applied));
+    }
+  }
+
+  private cumulativePatchBreach(currentBytes: number, addition: number): string | undefined {
+    const budget = this.deps.executionLimits?.()?.maxPatchSizeChars;
+    if (budget === undefined) {
+      return undefined;
+    }
+    if (currentBytes + addition > budget) {
+      // No public setting exists for this budget; describe it as an internal
+      // limit instead of pointing at a nonexistent setting id.
+      return `The agentic engine cumulative patch budget (${budget} characters of proposed change content) was reached. Narrow the change or split the task.`;
+    }
+    return undefined;
+  }
+
+  private executionBudgetBreach(current: { providerCalls: number; createdAt: string; executions: readonly TaskExecution[] }, taskId?: string): string | undefined {
+    const limits = this.deps.executionLimits?.();
+    if (limits === undefined) {
+      return undefined;
+    }
+    if (current.providerCalls >= limits.maxProviderRequests) {
+      // No public setting exists for this budget; describe it as an internal
+      // limit instead of pointing at a nonexistent setting id.
+      return `The agentic engine provider budget (${limits.maxProviderRequests} provider request(s)) was reached. Split the task or add context more narrowly.`;
+    }
+    if (taskId !== undefined) {
+      const execution = current.executions.find((candidate) => candidate.taskId === taskId);
+      const anchor = execution?.startedAt;
+      if (anchor !== undefined) {
+        const elapsed = Date.now() - Date.parse(anchor);
+        if (Number.isFinite(elapsed) && elapsed >= limits.maxDurationMs) {
+          return `The agentic engine per-task duration limit of ${limits.maxDurationMs} ms was reached for this task (quantsmind.agenticEngine.maxDurationSeconds).`;
+        }
+        return undefined;
+      }
+      return undefined;
+    }
+    const createdAt = Date.parse(current.createdAt);
+    if (Number.isFinite(createdAt) && Date.now() - createdAt >= limits.maxDurationMs) {
+      return `The agentic engine duration limit of ${limits.maxDurationMs} ms was reached (quantsmind.agenticEngine.maxDurationSeconds).`;
+    }
+    return undefined;
+  }
+
   private withEvent(
     session: AgentSession,
     type: SessionEventType,
@@ -872,7 +1014,7 @@ export class AgentOrchestrator implements IAgentController {
   }
 
   private requireTrusted(action: string): void {
-    if ((this.deps.isTrusted ?? (() => true))() === false) {
+    if ((this.deps.isTrusted ?? (() => false))() !== true) {
       throw new AgentSessionError(
         `Workspace trust is required to ${action}. Open a trusted workspace or grant trust before using agent mode.`,
       );
@@ -960,6 +1102,10 @@ export class AgentOrchestrator implements IAgentController {
           (retrieval.skipped.length > 0 ? ` and skipped ${retrieval.skipped.length}.` : '.'),
       );
       const agentSettings = this.deps.agentSettings();
+      const breach = this.executionBudgetBreach(current);
+      if (breach !== undefined) {
+        return this.failSession(id, breach);
+      }
       if (current.providerCalls >= agentSettings.maxSteps) {
         return this.failSession(
           id,
@@ -1008,11 +1154,29 @@ export class AgentOrchestrator implements IAgentController {
       }
 
       current = { ...current, plan: parsed.plan, tasks: parsed.plan.tasks };
+      // v2.5.5: structured envelope — evidence (local) vs assumptions (model),
+      // category, objective-scoped file expectations and validation posture.
+      // No extra inspection happens here; the envelope is derived from the
+      // requirement and the validated plan alone (the inspection pass already
+      // ran at task start).
+      let envelopeDetail: string;
+      let envelopeCategory: string | undefined;
+      try {
+        const envelope = buildCodingTaskPlan({
+          plan: parsed.plan,
+          requirementText: current.requirement.text,
+        });
+        envelopeDetail = formatCodingTaskPlan(envelope, 1_600);
+        envelopeCategory = envelope.category;
+      } catch {
+        envelopeDetail = '';
+      }
       current = this.withEvent(
         current,
         'note',
-        `The development plan contains ${parsed.plan.tasks.length} task(s).`,
+        `The development plan contains ${parsed.plan.tasks.length} task(s).${envelopeCategory !== undefined ? ` Category: ${envelopeCategory}.` : ''}`,
       );
+      current = this.withEvent(current, 'note', makeCheckpointMessage('planned', envelopeCategory));
       const request: ApprovalRequest = {
         id: this.nextId('approval'),
         sessionId: id,
@@ -1020,6 +1184,7 @@ export class AgentOrchestrator implements IAgentController {
         title: `Plan approval: ${clampText(parsed.plan.summary, 160)}`,
         detail: [
           parsed.plan.approach,
+          ...(envelopeDetail.length > 0 ? ['', envelopeDetail] : []),
           ...parsed.plan.risks.map((risk) => `Risk: ${risk}`),
           ...parsed.plan.warnings,
         ]
@@ -1237,12 +1402,16 @@ export class AgentOrchestrator implements IAgentController {
       current,
       updateTask(current.tasks, taskId, { status: 'running', attempts: attempt, error: undefined }),
     );
+    // v3.0.0 (Gap 3.1): a task keeps its original start timestamp across
+    // resume/retry/repair; only a task that never ran before gets a fresh one.
+    const priorExecution = current.executions.find((execution) => execution.taskId === taskId);
+    const startedAt = priorExecution?.startedAt ?? this.timestamp();
     current = {
       ...current,
       executions: upsertExecution(current.executions, taskId, {
         status: 'running',
         attempts: attempt,
-        startedAt: this.timestamp(),
+        startedAt,
         finishedAt: undefined,
         appliedFiles: [],
         changeSetId: undefined,
@@ -1279,6 +1448,10 @@ export class AgentOrchestrator implements IAgentController {
 
     current = this.require(sessionId);
     const agentSettings = this.deps.agentSettings();
+    const breach = this.executionBudgetBreach(current, taskId);
+    if (breach !== undefined) {
+      return this.failSession(sessionId, breach);
+    }
     if (current.providerCalls >= agentSettings.maxSteps) {
       return this.failSession(
         sessionId,
@@ -1362,6 +1535,12 @@ export class AgentOrchestrator implements IAgentController {
     if (prepared.errors.length > 0) {
       return this.failSession(sessionId, prepared.errors.join(' '));
     }
+    // v2.5.7: shared execution budget applies BEFORE an approvable artifact is proposed;
+    // v3.0.0: cumulative patch accounting across change sets and repairs.
+    const breachLimits = this.enforceChangeSetBudgets(sessionId, prepared.plan.changes);
+    if (breachLimits !== undefined) {
+      return this.failSession(sessionId, breachLimits);
+    }
     if (this.taskCancelled(sessionId, taskId)) {
       return this.viewOf(sessionId);
     }
@@ -1443,6 +1622,7 @@ export class AgentOrchestrator implements IAgentController {
             eventId: this.nextId('event'),
             message: `The change set for task "${task.title}" is awaiting approval.`,
           });
+    next = this.withEvent(next, 'note', makeCheckpointMessage('awaiting-review', taskId));
     await this.checkpoint(next, taskId);
     return this.record(next);
   }
@@ -1647,6 +1827,20 @@ export class AgentOrchestrator implements IAgentController {
         return this.failTask(sessionId, changeSet.taskId, 'A change set is already being applied for this session.');
       }
       this.applyingChangeSets.add(sessionId);
+      this.incrementCounter(this.toolDispatches, sessionId);
+      // Apply-time backstop for the cumulative patch budget: approvals that
+      // were individually within budget at proposal time can overcommit when
+      // applied back-to-back, so the exact set being applied is re-checked
+      // against bytes applied so far. No apply happens when this trips.
+      const selectedChanges = changeSet.plan.changes.filter((change) => selected.includes(change.id));
+      const applyBreach = this.cumulativePatchBreach(
+        this.patchBytesAccumulated.get(sessionId) ?? 0,
+        patchBytesOf(selectedChanges),
+      );
+      if (applyBreach !== undefined) {
+        this.applyingChangeSets.delete(sessionId);
+        return this.failSession(sessionId, applyBreach);
+      }
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -1655,6 +1849,7 @@ export class AgentOrchestrator implements IAgentController {
           historyTaskId,
           changeSet.summary,
           applyId,
+          () => token.isCancellationRequested,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -1666,6 +1861,12 @@ export class AgentOrchestrator implements IAgentController {
         return this.viewOf(sessionId);
       }
 
+      // Only bytes that actually landed on disk consume the cumulative budget.
+      this.chargeAppliedPatchBytes(
+        sessionId,
+        changeSet.plan.changes,
+        new Set(outcome.applied.map((file) => file.changeId)),
+      );
       const appliedFiles = await this.appliedFilesOf(outcome);
       let next = this.require(sessionId);
       const previous = next.executions.find((execution) => execution.taskId === changeSet.taskId)?.appliedFiles ?? [];
@@ -1766,6 +1967,8 @@ export class AgentOrchestrator implements IAgentController {
         eventId: this.nextId('event'),
         message: `Change set "${changeSet.id}" applied.`,
       });
+      done = this.withEvent(done, 'note', makeCheckpointMessage('editing', changeSet.id));
+      done = this.withEvent(done, 'note', makeCheckpointMessage('changes-applied', changeSet.id));
       if (otherActive) {
         done = transitionSession(done, 'awaiting-change-approval', {
           at: this.timestamp(),
@@ -1843,6 +2046,7 @@ export class AgentOrchestrator implements IAgentController {
       const settings = this.deps.commandSettings();
       const policy = evaluateCommand(command, settings.allowlist);
       if (!policy.allowed || policy.normalized === undefined) {
+        this.incrementCounter(this.toolRefusals, sessionId);
         let denied = this.require(sessionId);
         const diagnostic: Diagnostic = {
           id: `diag-runtime-${denied.diagnostics.length + 1}`,
@@ -1959,6 +2163,7 @@ export class AgentOrchestrator implements IAgentController {
     return this.runBusy(sessionId, async () => {
       const policy = evaluateCommand(approvedCommand, this.deps.commandSettings().allowlist);
       if (!policy.allowed || policy.normalized !== approvedCommand) {
+        this.incrementCounter(this.toolRefusals, sessionId);
         const reason = policy.reason ?? 'The command no longer matches the approved request.';
         let denied = this.require(sessionId);
         const diagnostic: Diagnostic = {
@@ -1994,6 +2199,7 @@ export class AgentOrchestrator implements IAgentController {
       );
       await this.record(current);
 
+      this.incrementCounter(this.toolDispatches, sessionId);
       const startedAt = this.timestamp();
       const controller = new AbortController();
       this.aborters.set(sessionId, controller);
@@ -2041,6 +2247,19 @@ export class AgentOrchestrator implements IAgentController {
         output: clampText(result.output, MAX_VALIDATION_OUTPUT_CHARS),
         error: result.error,
       };
+      /** v3.0.0 (Gap 3.4): validation outcome feeds the shared failure sequence. */
+      if (evidence.passed) {
+        this.trackExecutionSuccess(sessionId);
+      } else if (!result.cancelled) {
+        const failures = this.trackExecutionFailure(sessionId);
+        const limit = this.consecutiveFailureLimit();
+        if (failures >= limit) {
+          return this.failSession(
+            sessionId,
+            `The agentic engine consecutive-failure budget of ${limit} validation/command failure(s) was reached; the session stopped rather than repair forever.`,
+          );
+        }
+      }
       const testedSession = this.require(sessionId);
       const tested = testedSession.executions.find((execution) => execution.taskId === task.id);
       const binding = bindValidation(
@@ -2187,6 +2406,10 @@ export class AgentOrchestrator implements IAgentController {
       if (run === undefined) {
         return this.failSession(sessionId, 'No validation evidence is available for the failed task.');
       }
+      const breach = this.executionBudgetBreach(current, task.id);
+      if (breach !== undefined) {
+        return this.failSession(sessionId, breach);
+      }
       if (current.providerCalls >= settings.maxSteps) {
         return this.failSession(
           sessionId,
@@ -2266,6 +2489,11 @@ export class AgentOrchestrator implements IAgentController {
       }
       if (prepared.errors.length > 0) {
         return this.failSession(sessionId, prepared.errors.join(' '));
+      }
+      // v3.0.0 (Gap 3.3): the repair envelope is budget-checked like the initial one.
+      const repairBreach = this.enforceChangeSetBudgets(sessionId, prepared.plan.changes);
+      if (repairBreach !== undefined) {
+        return this.failSession(sessionId, repairBreach);
       }
 
       const diagnosis =
@@ -2386,6 +2614,17 @@ export class AgentOrchestrator implements IAgentController {
 
       const historyTaskId = this.changeTaskId(sessionId, proposal.taskId);
       const applyId = this.nextId('apply');
+      this.incrementCounter(this.toolDispatches, sessionId);
+      // Apply-time backstop for the cumulative patch budget, same as the
+      // change-set path: re-check the exact set against bytes applied so far.
+      const selectedRepairChanges = proposal.plan.changes.filter((change) => selected.includes(change.id));
+      const repairApplyBreach = this.cumulativePatchBreach(
+        this.patchBytesAccumulated.get(sessionId) ?? 0,
+        patchBytesOf(selectedRepairChanges),
+      );
+      if (repairApplyBreach !== undefined) {
+        return this.failSession(sessionId, repairApplyBreach);
+      }
       let outcome: ApplyOutcomeLike;
       try {
         const report = await this.deps.changes.apply(
@@ -2394,6 +2633,7 @@ export class AgentOrchestrator implements IAgentController {
           historyTaskId,
           proposal.summary,
           applyId,
+          () => token.isCancellationRequested,
         );
         outcome = report.outcome;
       } catch (error) {
@@ -2403,6 +2643,12 @@ export class AgentOrchestrator implements IAgentController {
         return this.viewOf(sessionId);
       }
 
+      // Only bytes that actually landed on disk consume the cumulative budget.
+      this.chargeAppliedPatchBytes(
+        sessionId,
+        proposal.plan.changes,
+        new Set(outcome.applied.map((file) => file.changeId)),
+      );
       const appliedFiles = await this.appliedFilesOf(outcome);
       let next = this.require(sessionId);
       const previous = next.executions.find((execution) => execution.taskId === proposal.taskId)?.appliedFiles ?? [];
@@ -2836,22 +3082,62 @@ export class AgentOrchestrator implements IAgentController {
     return this.finishWithReport(current);
   }
 
+  private scopeReport(session: AgentSession): string | undefined {
+    if (session.plan === undefined || session.plan.tasks.length === 0) {
+      return undefined;
+    }
+    const expected = expectedFilesOf(session.plan);
+    const actual = session.executions.flatMap((execution) =>
+      (execution.appliedFiles ?? []).map((file) => file.path),
+    );
+    if (expected.length === 0 && actual.length === 0) {
+      return undefined;
+    }
+    const check = checkChangeScope(expected, actual);
+    const format = (list: readonly string[]): string =>
+      list
+        .slice(0, 6)
+        .join(', ')
+        .concat(list.length > 6 ? ` +${list.length - 6} more` : '');
+    const parts: string[] = [`${check.matched.length}/${expected.length} expected file(s) applied`];
+    if (check.unexpected.length > 0) {
+      parts.push(`unexpected: ${format(check.unexpected)}`);
+    }
+    if (check.missing.length > 0) {
+      parts.push(`missing: ${format(check.missing)}`);
+    }
+    return parts.join('; ');
+  }
+
   private async finishWithReport(session: AgentSession): Promise<AgentSessionView> {
     const at = this.timestamp();
-    const report = buildCompletionReport(session, at);
+    const withLifecycleNote =
+      session.state === 'completed' ? this.withEvent(session, 'note', makeCheckpointMessage('completed'))
+        : session.state === 'cancelled' ? this.withEvent(session, 'note', makeCheckpointMessage('cancelled'))
+          : this.withEvent(session, 'note', makeCheckpointMessage('blocked'));
+    const scope = this.scopeReport(withLifecycleNote);
+    const edited = scope === undefined
+      ? withLifecycleNote
+      : this.withEvent(withLifecycleNote, 'note', `Change scope: ${scope}`);
+    // v3.0.0 (Gap 3.2): report the actual tool accounting in the outcome.
+    const accounting = this.toolAccountingFor(edited.id);
+    // v2.5.7: one typed, bounded outcome note for the timeline; additive, bounded.
+    const withOutcomeNote = this.withEvent(edited, 'note', renderOutcome(orchestratorSessionToOutcome(edited, accounting)));
+    const report = buildCompletionReport(withOutcomeNote, at);
     const event: SessionEvent = {
       id: this.nextId('event'),
       at,
       type: 'report',
-      state: session.state,
+      state: withOutcomeNote.state,
       message: `Completion report generated with outcome "${report.outcome}".`,
     };
     const withReport: AgentSession = {
-      ...session,
+      ...withOutcomeNote,
       updatedAt: at,
       report,
-      events: [...session.events, event].slice(-MAX_SESSION_EVENTS),
+      events: [...withOutcomeNote.events, event].slice(-MAX_SESSION_EVENTS),
     };
+    this.resetSessionAccounting(withOutcomeNote.id);
     return this.record(withReport);
   }
 
@@ -2936,7 +3222,7 @@ export class AgentOrchestrator implements IAgentController {
       this.sessions.set(session.id, loaded);
     }
 
-    if (this.deps.isTrusted === undefined || this.deps.isTrusted()) {
+    if (this.deps.isTrusted !== undefined && this.deps.isTrusted()) {
       for (const session of [...this.sessions.values()]) {
         if (isTerminalAgentState(session.state)) {
           continue;
@@ -3081,12 +3367,28 @@ export class AgentOrchestrator implements IAgentController {
     }
 
     const unverified = this.deps.hashFile === undefined;
-    const restored: AgentSession = {
+    const workflowRestoration = computeWorkflowRestoration(
+      (current.events ?? []).map((event) => ({ type: event.type, message: event.message })),
+    );
+    let restored: AgentSession = {
       ...current,
       state,
       pausedFrom,
-      needsReview: unverified,
+      needsReview: unverified || workflowRestoration.requiresInspection,
     };
+    if (workflowRestoration.requiresInspection && workflowRestoration.note !== undefined) {
+      restored = this.withEvent(restored, 'note', workflowRestoration.note);
+    }
+    const continuation = computeContinuationPlan(
+      restored.tasks.map((task) => ({ id: task.id, status: task.status, dependencies: task.dependsOn })),
+    );
+    if (continuation.interrupted.length > 0 || continuation.failed.length > 0 || continuation.blocked.length > 0) {
+      restored = this.withEvent(
+        restored,
+        'note',
+        `Continuation plan: ${continuation.resumable.length} resumable, ${continuation.failed.length} failed, ${continuation.blocked.length} blocked task(s).`,
+      );
+    }
     return this.record(restored);
   }
 

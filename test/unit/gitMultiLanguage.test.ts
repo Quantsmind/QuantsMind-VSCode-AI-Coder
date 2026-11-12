@@ -54,7 +54,11 @@ suiteTeardown(() => {
   }
 });
 
-suite('git status on multi-language repository', () => {
+suite('git status on multi-language repository', function () {
+  // Creates and inspects a 14-language repo; on loaded machines this
+  // exceeds the default 20s budget without changing any assertion.
+  this.timeout(45_000);
+
   test('every language file is tracked and reported as modified', async () => {
     const dir = makeMultiLanguageRepo();
 

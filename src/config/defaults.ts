@@ -23,12 +23,20 @@ export const DEFAULT_AGENT_MAX_REPAIR_ITERATIONS = 1;
 export const DEFAULT_AGENT_TIMEOUT_MS = 180_000;
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+
 export const DEFAULT_COMMAND_OUTPUT_MAX_CHARS = 120_000;
+
+// Keep these in step with src/mcp/client.ts (the runtime authority for the
+// actual clamps enforced at call time).
+export const DEFAULT_MCP_TIMEOUT_MS = 10_000;
+export const DEFAULT_MCP_MAX_TOOL_OUTPUT_CHARS = 20_000;
+export const DEFAULT_LANGUAGE_INTELLIGENCE_ENABLED = true;
 export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = Object.freeze([
   'npm run compile',
   'npm run lint',
   'npm test',
   'npm run test:unit',
+  'npm run verify',
 ]);
 
 export const MAX_CONVERSATIONS = 30;
@@ -102,5 +110,7 @@ export const LIMITS = Object.freeze({
   agentTimeoutMs: { min: 10_000, max: 900_000 },
   commandTimeoutMs: { min: 1_000, max: 600_000 },
   commandOutputMaxChars: { min: 1_000, max: 1_000_000 },
+  mcpTimeoutMs: { min: 250, max: 300_000 },
+  mcpMaxToolOutputChars: { min: 1_000, max: 200_000 },
   maxCommandAllowlist: 20,
 });

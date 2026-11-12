@@ -25,6 +25,7 @@ import {
   type ContextSelectionOptions,
   type RepositoryContextSelection,
 } from './contextSelection';
+import { findLanguageRelations } from '../languages/relationships';
 import {
   analyzeArchitecture,
   type ArchitectureAnalysis,
@@ -87,7 +88,7 @@ function configBaseName(path: string): string {
 function isConfigPath(path: string): boolean {
   return /^(?:package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|pnpm-workspace\.ya?ml|tsconfig(?:\.[^/]+)?\.json|jsconfig\.json|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|poetry\.lock|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Cargo\.toml|Cargo\.lock|CMakeLists\.txt|Makefile|Gemfile|composer\.json|Dockerfile|docker-compose\.ya?ml|karkain\.toml)$/i.test(
     configBaseName(path),
-  ) || /\.(?:csproj|sln)$/i.test(path);
+  ) || /\.(?:csproj|sln)$/i.test(path) || /\.sql$/i.test(path);
 }
 
 function manifestModuleName(path: string, content: string | undefined): string | undefined {
@@ -374,7 +375,12 @@ export class RepositoryIntelligenceService {
     options: ContextSelectionOptions,
   ): Promise<RepositoryContextSelection> {
     await this.ensureLoaded();
-    return selectRepositoryContext(query, this.entries ?? [], [...this.analyses.values()], this.builder.snapshot(), options);
+    const entries = this.entries ?? [];
+    const analyses = [...this.analyses.values()];
+    const relations = findLanguageRelations(entries, analyses, {
+      ...(this.configContents !== undefined ? { fileContents: this.configContents } : {}),
+    });
+    return selectRepositoryContext(query, entries, analyses, this.builder.snapshot(), { ...options, relations });
   }
 
   async findSymbols(

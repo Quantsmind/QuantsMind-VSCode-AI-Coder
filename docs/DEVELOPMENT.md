@@ -36,6 +36,8 @@ npm run test:unit
 | `npm run test:integration` | Compile and run tests in an isolated VS Code 1.95 instance |
 | `npm test` | Unit tests, then integration tests |
 | `npm run verify:deps` | Fail if the shipped minimatch is below the patched release |
+| `npm run verify:release` | Fail on hardcoded release literals; version comes from `package.json` |
+| `npm run verify:docs-links` | Fail if a Markdown file links to a missing file, image or anchor |
 | `npm run package` | Produce the VSIX with `@vscode/vsce` |
 | `npm run verify:vsix` | Inspect the VSIX archive and manifest |
 | `npm run test:packaged` | Install the VSIX into an isolated VS Code and verify activation |
@@ -150,7 +152,8 @@ executable is available, so set `VSCODE_EXECUTABLE` in that case.
 npm run package
 ```
 
-Output: `quantsmind-vscode-ai-coder-0.3.0.vsix`.
+Output: `quantsmind-vscode-ai-coder-3.0.0.vsix` (the name follows `package.json`;
+it stays `<version>`-named for future releases).
 
 `.vscodeignore` excludes source, tests, docs, scripts, CI, source maps, and
 TypeScript declarations. `vsce` includes the compiled `out/src` tree, `media`,

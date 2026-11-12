@@ -24,7 +24,7 @@ afterward.
    ```bash
    npm ci
    npm run verify
-   code --install-extension quantsmind-vscode-ai-coder-0.3.0.vsix --force
+   code --install-extension quantsmind-vscode-ai-coder-3.0.0.vsix --force
    ```
 
    Record the VSIX size and SHA-256, the VS Code version, and the operating
@@ -72,7 +72,7 @@ afterward.
     `git status --porcelain` before and after a chat session. Nothing must change
     during chat: no files are created, edited, or deleted by the chat path.
 
-11. Verify the v0.3.0 plan-first workflow on a disposable file:
+11. Verify the plan-first workflow on a disposable file:
     - Run **QuantsMind: Start Agent Session** and ask for a small new file.
     - Confirm the session reaches plan approval and `git status` is still
       clean.
@@ -83,7 +83,7 @@ afterward.
       workspace returns to its previous state.
     - Confirm **Show Change History** lists the change set.
 
-12. Verify the v0.3.0 workspace summary and retrieval:
+12. Verify the workspace summary and retrieval:
     - Run **QuantsMind: Summarize Workspace** and confirm the file count,
       detected scripts, and exclusions are plausible.
     - Run **QuantsMind: Attach Relevant Workspace Files** and confirm attachments
@@ -135,12 +135,12 @@ never inferred from the automated mock-server suites.
 
 ## Current status
 
-### v0.3.0
+### v3.0.0
 
-The live gate has **not** been run for v0.3.0. No live provider request was made
+The live gate has **not** been run for v3.0.0. No live provider request was made
 while preparing this build, and no credential was requested, used, or exposed.
 
-Evidence that exists for v0.3.0:
+Evidence that exists for v3.0.0:
 
 - Automated unit, extension-host, and packaged-host suites use a deterministic
   loopback mock provider and do not demonstrate third-party provider behavior.
@@ -148,23 +148,34 @@ Evidence that exists for v0.3.0:
   repair approval, session restore, and completion-report paths are covered by
   deterministic tests.
 - The repository contains no credential and no live-provider transcript.
+- The two Pollinations live integration tests remain pending unless the
+  anonymous endpoint is reachable; CI runs extension-host tests on
+  ubuntu/windows/macOS against the mock provider.
 
-Still open for v0.3.0:
+Still open for v3.0.0:
 
-- The full procedure above on the installed 0.3.0 VSIX with a disposable key.
+- The full procedure above on the installed 3.0.0 VSIX with a disposable key.
 - A manual UI pass of the control center (this build's automated tests validate
   the webview HTML and protocol structurally, not visually).
 - Third-party live streaming observation.
-- Apple-host and Linux-host execution unless CI results are available and
-  recorded.
+- Apple-host and Linux-host execution of this artifact (historical CI lineage
+  is green on those platforms for the pre-remediation branch; see
+  `docs/audit/V3.0.0-FINAL-COMPREHENSIVE-QUALIFICATION.md`).
 - Provider-side revocation evidence for any disposable key.
 
-### v0.2.0
+The 0.2.0/v0.1.1 records below are preserved as historical evidence, not as
+current qualification status.
+
+The gate remains open until the current v3.0.0 live procedure above is executed
+and the Output-channel inspection passes. Do not describe any disposable key as
+revoked at the provider without evidence.
+
+### v0.2.0 (historical, unpublished)
 
 The live gate has **not** been re-run for v0.2.0. No live provider request was
 made while preparing this build, and no credential was requested or exposed.
 
-Evidence that exists for v0.2.0:
+Evidence that exists for v0.2.0 (historical):
 
 - The provider-masked key exposure found in the v0.1.1 Output channel is
   addressed in `src/security/redact.ts` and covered by
@@ -224,6 +235,6 @@ not demonstrate third-party provider behavior.
 Evidence: [V011 live provider validation report](reports/V011_LIVE_PROVIDER_VALIDATION_REPORT.md)
 and [V0.2.0 completion report](reports/V020_COMPLETION_REPORT.md).
 
-The gate remains open until the current v0.3.0 live procedure above is executed
+The gate remains open until the current v3.0.0 live procedure above is executed
 and the Output-channel inspection passes. Do not describe any disposable key as
 revoked at the provider without evidence.

@@ -375,6 +375,7 @@ suite('live workspace root labels (D4)', () => {
     };
     const controller = new AgentOrchestrator({
       workspaceRoot: () => root,
+      isTrusted: () => true,
       complete: unused,
       inspect: unused,
       retrieve: unused,

@@ -204,8 +204,21 @@ export async function undoHistoryEntry(
     if (file.status !== 'applied' || file.backupName === undefined) {
       continue;
     }
-    const raw = await fs.readBackup(file.backupName);
+    let raw: string | undefined;
+    try {
+      raw = await fs.readBackup(file.backupName);
+    } catch {
+      raw = undefined;
+    }
     if (raw === undefined) {
+      applied.push({
+        changeId: file.changeId,
+        kind: file.kind,
+        path: file.path,
+        fromPath: file.fromPath,
+        backupName: file.backupName,
+        corrupt: 'The before-image backup is missing; the file was not restored.',
+      });
       continue;
     }
     try {
@@ -227,7 +240,14 @@ export async function undoHistoryEntry(
         backupName: file.backupName,
       });
     } catch {
-      continue;
+      applied.push({
+        changeId: file.changeId,
+        kind: file.kind,
+        path: file.path,
+        fromPath: file.fromPath,
+        backupName: file.backupName,
+        corrupt: 'The before-image backup could not be parsed; the file was not restored.',
+      });
     }
   }
 

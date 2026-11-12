@@ -176,6 +176,7 @@ function createHarness(
     workspaceIndex,
     changeService,
     sessionStore: memento,
+    isTrusted: () => vscode.workspace.isTrusted,
   });
   const provider = new ChatViewProvider({
     extensionUri: extensionUri(),

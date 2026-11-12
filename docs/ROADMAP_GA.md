@@ -1,5 +1,11 @@
 # QuantsMind VS Code AI Coder — General Availability Plan
 
+> **Historical planning document (superseded).** This plan was written for the
+> v0.4.0 milestone. v3.0.0 is the build that actually reached GA-qualified
+> status; the milestone mapping in this file (branch names, version targets,
+> verdicts) no longer applies. It is retained as a record of the historical
+> GA decision process; current status lives in `docs/audit/`.
+
 **Document created:** 2026-11-04
 **Repository state at creation:** branch `feature/v0.3.3`, HEAD `402d163`, 31 uncommitted entries
 before this file was written (32 with it)
@@ -158,7 +164,7 @@ first-run notice, the `LIMITATIONS.md` promotion and the Phase 4 decisions (repo
 
 Current manifest facts that matter for GA, all measured from `package.json`:
 19 commands, 21 settings under `quantsmind.provider.*`, `categories: ["AI","Programming Languages","Other"]`,
-`license: MIT` with `LICENSE` present, `repository` pointing at `github.com/ajit-ai/QuantsMind-VSCode-AI-Coder`,
+`license: MIT` with `LICENSE` present, `repository` pointing at `github.com/Quantsmind/QuantsMind-VSCode-AI-Coder`,
 `capabilities.untrustedWorkspaces.supported: true`, `virtualWorkspaces: false`.
 
 Gaps:
@@ -166,12 +172,13 @@ Gaps:
 - **No `icon`, no `screenshot`, no `qna`, no `badges`, no `extensionKind`** — the Marketplace listing
   renders blank and unbranded. Needs brand assets from you; I can build the pages around them but I
   will not invent logo artwork silently.
-- **Repository identity is inconsistent and must be settled before publishing.** `package.json` declares
-  `repository: github.com/ajit-ai/QuantsMind-VSCode-AI-Coder` and the README's *Getting help* link points
-  there, while `git remote` is `github.com/Quantsmind/QuantsMind-VSCode-AI-Coder`. `vsce` uses the
-  manifest field for the Marketplace "Repository" and "Bugs" links, and the `.github/ISSUE_TEMPLATE` only
-  works on the repo it is pushed to. Pick one — the manifest value and the remote must agree before the
-  Phase 8 listing is created, and any pushed branch on the other host is orphaned.
+- **Repository identity (resolved 2026-11-07).** `package.json` declares
+  `repository: github.com/Quantsmind/QuantsMind-VSCode-AI-Coder`, the README's *Getting help*
+  link points at the same host, and `git remote` agrees. The earlier mismatch
+  (`ajit-ai/QuantsMind-VSCode-AI-Coder` vs `Quantsmind/QuantsMind-VSCode-AI-Coder`)
+  was settled by correcting the manifest to the `Quantsmind` organization at v1.0.0.
+  `vsce` uses the manifest field for the Marketplace "Repository" and "Bugs" links, and the
+  `.github/ISSUE_TEMPLATE` only works on the repo it is pushed to.
 - **`virtualWorkspaces: false`** while `untrustedWorkspaces: true`: the extension silently refuses in
   remote/SSH and Settings-profile/ghost workspaces. Either state the restriction in the README (cheap)
   or declare support per remote authority (expensive). Decide; do not leave implicit.
@@ -252,7 +259,7 @@ repo-sensitivity review that goes with making the repository public.
 - Publish **known issues for GA** derived from `LIMITATIONS.md` plus the §6 "expected, not defects"
   notes (legacy conversations showing `unavailable`/`capturedContext=0` after upgrade is the one most
   likely to be reported as a bug).
-- Define the **support route** for a Marketplace release: GitHub issues on `ajit-ai/QuantsMind-VSCode-AI-Coder`
+- Define the **support route** for a Marketplace release: GitHub issues on `Quantsmind/QuantsMind-VSCode-AI-Coder`
   (public repo — check nothing sensitive is in it before going public) or a private channel with
   "controlled release" framing.
 - Verify `QuantsMind: Run Complete Self-Diagnostics` writes a sanitized report to

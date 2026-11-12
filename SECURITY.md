@@ -4,11 +4,12 @@
 
 | Version | Support |
 | --- | --- |
-| 0.2.x | Alpha preview; security fixes are applied to the latest 0.2.x build |
-| 0.1.x | Superseded by 0.2.x; no further fixes |
+| 3.0.x (3.0.0) | Current release line; security fixes are applied to the latest 3.0.x build |
+| 2.x and older | Superseded; no further fixes |
 | Other | Not supported |
 
-Version 0.2.0 is not a general availability release.
+Version 3.0.0 is the current build. It is a GA-qualified local candidate; it
+has not been published to any registry.
 
 ## Reporting a vulnerability
 

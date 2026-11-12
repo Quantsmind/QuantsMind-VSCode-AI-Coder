@@ -117,6 +117,53 @@ requirement
   integration is fixture-tested against a mocked REST API; it has **not** been
   verified against the live GitHub API on this machine. Local Git features
   work without a GitHub account.
+- **General Availability (v3.0.0).** Both agent entry paths operate inside one
+  bounded, evidence-based execution runtime: per-task budget accounting,
+  honest tool-call accounting, cumulative patch-size protection and a shared
+  consecutive-failure budget; completion is decided from tool evidence on
+  both paths. See the [agentic engineering documentation](docs/AGENTIC_ENGINEERING.md),
+  the [release notes](CHANGELOG.md#300---2026-11-11) and
+  [advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md).
+- **Release candidate (v2.5.7).** Both agent entry paths now share one bounded
+  execution runtime: the same validated limits (provider requests, duration,
+  changed files, patch size), one outcome contract (`EngineeringOutcome`) and
+  symmetric refuse-before-dispatch behavior; the orchestrator's approvals and
+  the chat agent's semantics are unchanged. Recovery is conservative on both
+  paths. See [agentic engineering](docs/AGENTIC_ENGINEERING.md) and
+  [coding workflows](docs/CODING_WORKFLOWS.md).
+- **Agentic engineering (v2.5.6).** The bounded agent execution engine runs
+  plan → execute → observe → evaluate loops with hard, model-independent
+  limits; task completion is determined from tool evidence, not model
+  assertions; repeated failures trigger bounded plan revisions instead of
+  infinite loops; scope and budget violations stop the run honestly. See the
+  [agentic engineering documentation](docs/AGENTIC_ENGINEERING.md).
+- **Coding workflows (v2.5.5).** Substantial tasks get structured,
+  evidence-grounded plans with explicit evidence-vs-assumption labels; change
+  sets are tracked against the plan (in-scope, unexpected, missing); the
+  apply pipeline supports cancellation between files; session restoration
+  after an interrupted edit forces inspection instead of silently
+  re-running; `detect_build_system` returns a bounded validation plan grounded
+  in what was actually detected. See the
+  [coding workflows documentation](docs/CODING_WORKFLOWS.md).
+- **Language intelligence (v2.5.4).** The extension understands your
+  workspace's language mix: a bounded inventory identifies primary and
+  supporting languages (with detection confidence), language-adaptive
+  prompts and context selection focus on the languages actually present, and
+  cross-language relationships (shared API contracts, SQL schema ↔ models,
+  client/server pairs, build files ↔ compiled sources) inform task context
+  without autonomous edits. Toggle with
+  `quantsmind.languageIntelligence.enabled` (default true). See the
+  [language intelligence documentation](docs/LANGUAGE_INTELLIGENCE.md).
+- **MCP (Model Context Protocol) servers** you configure in
+  `quantsmind.mcp.servers` can be launched with explicit per-window approval;
+  each tool invocation is approval-gated and tool output is treated as
+  untrusted data. Servers run over stdio or remote Streamable HTTP
+  (`https:` required remotely; bearer credentials stored in VS Code
+  SecretStorage, never in settings). Per-server `timeoutMs` (10,000 ms
+  default; 250–300,000) and `maxToolOutputChars` (20,000 default;
+  1,000–200,000) are configurable in the same setting. See the
+  [MCP documentation](docs/MCP.md) and
+  [advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md).
 
 ### Evidence and security
 
@@ -150,13 +197,14 @@ requirement
 
 - VS Code **1.95.0** or newer (desktop).
 - An OpenAI-compatible provider endpoint and API key, or a local model server
-  that exposes the same API shape.
-- Node.js **20 or newer** only if you are building or testing from source.
+  that exposes the same API shape (or a Gemini API key; see provider notes).
+- Node.js 20 or newer only if you are building or testing from source
+  (`.nvmrc` pins 22; CI tests on Node 20, 22 and 24).
 
 ## Install from a VSIX
 
 ```bash
-code --install-extension quantsmind-vscode-ai-coder-0.3.0.vsix
+code --install-extension quantsmind-vscode-ai-coder-3.0.0.vsix
 ```
 
 Reload the window if VS Code requests it. Open the QuantsMind icon in the
@@ -231,12 +279,19 @@ answer the port, so every request that uses it writes one warn-level line to the
 | `quantsmind.workspace.maxIndexedFiles` | `5000` | resource | Local index cap |
 | `quantsmind.workspace.maxRetrievedFiles` | `8` | resource | Files retrieved per request |
 | `quantsmind.workspace.retrievalMaxChars` | `40000` | resource | Retrieved-context budget |
-| `quantsmind.agent.maxSteps` | `6` | resource | Provider calls per agent session |
-| `quantsmind.agent.maxRepairIterations` | `1` | resource | Repair passes after failure |
-| `quantsmind.agent.timeoutMs` | `180000` | resource | Agent step timeout |
-| `quantsmind.commands.allowlist` | five npm commands | resource | Approved validation commands |
-| `quantsmind.commands.timeoutMs` | `120000` | resource | Validation command timeout |
-| `quantsmind.commands.maxOutputChars` | `120000` | resource | Captured output cap |
+| `quantsmind.agent.maxSteps` | `6` | application | Agent steps per legacy single-task flow |
+| `quantsmind.agent.maxRepairIterations` | `1` | application | Repair passes after failure |
+| `quantsmind.agent.timeoutMs` | `180000` | application | Agent step timeout |
+| `quantsmind.commands.allowlist` | five npm commands | application | Approved validation commands |
+| `quantsmind.commands.timeoutMs` | `120000` | application | Validation command timeout |
+| `quantsmind.commands.maxOutputChars` | `120000` | application | Captured output cap |
+| `quantsmind.languageIntelligence.enabled` | `true` | application | Language inventory and language-aware prompts |
+| `quantsmind.agenticEngine.maxIterations` | `10` | application | Model turns per agentic task |
+| `quantsmind.agenticEngine.maxToolCalls` | `40` | application | Tool dispatches per agentic task |
+| `quantsmind.agenticEngine.maxPlanRevisions` | `2` | application | Plan revisions before refusing |
+| `quantsmind.agenticEngine.maxDurationSeconds` | `600` | application | Per-task wall-clock duration budget |
+| `quantsmind.agenticEngine.maxChangedFiles` | `25` | application | Maximum files an agentic task may change |
+| `quantsmind.mcp.servers` | `[]` | application | MCP servers (see `docs/MCP.md`) |
 
 Provider settings are application-scoped so a workspace cannot redirect your
 stored credential to a different host. Built-in exclusions for secrets,
@@ -245,7 +300,7 @@ patterns add to them.
 
 The default allowlist is `npm run compile`, `npm run lint`, `npm test`,
 `npm run test:unit` and `npm run verify`. Add project-specific commands to the
-resource-scoped setting only if you would approve running that exact string.
+application-scoped setting only if you would approve running that exact string.
 
 ## Commands
 
@@ -258,15 +313,22 @@ resource-scoped setting only if you would approve running that exact string.
 - **QuantsMind: Set API Key**
 - **QuantsMind: Clear API Key**
 - **QuantsMind: Configure Provider**
+- **QuantsMind: Select Provider Profile**
 - **QuantsMind: Select Model**
+- **QuantsMind: Test Provider Connection**
 - **QuantsMind: Show Log**
 - **QuantsMind: Summarize Workspace**
 - **QuantsMind: Attach Relevant Workspace Files**
 - **QuantsMind: Start Agent Session**
 - **QuantsMind: Show Change History**
+- **QuantsMind: About QuantsMind / Version**
+- **QuantsMind: Inspect Workspace (Read-Only)**
+- **QuantsMind: Run Complete Self-Diagnostics**
+- **QuantsMind: Manage MCP Servers**
 
 The internal **QuantsMind: Show Menu** command backs the status bar item and is
-hidden from the Command Palette.
+hidden from the Command Palette. Set API Key requires a trusted workspace for
+some actions; chat itself remains available in Restricted Mode.
 
 ## Security model
 
@@ -326,20 +388,24 @@ you can see. Start with the built-in diagnostics:
 3. Note the extension version and your VS Code version (both are in the report).
 
 Then open an issue with the report attached:
-<https://github.com/ajit-ai/QuantsMind-VSCode-AI-Coder/issues>. Do not paste your API
+<https://github.com/Quantsmind/QuantsMind-VSCode-AI-Coder/issues>. Do not paste your API
 key "to help debug" — a `sk-…` value in an issue is a live credential, and the logs
 are built so that you never need to.
 
-Behaviour that is expected but looks wrong at first glance — for example pre-0.3.4
-conversations reporting `capturedContext=0` or `legacy` attachment chips after an
-upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
+Behaviour that is expected but looks wrong at first glance is listed in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Documentation
 
+- [Agentic engineering](docs/AGENTIC_ENGINEERING.md)
 - [Agent workflow](docs/AGENT_WORKFLOW.md)
+- [Coding workflows](docs/CODING_WORKFLOWS.md)
 - [Project intelligence](docs/PROJECT_INTELLIGENCE.md)
+- [Language intelligence](docs/LANGUAGE_INTELLIGENCE.md)
 - [Execution, build and test integration](docs/BUILD_AND_TEST.md)
+- [Advanced AI intelligence](docs/ADVANCED_AI_INTELLIGENCE.md)
+- [MCP (Model Context Protocol)](docs/MCP.md)
 - [Git, GitHub and change management](docs/GIT_AND_CHANGES.md)
 - [Planning and tasks](docs/PLANNING_AND_TASKS.md)
 - [Change review](docs/CHANGE_REVIEW.md)
@@ -350,32 +416,32 @@ upgrade — is listed in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and
 - [Provider configuration](docs/PROVIDER_CONFIGURATION.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Architecture overview](docs/ARCHITECTURE.md)
-- [v0.3.0 system architecture](docs/architecture/V030_SYSTEM_ARCHITECTURE.md)
-- [Execution state machine](docs/architecture/V030_EXECUTION_STATE_MACHINE.md)
-- [Security model](docs/architecture/V030_SECURITY_MODEL.md)
-- [Data model](docs/architecture/V030_DATA_MODEL.md)
-- [Provider and tool contracts](docs/architecture/V030_PROVIDER_AND_TOOL_CONTRACTS.md)
-- [Feature completion matrix](docs/FEATURES.md)
+- [v0.3.0 system architecture (historical)](docs/architecture/V030_SYSTEM_ARCHITECTURE.md)
+- [Execution state machine (historical)](docs/architecture/V030_EXECUTION_STATE_MACHINE.md)
+- [Security model (historical)](docs/architecture/V030_SECURITY_MODEL.md)
+- [Data model (historical)](docs/architecture/V030_DATA_MODEL.md)
+- [Provider and tool contracts (historical)](docs/architecture/V030_PROVIDER_AND_TOOL_CONTRACTS.md)
+- [Feature completion matrix (v0.3.0 campaign)](docs/FEATURES.md)
 - [Providers](docs/PROVIDERS.md)
 - [Workspace intelligence](docs/WORKSPACE.md)
 - [Editing and approval workflow](docs/EDITING.md)
 - [Terminal and command security](docs/TERMINAL_SECURITY.md)
 - [Limitations](docs/LIMITATIONS.md)
-- [Upgrading from 0.2.0](docs/UPGRADE.md)
+- [Upgrading between releases](docs/UPGRADE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Testing guide](docs/TESTING.md)
 - [Live provider validation](docs/LIVE_PROVIDER_VALIDATION.md)
-- [v0.3.0 implementation report](docs/reports/V030_IMPLEMENTATION_REPORT.md)
-- [v2.2.0 implementation report](V2.2.0_IMPLEMENTATION_REPORT.md)
-- [v2.3.0 implementation report](V2.3.0_IMPLEMENTATION_REPORT.md)
-- [v2.4.0 implementation report](V2.4.0_IMPLEMENTATION_REPORT.md)
-- [v0.3.0 completion report](docs/reports/V030_COMPLETION_REPORT.md)
-- [v0.3.0 test and validation report](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
-- [v0.3.0 security report](docs/reports/V030_SECURITY_REPORT.md)
-- [v0.3.4 final qualification status](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
-- [GA security and trust audit](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
-- [Release-candidate validation protocol](docs/RC_VALIDATION_PROTOCOL.md)
-- [Path to General Availability](docs/ROADMAP_GA.md)
+- [v0.3.0 implementation report (historical)](docs/reports/V030_IMPLEMENTATION_REPORT.md)
+- [v2.2.0 implementation report (historical)](V2.2.0_IMPLEMENTATION_REPORT.md)
+- [v2.3.0 implementation report (historical)](V2.3.0_IMPLEMENTATION_REPORT.md)
+- [v2.4.0 implementation report (historical)](V2.4.0_IMPLEMENTATION_REPORT.md)
+- [v0.3.0 completion report (historical)](docs/reports/V030_COMPLETION_REPORT.md)
+- [v0.3.0 test and validation report (historical)](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
+- [v0.3.0 security report (historical)](docs/reports/V030_SECURITY_REPORT.md)
+- [v0.3.4 final qualification status (historical)](docs/reports/V0.3.4_FINAL_QUALIFICATION_STATUS.md)
+- [GA security and trust audit (historical)](docs/reports/V0.4.0_GA_PHASE5_SECURITY_TRUST_AUDIT.md)
+- [Release-candidate validation protocol (historical, superseded)](docs/RC_VALIDATION_PROTOCOL.md)
+- [Path to General Availability (historical, superseded by v3.0.0 GA)](docs/ROADMAP_GA.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Development
@@ -409,8 +475,10 @@ tests and clean-install verification. `npm run release -- --bump patch|minor|maj
 performs the manifest and lockfile bump and prints the commit, tag and checksum
 steps; it never commits, tags, pushes or publishes on its own.
 
-This baseline is **not published** to the Visual Studio Marketplace, Open VSX,
-or any other registry. Do not treat it as a GA release.
+This baseline is a **GA-qualified local candidate**: it is **not published** to
+the Visual Studio Marketplace, Open VSX, or any other registry. Publication
+remains a separate, explicitly authorized decision; until then the build is
+verified locally, not made public.
 
 ## Independence
 

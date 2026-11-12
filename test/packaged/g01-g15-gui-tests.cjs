@@ -1,10 +1,24 @@
 /**
  * G01-G15 Packaged GUI Regression Tests for QuantsMind VS Code AI Coder v2.0.0
  *
- * Drives real VS Code GUI via Chrome DevTools Protocol (CDP) on port 9333.
+ * Drives a real VS Code GUI via Chrome DevTools Protocol (CDP) on port 9333.
+ * Manual harness: NOT executed by CI or by `npm run test:packaged`. Requires an
+ * external CDP helper library; point it at your own copy with QM_CDP_LIB.
+ * The former hard-coded absolute path was machine-specific and has been removed.
  */
 
-const { getTargets, connect } = require('C:/Windows/Temp/opencode/cdp-lib.cjs');
+const cdpLibPath = process.env.QM_CDP_LIB;
+if (cdpLibPath === undefined || cdpLibPath.length === 0) {
+  console.error('Set QM_CDP_LIB to the path of your cdp-lib.cjs (CDP target client). This manual harness is not run by CI.');
+  process.exit(0);
+}
+let getTargets, connect;
+try {
+  ({ getTargets, connect } = require(cdpLibPath));
+} catch (error) {
+  console.error(`Could not load QM_CDP_LIB at ${cdpLibPath}: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 
 const RESULTS = [];
 let passed = 0;

@@ -2,6 +2,7 @@
 // by callers; this module intentionally has no VS Code dependency.
 
 import type { ChatMessage } from '../providers/types';
+import { redactSecrets } from '../security/redact';
 
 export interface AgentToolCall {
   readonly id: string;
@@ -180,10 +181,11 @@ export class AgentToolRegistry implements AgentToolRegistryLike {
       return outcome.result;
     }
     if (outcome.kind === 'error') {
+      const detail = redactSecrets(outcome.error instanceof Error ? outcome.error.message : 'Tool execution failed.').text;
       return {
         ok: false,
         tool: call.name,
-        error: outcome.error instanceof Error ? outcome.error.message : 'Tool execution failed.',
+        error: detail,
         durationMs,
       };
     }
@@ -339,6 +341,15 @@ export interface AgentRunResult {
   readonly iterations: number;
   readonly toolResults: readonly AgentToolResult[];
   readonly messages: readonly ChatMessage[];
+  /** Engine provenance (v2.5.6): raw status/assessment for UI and diagnostics; additive. */
+  readonly engineOutcome?: {
+    readonly status: string;
+    readonly evaluation: string;
+    readonly toolCalls: number;
+    readonly revisions: number;
+    readonly filesChanged: number;
+    readonly limitReached?: string;
+  };
 }
 
 export interface RunCodingAgentOptions {
@@ -352,7 +363,7 @@ export interface RunCodingAgentOptions {
   readonly systemPrompt?: string;
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are QuantsMind AI Coder, a coding agent with access to workspace tools.
+export const DEFAULT_SYSTEM_PROMPT = `You are QuantsMind AI Coder, a coding agent with access to workspace tools.
 
 Planning:
 - Inspect the workspace before changing it (read_file, list_files, search_files, get_workspace_context).

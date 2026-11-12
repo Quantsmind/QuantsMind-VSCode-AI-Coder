@@ -22,8 +22,10 @@ OpenRouter-compatible endpoints use the same OpenAI-compatible shape but may
 require a model identifier prefixed with the vendor name.
 
 **429 responses**
-The provider is throttling. Wait and retry, or reduce request size and
-frequency. The extension does not retry automatically on your behalf.
+The provider is throttling. Wait a moment and retry, or reduce request size and
+frequency. The extension performs at most one bounded automatic retry on
+retry-eligible responses (HTTP 429, 502 and 503) and honors `Retry-After`;
+timeouts and everything else are not retried.
 
 **"Plain HTTP is only allowed for loopback providers"**
 Remote endpoints must use HTTPS. For a local server, use `localhost`,

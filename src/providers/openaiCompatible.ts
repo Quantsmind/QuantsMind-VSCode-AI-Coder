@@ -701,13 +701,10 @@ class OpenAiCompatibleProvider implements AiProvider {
                     'The provider returned an empty streaming response body.',
                   );
                 }
-                const wrappedOnDelta =
-                  options.onDelta === undefined
-                    ? undefined
-                    : (delta: string) => {
-                        streamStarted = true;
-                        options.onDelta?.(delta);
-                      };
+                const wrappedOnDelta = (delta: string): void => {
+                  streamStarted = true;
+                  options.onDelta?.(delta);
+                };
                 return await parseStreamingResponse(
                   response.body,
                   this.config.apiKey,

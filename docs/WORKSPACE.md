@@ -5,7 +5,8 @@ files without uploading the workspace in the background.
 
 ## What is indexed
 
-For the first workspace folder, the extension enumerates files with
+For the marker-scored workspace root selection (`src/workspace/rootPolicy.ts`
+— the root whose root marker scores highest), the extension enumerates files with
 `vscode.workspace.findFiles` and records:
 
 - Workspace-relative path.

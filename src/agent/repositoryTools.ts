@@ -36,6 +36,22 @@ export class RepositoryTools {
         entryPoints: [...overview.entryPoints],
         manifests: overview.manifests.map((manifest) => manifest.path),
         buildSystems: overview.buildSystems.map((system) => system.name),
+        ...(overview.inventory !== undefined
+          ? {
+              languageDetection: overview.inventory.detection,
+              ...(overview.inventory.primary !== undefined
+                ? {
+                    primaryLanguage: overview.inventory.primary.displayName,
+                    primaryLanguageConfidence: overview.inventory.primary.confidence,
+                  }
+                : {}),
+              supportingLanguages: overview.inventory.supporting.map((language) => ({
+                name: language.displayName,
+                files: language.files,
+                kind: language.kind,
+              })),
+            }
+          : {}),
       };
       return { ok: true, tool: 'get_repository_overview', output: JSON.stringify(summary, null, 2), durationMs: 0 };
     } catch (error) {

@@ -8,6 +8,7 @@ import {
   type WorkspaceEntry,
   type WorkspaceSummary,
 } from '../workspace/analyze';
+import { buildLanguageInventory } from '../languages/inventory';
 import {
   isBinaryPath,
   isSupportedSourcePath,
@@ -91,6 +92,8 @@ export interface RepositoryOverview {
   readonly configFiles: readonly string[];
   readonly modules: readonly RepositoryModule[];
   readonly monorepo: RepositoryMonorepo;
+  /** Registry-driven, content-free language inventory for prompts and UX (added in v2.5.4). */
+  readonly inventory?: import('../languages/inventory').LanguageInventory;
   readonly ignored: {
     readonly files: number;
     readonly directories: number;
@@ -806,6 +809,7 @@ export function discoverRepository(input: DiscoverRepositoryInput): RepositoryOv
     configFiles: configFilesOf(paths, maxConfigFiles),
     modules: buildModules(paths, maxModules),
     monorepo: detectMonorepo(paths, configContents),
+    inventory: buildLanguageInventory(input.entries),
     ignored: {
       files: ignoredFiles,
       directories: ignoredDirectories.size,

@@ -13,7 +13,7 @@ export interface ChangeApprovalService {
     taskId: string,
     summary: string,
   ): Promise<ApplyReport>;
-  undo(taskId: string): Promise<{ restored: number; conflicts: number } | undefined>;
+  undo(taskId: string): Promise<{ restored: number; conflicts: number; failed?: number } | undefined>;
   listHistory(): readonly HistoryEntry[];
 }
 
@@ -134,7 +134,11 @@ export class ChangeTools {
       return {
         ok: true,
         tool: 'undo_file_change',
-        output: JSON.stringify({ restored: result.restored, conflicts: result.conflicts }, null, 2),
+        output: JSON.stringify(
+          { restored: result.restored, conflicts: result.conflicts, failed: result.failed ?? 0 },
+          null,
+          2,
+        ),
         durationMs: 0,
       };
     } catch (error) {

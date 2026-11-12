@@ -24,6 +24,8 @@ export interface AppliedFile {
   readonly before?: string;
   readonly after?: string;
   readonly backupName: string;
+  /** Set when the before-image is missing or unreadable; the restore is impossible. */
+  readonly corrupt?: string;
 }
 
 export interface ApplyOutcome {
@@ -44,6 +46,8 @@ export interface UndoOutcome {
   readonly results: readonly UndoResult[];
   readonly restored: number;
   readonly conflicts: number;
+  /** Restore attempts that errored (e.g. unsupported change, I/O failure). Never silently counted as undone. */
+  readonly failed: number;
 }
 
 interface BackupRecord {
@@ -58,6 +62,8 @@ interface BackupRecord {
 
 export interface ApplyOptions {
   readonly approvedIds?: readonly string[];
+  /** Cooperative cancellation between files; checked before each mutation. */
+  readonly shouldCancel?: () => boolean;
 }
 
 function backupName(changeId: string): string {
@@ -163,6 +169,16 @@ export async function applyChangePlan(
   }
 
   for (const change of selected) {
+    if (options.shouldCancel?.() === true) {
+      results.push({
+        changeId: change.id,
+        path: change.path,
+        kind: change.kind,
+        status: 'skipped',
+        message: 'Cancelled before this file was processed.',
+      });
+      continue;
+    }
     const check = preflightByChange.get(change.id);
     if (check === undefined || 'message' in check) {
       results.push({
@@ -259,6 +275,14 @@ export async function undoAppliedChanges(
   for (const file of [...applied].reverse()) {
     const base = { changeId: file.changeId, path: file.path };
     try {
+      if (file.corrupt !== undefined) {
+        // The before-image for an applied change is missing or unreadable —
+        // the restore cannot succeed. Report it as failed, never restored.
+        results.push(
+          statusFor({ ...base, status: 'failed', message: file.corrupt }),
+        );
+        continue;
+      }
       switch (file.kind) {
         case 'create': {
           if (!(await fs.exists(file.path))) {
@@ -358,5 +382,6 @@ export async function undoAppliedChanges(
     results,
     restored: results.filter((result) => result.status === 'restored').length,
     conflicts: results.filter((result) => result.status === 'conflict').length,
+    failed: results.filter((result) => result.status === 'failed').length,
   };
 }

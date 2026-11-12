@@ -1,4 +1,5 @@
 import { withAbort } from './cancellation';
+import { userAgent } from './openaiCompatible';
 import { normalizeBaseUrl } from './endpoint';
 import { ProviderError, isProviderError, normalizeHttpError, normalizeThrownError } from './errors';
 import { getProviderProfile, providerAdapterForType } from './profiles';
@@ -182,7 +183,7 @@ export async function listProviderModels(options: ListModelsOptions): Promise<Mo
         let url: string;
         const headers: Record<string, string> = {
           Accept: 'application/json',
-          'User-Agent': 'QuantsMind-VSCode-AI-Coder/1.0.0',
+          'User-Agent': userAgent(),
         };
         if (adapter === 'gemini') {
           url = 'https://generativelanguage.googleapis.com/v1beta/models';

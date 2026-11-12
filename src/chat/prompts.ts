@@ -39,8 +39,10 @@ const MODE_PROMPTS: Record<ChatMode, string> = {
     'Plan a set of workspace file changes. Never claim a file was modified: the user must approve every change before it is applied.',
 };
 
-export function buildSystemPrompt(mode: ChatMode): string {
-  return `${BASE_SYSTEM_PROMPT}\n\nCurrent task: ${MODE_PROMPTS[mode]}`;
+export function buildSystemPrompt(mode: ChatMode, languageGuidance?: string): string {
+  const guidance = languageGuidance?.trim();
+  const languageBlock = guidance !== undefined && guidance.length > 0 ? `\n\n${guidance}` : '';
+  return `${BASE_SYSTEM_PROMPT}${languageBlock}\n\nCurrent task: ${MODE_PROMPTS[mode]}`;
 }
 
 export function safeCodeFence(content: string): string {
@@ -95,6 +97,8 @@ export interface BuildMessagesOptions {
   readonly question: string;
   readonly attachments: readonly RedactedContextItem[];
   readonly history?: readonly ChatMessage[];
+  /** Bounded, registry-derived language guidance for the active document; optional and safe to omit. */
+  readonly languageGuidance?: string;
 }
 
 export function buildMessages(options: BuildMessagesOptions): ChatMessage[] {
@@ -104,7 +108,7 @@ export function buildMessages(options: BuildMessagesOptions): ChatMessage[] {
   );
 
   return [
-    { role: 'system', content: buildSystemPrompt(options.mode) },
+    { role: 'system', content: buildSystemPrompt(options.mode, options.languageGuidance) },
     ...history,
     { role: 'user', content: buildUserContent(options.question, options.attachments) },
   ];

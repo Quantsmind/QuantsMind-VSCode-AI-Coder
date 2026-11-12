@@ -22,11 +22,14 @@ import { isProviderApiKeySecretKey, SecretStore } from './security/secretStore';
 import { FIRST_RUN_NOTICE_KEY, showFirstRunNotice } from './onboarding/firstRun';
 import { WorkspaceIndexService } from './workspace/indexService';
 import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
+import { manageMcpServers } from './commands/mcpManagement';
+import { selectWorkspaceRoot } from './workspace/rootPolicy';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
   readonly statusBar: vscode.StatusBarItem;
   readonly logger: Logger;
+  readonly agentRuntime: ReturnType<typeof createAgentRuntime>;
 }
 
 let activeRuntime: ActiveRuntime | undefined;
@@ -39,6 +42,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
   logger.info(`activating version=${version} vscode=${vscode.version}`);
+
+  // Multi-root workspaces: the extension operates on exactly one root (the
+  // marker-scored selection from rootPolicy.ts). Tell the user which one and
+  // why; trust and approvals remain per folder.
+  const multiRoot = vscode.workspace.workspaceFolders;
+  if (multiRoot !== undefined && multiRoot.length > 1) {
+    const selected = selectWorkspaceRoot(
+      multiRoot.map((folder) => ({ name: folder.name, index: folder.index, uri: folder.uri })),
+    );
+    if (selected !== undefined) {
+      logger.info(
+        `multi-root workspace (${multiRoot.length} folders); selected "${selected.name}" (marker-scored) for indexing, retrieval and changes`,
+      );
+      void vscode.window.showInformationMessage(
+        `QuantsMind: multiple folders are open; operating on "${selected.name}" (most project markers). Trust and change approvals remain per folder.`,
+      );
+    }
+  }
 
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsService();
@@ -69,6 +90,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     workspaceIndex,
     changeService,
     sessionStore: context.globalState,
+    mcpCredentials: context.secrets,
+    isTrusted: () => vscode.workspace.isTrusted,
   });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,
@@ -408,6 +431,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
       { label: '$(symbol-method) Select Provider Profile', command: COMMANDS.selectProvider },
       { label: '$(plug) Test Provider Connection', command: COMMANDS.testConnection },
       { label: '$(symbol-parameter) Select Model', command: COMMANDS.selectModel },
+      { label: '$(plug) Manage MCP Servers', command: COMMANDS.manageMcpServers },
       { label: '$(output) Show Log', command: COMMANDS.showLog },
     ];
     const picked = await vscode.window.showQuickPick(items, {
@@ -494,8 +518,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
         void vscode.window.showWarningMessage('QuantsMind: this change set has no backups to restore.');
         return;
       }
+      const failedSuffix = outcome.failed > 0 ? `; ${outcome.failed} restore(s) failed` : '';
       void vscode.window.showInformationMessage(
-        `QuantsMind: restored ${outcome.restored} file(s); ${outcome.conflicts} conflict(s).`,
+        `QuantsMind: restored ${outcome.restored} file(s); ${outcome.conflicts} conflict(s)${failedSuffix}.`,
       );
     } catch (error) {
       logger.error('undo from history failed', error);
@@ -564,22 +589,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   };
 
   register(COMMANDS.showMenu, showMenu);
-  const runCodingAgent = async (): Promise<void> => {
-    const prompt = await vscode.window.showInputBox({
-      title: 'QuantsMind: Run Coding Agent',
-      prompt: 'Describe the coding task. The agent will inspect the workspace with read-only tools and return a result.',
-      ignoreFocusOut: true,
-      placeHolder: 'For example: find where provider errors are normalized',
-    });
-    if (prompt === undefined || prompt.trim().length === 0) {
-      return;
-    }
-    await chatProvider.runCodingAgentAndReveal(prompt.trim());
-  };
-  register('quantsmind.runCodingAgent', runCodingAgent);
   register(COMMANDS.inspectWorkspace, inspectWorkspace);
   register(COMMANDS.runSelfDiagnostics, runSelfDiagnostics);
   register(COMMANDS.showVersion, showVersion);
+  const mcpOutputChannel = vscode.window.createOutputChannel('QuantsMind MCP');
+  context.subscriptions.push(mcpOutputChannel);
+  const manageMcpServersCommand = async (): Promise<void> => {
+    await manageMcpServers({
+      settings,
+      manager: agentRuntime.mcpServerManager,
+      outputChannel: mcpOutputChannel,
+      trusted: () => vscode.workspace.isTrusted,
+      secrets: context.secrets,
+    });
+  };
+  register(COMMANDS.manageMcpServers, manageMcpServersCommand);
 
   const workspaceWatcher = vscode.workspace.createFileSystemWatcher('**/*');
   const invalidateIndex = (): void => workspaceIndex.invalidate();
@@ -645,7 +669,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     });
   }
 
-  activeRuntime = { chatProvider, statusBar, logger };
+  activeRuntime = { chatProvider, statusBar, logger, agentRuntime };
 
   return {
     version,
@@ -662,5 +686,6 @@ export function deactivate(): void {
   }
   runtime.chatProvider.dispose();
   runtime.statusBar.hide();
+  void runtime.agentRuntime.mcpServerManager.disconnectAll().catch(() => undefined);
   runtime.logger.info('deactivated');
 }

@@ -5,6 +5,23 @@ All notable changes to QuantsMind AI Coder are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.0.0] - 2026-11-11
+
+General Availability. Unified bounded agent execution across both agent entry paths; four v2.5.7 contract gaps closed; the per-task and session-wide budgets are enforced at execution boundaries; backward compatible with v2.5.x-series settings where they were ever combined into a build (the 2.5.x line was an internal milestone series and was never tagged in package.json — this is the first 3.x release).
+
+### Security (v3.0.0 project-wide qualification remediation)
+
+**Project-wide audit and fix pass** (`docs/audit/V3.0.0-PROJECT-WIDE-GAP-AUDIT.md`, commit `1c650f9` and follow-ups): a launch-gate bypass in the MCP management UI (`discoverTools` connected/launched servers without workspace trust or launch approval — fixed with a shared approval gate); command runner, orchestrator and runtime authorization defaults fail closed; approval binds to the exact command/cwd shown and is re-validated before execution; secret redaction no longer falls back across provider credential scopes; tool exceptions and MCP server error payloads are redacted before they reach the model; Streamable HTTP timeouts can no longer collapse to NaN; mid-stream responses are never retried (no duplicated generation); changed-file/patch budgets charge only for calls that succeeded; the cumulative patch budget is charged only for changes actually applied (rejected proposals no longer consume it, with an apply-time backstop); failed restores keep history `partial`/`undoable` instead of reading as undone; plaintext backup before-images are retention-bounded (`src/changes/prune.ts`) and pruning preserves non-backup content; path-containment coverage added (`test/unit/workspacePathSafety.test.ts`).
+
+### Fixed
+
+**v2.5.7 GA-gap closures.** (1) Per-task duration budget: task executions now measure elapsed time from the task's first startedAt, not from session creation; a long-lived session cannot consume a newly started task's budget, and a restored task with a spent budget is refused instead of silently resumed. (2) Honest tool-call accounting: outcomes report actual dispatched and refused tool calls counted at the shared dispatch boundary, never inferred from provider calls or model plans. (3) Repair-envelope patch-size protection: prepared and repair change sets are checked before any approval is built, including the cumulative patch budget across the session, not just the largest single change set; refuse-before-dispatch (engine) and refuse-before-approval (orchestrator) now agree. (4) Consistent consecutive-failure handling: both entry paths use the same maxConsecutiveFailures accounting semantics; a passing validation resets the sequence; the third consecutive failure stops the session with an honest outcome instead of repairing forever. All are covered by new deterministic regression tests in test/unit/v3GapClosure.test.ts.
+
+### Changed
+
+**Version: 3.0.0.** quantsmind.agenticEngine.* defaults and bounds are unchanged. Completion reporting is evidence-based on both paths (failed tool calls, failed validations, over-budget patches and unapproved actions can never read as complete). The VS Code engine range (`^1.95.0`), configuration schema, and MCP/transport guarantees are unchanged. The extension was never published to a registry; publication is a separate, explicitly authorized decision.
 ## [2.0.0] - 2026-11-08
 
 Release bundling the agentic coding work merged on top of 1.3.0 and
@@ -54,85 +71,6 @@ the Gate 3 qualification remediation.
 - Integration suite: 65 passing on a single extension host, reproducibly.
 - `npm run verify` passes end to end (package, VSIX inspection, packaged-host
   tests, install verification).
-
-## [Unreleased]
-
-### Added
-
-Milestone work layered on top of the 2.0.0 release commit (see the
-implementation reports at the repository root for qualification evidence):
-
-- **v2.2.0 — project and Karkain intelligence.** Framework detection
-  (Spring Boot, Angular, React, Next.js, Vue, Svelte, Django, Flask,
-  FastAPI, Express, NestJS, Gin, Pytest, JUnit, GoogleTest), backend /
-  frontend / shared layering with explicit unknowns, role inference, an
-  evidence-based component relationship graph, monorepo detection
-  (pnpm/turbo/nx/lerna/nested manifests), syntax-aware Karkain `.kark`
-  project detection, module resolution, cycle reporting, multi-file
-  context collection and agent tools (`get_architecture`,
-  `get_karkain_project`, `get_karkain_context`); the repository card in
-  the chat sidebar renders the architecture analysis and Karkain module
-  graph. The real Karkain compiler cannot execute on this machine;
-  analysis is built from the compiler's grammar and fixtures.
-- **v2.3.0 — execution, build and test integration.** Bounded in-memory
-  execution history with duplicate-invocation protection, cancellation
-  and timeouts; 22 build-system adapters (npm/pnpm/yarn, Maven, Gradle,
-  Go, Cargo, CMake, Make, Ninja, pip/Poetry/uv/Hatch, dotnet, MSBuild,
-  Composer, Bundler, Dart, Flutter, Swift, Karkain) with local detection
-  and toolchain probing; `run_build`, `run_tests`, `detect_build_system`
-  and `get_toolchain` agent tools that execute through the shared
-  approved command runner; conservative test-output parsing (JUnit,
-  pytest, mocha/jest/vitest, go test, cargo test, dotnet test, CTest,
-  RSpec); compiler diagnostics extraction feeding the bounded repair loop.
-- **v2.4.0 — Git, GitHub and change management.** Local Git service
-  (repository detection, branch/HEAD, staged/unstaged/untracked/deleted/
-  renamed/conflict detection, porcelain v1 `-z` parsing, merge/rebase
-  state, credential-stripped remotes, detached HEAD, recent history);
-  content-snapshot checkpoints bound to task IDs with conflict-safe
-  restore that never overwrites diverging user edits; agent tools
-  `git_status`, `git_diff`, `git_log`, `git_branch_list`, `git_remotes`,
-  `git_stage`, `git_unstage`, `git_commit`, `git_create_branch`,
-  `git_switch_branch`, `git_delete_branch`, `create_checkpoint`,
-  `restore_checkpoint`, `list_checkpoints`; explicit approval required
-  for every mutation; broad staging (`git add .`, `-a`, `*`) refused;
-  commits only from staged files with the user-approved message and SHA
-  reporting; GitHub REST integration for issues and pull requests via the
-  VS Code GitHub session token (`github_list_issues`,
-  `github_create_issue`, `github_list_pull_requests`,
-  `github_create_pull_request`), fixture-tested against a mocked REST API
-  and never verified against the live GitHub API; GitHub is optional and
-  ordinary local Git features work without it; a **Git status** card in
-  the chat sidebar shows branch, HEAD, remote, counts, in-progress
-  merge/rebase flags, recent commits, checkpoints and (when authenticated)
-  open issue/PR counts.
-
-### Fixed
-
-- Deleting a conversation no longer promotes an empty one as the new active chat; the
-  next conversation that actually holds messages is selected, and an all-empty store
-  falls back to a fresh chat.
-- `src/extension.ts` contained raw Windows-1252 separator bytes, so the compiled status
-  bar rendered a replacement character instead of the intended separator. The file is
-  now valid UTF-8 end to end.
-- The CI release job uploaded `quantsmind-vscode-ai-coder-0.3.0.vsix`, a name no build
-  has produced since 0.3.0, with `if-no-files-found: error` — so the job could only ever
-  fail on a current release.
-
-### Changed
-
-- Release verification is version-agnostic: artefact names, the installed-extension
-  identity check and the VSIX identity marker are derived from `package.json`, so a
-  version bump no longer requires editing scripts, test configs and assertions.
-- New `npm run verify:release` guard fails the chain when an artefact name, extension id
-  or user-agent is pinned to a literal version; new `npm run release` performs the
-  package.json and lockfile bump and prints the follow-up steps without committing,
-  tagging or publishing; new `npm run sha256` records artefact checksums.
-- The provider `User-Agent` reports the version supplied at activation instead of a
-  string baked into the source, which would otherwise keep shipping the previous
-  release's number.
-- CI now also runs on `release/**` branches and manual dispatch, executes the literal
-  guard, reports (without blocking on) `npm audit --audit-level=high`, and publishes the
-  VSIX plus its SHA-256 checksum as build artifacts.
 
 ## [1.1.0] - 2026-11-07
 
@@ -221,7 +159,7 @@ implementation reports at the repository root for qualification evidence):
   the most recently updated record; without a selection it falls back to the newest
   conversation that still has messages, so it can no longer land on an empty chat.
 - Empty conversations are no longer offered as history entries. The dropdown keeps the
-  conversation currently open and labels it `New chat — current, empty`, so a New Chat
+  conversation currently open and labels it `New chat ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â current, empty`, so a New Chat
   placeholder can no longer be mistaken for the `New chat` action row.
 - Saving a conversation with no messages keeps its previous `updatedAt`, so clearing a
   conversation or re-saving a placeholder no longer moves it to the top of the history.
@@ -342,7 +280,7 @@ been staged for an unreleased 0.1.1 build.
 ### Security
 
 - Fixed provider-masked API-key redaction: the exact stored credential and
-  masked forms such as `sk-…abcd` are now scrubbed from prompts, error bodies,
+  masked forms such as `sk-ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦abcd` are now scrubbed from prompts, error bodies,
   and logs.
 - Authorization headers, URL userinfo, JWTs, bearer tokens, and common provider
   key formats are sanitized before display or logging.

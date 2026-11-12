@@ -6,7 +6,6 @@ import { describeEndpointHost, isLoopbackOrPrivateHost, normalizeBaseUrl } from 
 import { ProviderError, isProviderError, normalizeThrownError } from './errors';
 import { listProviderModels, type ModelDiscoveryResult } from './modelDiscovery';
 import { testProviderConnection, type ConnectionTestResult } from './connectionTest';
-import { withProviderRetry } from './retry';
 import {
   credentialRequiredForProfile,
   getProviderCapabilities,
@@ -146,7 +145,7 @@ export class CompletionService {
     const loopback = isGemini ? false : isLoopbackOrPrivateHost(new URL(normalized).hostname);
     if (!isGemini && normalized.startsWith('http:')) {
       this.logger.warn(
-        `insecure transport provider=${config.type} host=${describeEndpointHost(normalized)} scheme=http allowInsecureLocalhost=${config.allowInsecureLocalhost} — this request and any stored secret reach the loopback host unencrypted`,
+        `insecure transport provider=${config.type} host=${describeEndpointHost(normalized)} scheme=http allowInsecureLocalhost=${config.allowInsecureLocalhost} â€” this request and any stored secret reach the loopback host unencrypted`,
       );
     }
     const apiKey = await this.secrets.forProvider(config.type).get();
@@ -196,51 +195,26 @@ export class CompletionService {
       `completion start provider=${config.type} model=${config.model} messages=${messages.length} chars=${requestChars} stream=${config.stream} timeoutMs=${config.timeoutMs}`,
     );
 
-    const controller = new AbortController();
-    const cancellation = options.token;
-    const abortFromToken = (): void => {
-      if (cancellation?.isCancellationRequested) {
-        controller.abort();
-      }
-    };
-    abortFromToken();
-    const disposable = cancellation?.onCancellationRequested(() => {
-      controller.abort();
-    });
-
-    let streamStarted = false;
-    const wrappedOnDelta = options.onDelta === undefined
-      ? undefined
-      : (delta: string) => {
-          streamStarted = true;
-          options.onDelta?.(delta);
-        };
-
+    // Cancellation flows to providers via `options.token` (they translate it
+    // into their own AbortSignals); no wrapping controller is needed here.
     try {
-      const result = await withProviderRetry(
-        async (signal) => {
-          void signal;
-          return await provider.complete(
-            {
-              model: config.model,
-              messages,
-              temperature: config.temperature,
-              maxOutputTokens: config.maxOutputTokens,
-              stream: effectiveStream,
-              tools,
-            },
-            {
-              ...options,
-              token: options.token,
-              onDelta: wrappedOnDelta,
-            },
-          );
+      // The providers own the bounded retry (MAX_COMPLETION_RETRIES = 1) and
+      // refuse to retry mid-stream, so the completion service does not wrap
+      // them in a second retry loop; nesting retries would multiply attempts
+      // beyond the documented bound.
+      const result = await provider.complete(
+        {
+          model: config.model,
+          messages,
+          temperature: config.temperature,
+          maxOutputTokens: config.maxOutputTokens,
+          stream: effectiveStream,
+          tools,
         },
         {
+          ...options,
           token: options.token,
-          streamStarted: () => streamStarted,
         },
-        controller.signal,
       );
       this.logger.info(
         `completion success durationMs=${Date.now() - started} chars=${result.text.length} finishReason=${result.finishReason ?? 'unknown'}`,
@@ -255,8 +229,6 @@ export class CompletionService {
         normalizedError,
       );
       throw normalizedError;
-    } finally {
-      disposable?.dispose();
     }
   }
 }

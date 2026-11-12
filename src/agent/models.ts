@@ -173,6 +173,13 @@ export interface RetrievalResult {
   readonly items: readonly RedactedContextItem[];
   readonly reasons: Readonly<Record<string, string>>;
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+  /** Present when the host computed a token-budget allocation for visibility. */
+  readonly budget?: {
+    readonly budgetTokens: number;
+    readonly usedTokens: number;
+    readonly included?: Readonly<Record<string, { estimatedTokens: number; reason: 'selected' }>>;
+    readonly excluded?: Readonly<Record<string, string>>;
+  };
 }
 
 export interface UnifiedDiff {
@@ -226,6 +233,7 @@ export interface ApplyReportLike {
 export interface UndoOutcomeLike {
   readonly restored: number;
   readonly conflicts: number;
+  readonly failed?: number;
 }
 
 export interface IFileChangeService {
@@ -236,6 +244,7 @@ export interface IFileChangeService {
     taskId: string,
     summary: string,
     applyId?: string,
+    shouldCancel?: () => boolean,
   ): Promise<ApplyReportLike>;
   undo(taskId: string): Promise<UndoOutcomeLike | undefined>;
 }
