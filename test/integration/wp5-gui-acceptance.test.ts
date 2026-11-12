@@ -30,7 +30,10 @@ suite('WP5 — Packaged extension installation and activation', () => {
   test('extension is installed and activatable', async () => {
     const ext = extension();
     expect(ext).to.not.equal(undefined);
-    expect(ext.isActive).to.equal(false);
+    // activationEvents is onStartupFinished, so the host may auto-activate the
+    // extension before this test runs; the initial isActive state is therefore
+    // timing-dependent. Explicit activation must succeed regardless of who
+    // activated it first.
     const api = await ext.activate();
     expect(ext.isActive).to.equal(true);
     expect(api.version).to.match(/^\d+\.\d+\.\d+/);
