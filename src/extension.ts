@@ -23,6 +23,7 @@ import { FIRST_RUN_NOTICE_KEY, showFirstRunNotice } from './onboarding/firstRun'
 import { WorkspaceIndexService } from './workspace/indexService';
 import { SelfDiagnosticsService } from './diagnostics/selfDiagnostics';
 import { manageMcpServers } from './commands/mcpManagement';
+import { selectWorkspaceRoot } from './workspace/rootPolicy';
 
 interface ActiveRuntime {
   readonly chatProvider: ChatViewProvider;
@@ -41,6 +42,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
   const output = vscode.window.createOutputChannel('QuantsMind AI Coder');
   const logger = new Logger({ appendLine: (line) => output.appendLine(line) });
   logger.info(`activating version=${version} vscode=${vscode.version}`);
+
+  // Multi-root workspaces: the extension operates on exactly one root (the
+  // marker-scored selection from rootPolicy.ts). Tell the user which one and
+  // why; trust and approvals remain per folder.
+  const multiRoot = vscode.workspace.workspaceFolders;
+  if (multiRoot !== undefined && multiRoot.length > 1) {
+    const selected = selectWorkspaceRoot(
+      multiRoot.map((folder) => ({ name: folder.name, index: folder.index, uri: folder.uri })),
+    );
+    if (selected !== undefined) {
+      logger.info(
+        `multi-root workspace (${multiRoot.length} folders); selected "${selected.name}" (marker-scored) for indexing, retrieval and changes`,
+      );
+      void vscode.window.showInformationMessage(
+        `QuantsMind: multiple folders are open; operating on "${selected.name}" (most project markers). Trust and change approvals remain per folder.`,
+      );
+    }
+  }
 
   const secrets = new SecretStore(context.secrets);
   const settings = new SettingsService();

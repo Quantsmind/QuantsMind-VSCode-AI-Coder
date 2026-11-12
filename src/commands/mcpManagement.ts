@@ -5,6 +5,7 @@ import { parseMcpEndpoint } from '../mcp/endpoint';
 import { deleteMcpCredential, storeMcpCredential } from '../mcp/credentials';
 import { validateCredential } from '../security/credential';
 import { redactSecrets } from '../security/redact';
+import { decideMcpLaunchApproval } from './mcpLaunchGate';
 import type { SecretStorageLike } from '../security/secretStore';
 
 export interface McpManagerDependencies {
@@ -174,29 +175,41 @@ function serverApprovalDetail(server: ServerRef): string {
  * Callers still own the actual connect afterwards so they can use the correct
  * transport-specific error handling.
  */
+/**
+ * Shared launch gate for MCP servers from the management UI: requires workspace
+ * trust, then a modal approval, and records the launch approval on success.
+ * Decision logic is in `mcpLaunchGate.ts` (unit-tested); this wrapper maps the
+ * outcomes onto the VS Code surface.
+ */
 async function ensureMcpLaunchApproved(
   deps: McpManagerDependencies,
   server: ServerRef,
   action: { title: string; button: string; trustAction: string },
 ): Promise<boolean> {
-  if (!deps.trusted()) {
+  const outcome = await decideMcpLaunchApproval({
+    trusted: deps.trusted,
+    prompt: async () => {
+      const approved = await vscode.window.showWarningMessage(
+        `${action.title} "${server.name}"?`,
+        {
+          modal: true,
+          detail: serverApprovalDetail(server),
+        },
+        action.button,
+      );
+      return approved === action.button;
+    },
+  });
+  if (outcome.ok) {
+    deps.manager.grantLaunchApproval(server.name);
+    return true;
+  }
+  if (outcome.reason === 'untrusted') {
     void vscode.window.showWarningMessage(`Workspace trust is required to ${action.trustAction} MCP servers.`);
     return false;
   }
-  const approved = await vscode.window.showWarningMessage(
-    `${action.title} "${server.name}"?`,
-    {
-      modal: true,
-      detail: serverApprovalDetail(server),
-    },
-    action.button,
-  );
-  if (approved !== action.button) {
-    deps.outputChannel.appendLine(`[${new Date().toISOString()}] ${action.title} on "${server.name}" was not approved; nothing was launched.`);
-    return false;
-  }
-  deps.manager.grantLaunchApproval(server.name);
-  return true;
+  deps.outputChannel.appendLine(`[${new Date().toISOString()}] ${action.title} on "${server.name}" was not approved; nothing was launched.`);
+  return false;
 }
 
 async function connectWithApproval(
