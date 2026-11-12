@@ -40,6 +40,7 @@ export type PlanErrorCategory =
   | 'no-json'
   | 'invalid-json'
   | 'not-object'
+  | 'invalid-kind'
   | 'missing-tasks'
   | 'invalid-tasks'
   | 'missing-findings';
@@ -381,6 +382,22 @@ function parseInspectionPlan(
   };
 }
 
+function describeKind(value: unknown): string {
+  if (typeof value === 'string') {
+    return `"${clampText(value, 64)}"`;
+  }
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return 'an array';
+  }
+  return 'an object';
+}
+
 function isTruncationFinishReason(value: string | undefined): boolean {
   if (value === undefined) {
     return false;
@@ -452,7 +469,21 @@ export function parseDevelopmentPlan(
       category: 'not-object',
     };
   }
-  const kind: DevelopmentPlanKind = record.kind === 'inspection' ? 'inspection' : 'implementation';
+  const rawKind = record.kind;
+  let kind: DevelopmentPlanKind;
+  if (rawKind === undefined) {
+    // Plans written before the kind field existed default to implementation.
+    kind = 'implementation';
+  } else if (rawKind === 'implementation' || rawKind === 'inspection') {
+    kind = rawKind;
+  } else {
+    return {
+      errors: [
+        `The development plan declared an unsupported kind ${describeKind(rawKind)}. Expected "implementation" or "inspection"; no plan was created.`,
+      ],
+      category: 'invalid-kind',
+    };
+  }
   if (kind === 'inspection') {
     return parseInspectionPlan(record, options);
   }

@@ -182,9 +182,11 @@ Two classes of v3.0.0 symptoms are fixed:
    `empty` / `truncated` (`finishReason=length` — an incomplete plan is never
    accepted even when its partial text parses as JSON) / `no-json` /
    `invalid-json` / `not-object` / `missing-tasks` / `invalid-tasks` /
-   `missing-findings` with actionable guidance, and the session log records the
-   category plus the provider finish reason. A failed plan is carried in the
-   session record, diagnostics and timeline events.
+   `missing-findings` / `invalid-kind` (an explicitly supplied, unsupported
+   kind is never silently coerced to implementation) with actionable guidance,
+   and the session log records the category plus the provider finish reason.
+   A failed plan is carried in the session record, diagnostics and timeline
+   events.
 2. **Inspection-only requests complete honestly.** `kind: "inspection"` plans
    describe findings (with file references) and carry **no tasks at all**;
    approval runs nothing and reports the findings. They exist for read-only

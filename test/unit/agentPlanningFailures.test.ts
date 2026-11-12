@@ -201,6 +201,126 @@ suite('planning response validation (v3.1.0)', () => {
   });
 });
 
+suite('strict plan kind validation (v3.1.0)', () => {
+  const IMPLEMENTATION = JSON.stringify({
+    kind: 'implementation',
+    summary: 'Add a greeting helper',
+    approach: 'One module.',
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Add greeting helper',
+        description: 'Create the helper.',
+        dependsOn: [],
+      },
+    ],
+  });
+
+  const INSPECTION = JSON.stringify({
+    kind: 'inspection',
+    summary: 'Inspected the module.',
+    findings: ['scheduler owns dependency evaluation'],
+  });
+
+  test('missing kind defaults to implementation for backward compatibility', () => {
+    const parsed = parseDevelopmentPlan(
+      JSON.stringify({
+        summary: 'Add a greeting helper',
+        approach: 'One module.',
+        tasks: [
+          {
+            id: 'task-1',
+            title: 'Add greeting helper',
+            description: 'Create the helper.',
+            dependsOn: [],
+          },
+        ],
+      }),
+      OPTIONS,
+    );
+    expect(parsed.errors).to.deep.equal([]);
+    expect(parsed.plan?.kind).to.equal('implementation');
+  });
+
+  test('explicit implementation kind is accepted', () => {
+    const parsed = parseDevelopmentPlan(IMPLEMENTATION, OPTIONS);
+    expect(parsed.errors).to.deep.equal([]);
+    expect(parsed.plan?.kind).to.equal('implementation');
+    expect(parsed.plan?.tasks).to.have.length(1);
+  });
+
+  test('explicit inspection kind is accepted', () => {
+    const parsed = parseDevelopmentPlan(INSPECTION, OPTIONS);
+    expect(parsed.errors).to.deep.equal([]);
+    expect(parsed.plan?.kind).to.equal('inspection');
+    expect(parsed.plan?.tasks).to.deep.equal([]);
+  });
+
+  test('an unknown string kind is rejected', () => {
+    const parsed = parseDevelopmentPlan(
+      JSON.stringify({
+        kind: 'rewrite',
+        summary: 'x',
+        approach: 'y',
+        tasks: [{ id: 'task-1', title: 'A' }],
+      }),
+      OPTIONS,
+    );
+    expect(parsed.category).to.equal('invalid-kind');
+    expect(parsed.plan).to.equal(undefined);
+    expect(parsed.errors[0]).to.contain('unsupported kind');
+    expect(parsed.errors[0]).to.contain('"rewrite"');
+  });
+
+  test('a null kind is rejected', () => {
+    const parsed = parseDevelopmentPlan(
+      JSON.stringify({
+        kind: null,
+        summary: 'x',
+        approach: 'y',
+        tasks: [{ id: 'task-1', title: 'A' }],
+      }),
+      OPTIONS,
+    );
+    expect(parsed.category).to.equal('invalid-kind');
+    expect(parsed.plan).to.equal(undefined);
+    expect(parsed.errors[0]).to.contain('null');
+  });
+
+  test('numeric, boolean and object kinds are rejected', () => {
+    for (const kind of [3, true, false, { type: 'inspection' }, ['inspection']]) {
+      const parsed = parseDevelopmentPlan(
+        JSON.stringify({
+          kind,
+          summary: 'x',
+          approach: 'y',
+          tasks: [{ id: 'task-1', title: 'A' }],
+        }),
+        OPTIONS,
+      );
+      expect(parsed.category, `kind=${JSON.stringify(kind)}`).to.equal('invalid-kind');
+      expect(parsed.plan, `kind=${JSON.stringify(kind)}`).to.equal(undefined);
+    }
+  });
+
+  test('an explicitly invalid kind never produces an executable plan', () => {
+    for (const kind of ['inspect', '', 'implementation ', 'IMPLEMENTATION', 'inspection ']) {
+      const parsed = parseDevelopmentPlan(
+        JSON.stringify({
+          kind,
+          summary: 'x',
+          approach: 'y',
+          tasks: [{ id: 'task-1', title: 'A' }],
+        }),
+        OPTIONS,
+      );
+      expect(parsed.category, `kind=${JSON.stringify(kind)}`).to.equal('invalid-kind');
+      expect(parsed.plan, `kind=${JSON.stringify(kind)}`).to.equal(undefined);
+      expect(parsed.plan?.tasks, `kind=${JSON.stringify(kind)}`).to.equal(undefined);
+    }
+  });
+});
+
 class CountingCheckpointStore implements CheckpointKeyValueStore {
   private readonly values = new Map<string, unknown>();
   updates = 0;
@@ -372,6 +492,35 @@ suite('agent planning failure lifecycle (v3.1.0)', () => {
     expect(view.error).to.contain('output token limit');
     expect(view.error).not.to.contain('invalid JSON');
     expect(harness.store.updates).to.equal(0);
+  });
+
+  test('a plan with an unsupported explicit kind never reaches approval or execution', async () => {
+    const harness = createHarness({
+      planResponse: () => ({
+        text: JSON.stringify({
+          kind: 'rewrite',
+          summary: 'x',
+          approach: 'y',
+          tasks: [{ id: 'task-1', title: 'A' }],
+        }),
+        finishReason: 'stop',
+      }),
+    });
+    const view = await harness.controller.start('Add a greeting helper', TOKEN);
+
+    expect(view.state).to.equal('failed');
+    expect(view.error).to.contain('unsupported kind');
+    expect(view.pendingApproval).to.equal(undefined);
+    expect(view.approvals).to.deep.equal([]);
+    expect(view.tasks).to.deep.equal([]);
+    expect(harness.counters.apply).to.equal(0);
+    expect(harness.counters.runCommand).to.equal(0);
+    expect(harness.store.updates).to.equal(0);
+    expect(
+      harness.warnings.some(
+        (warning) => warning.includes('category=invalid-kind') && warning.includes('finishReason=stop'),
+      ),
+    ).to.equal(true);
   });
 
   test('logger records the failure category and finish reason for diagnostics', async () => {
