@@ -47,4 +47,19 @@ suite('logger redaction', () => {
 
     expect(sink.lines[0]).to.contain('unexpected — plain failure');
   });
+
+  test('recentLogLines returns the most recent redacted lines, bounded', () => {
+    const sink = new MemoryLogSink();
+    const logger = new Logger(sink, () => new Date('2026-01-02T03:04:05.000Z'));
+
+    for (let index = 0; index < 10; index += 1) {
+      logger.info(`line ${index} key sk-abcdefghijklmnopqrstuvwxyz012345`);
+    }
+
+    expect(logger.recentLogLines(3)).to.have.length(3);
+    expect(logger.recentLogLines(3)[2]).to.contain('line 9');
+    expect(logger.recentLogLines(3)[2]).to.not.contain('sk-abcdefghijklmnopqrstuvwxyz012345');
+    expect(logger.recentLogLines(9999).length).to.be.lessThanOrEqual(300);
+    expect(logger.recentLogLines(0)).to.have.length(1); // clamped to at least one
+  });
 });

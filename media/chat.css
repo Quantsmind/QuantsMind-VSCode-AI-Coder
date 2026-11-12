@@ -566,6 +566,13 @@ textarea:focus-visible {
 
 /* ---------- Messages ---------- */
 
+.messages-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .messages {
   display: flex;
   flex-direction: column;
@@ -575,6 +582,7 @@ textarea:focus-visible {
   padding: 2px 12px 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  position: relative;
 }
 
 .messages::-webkit-scrollbar {
@@ -989,6 +997,10 @@ textarea:focus-visible {
   margin-left: auto;
 }
 
+.mode-row [data-action="copy-log"] {
+  margin-left: 0;
+}
+
 .input-shell {
   padding: 2px;
   background: var(--vscode-input-background, #2a2a2a);
@@ -1004,7 +1016,7 @@ textarea:focus-visible {
   display: block;
   width: 100%;
   min-height: 58px;
-  max-height: 240px;
+  max-height: 320px;
   padding: 8px 9px 4px;
   color: var(--vscode-input-foreground, inherit);
   background: transparent;
@@ -2124,6 +2136,134 @@ pre.diff {
   font-size: 10.5px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* ---------- Message action rows (copy / continue) ---------- */
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.message-actions .text-button {
+  padding: 2px 7px;
+  font-size: 10px;
+}
+
+.continue-assistant {
+  border-color: var(--qm-accent, #0e639c);
+  color: var(--qm-accent, #3794ff);
+}
+
+.continue-assistant:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.message:focus-visible {
+  outline: 1px solid var(--qm-accent, #3794ff);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+/* ---------- Jump to latest ---------- */
+
+.jump-latest {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 20;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.jump-latest:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.jump-latest svg {
+  width: 16px;
+  height: 16px;
+}
+
+.jump-latest[hidden] {
+  display: none;
+}
+
+/* ---------- Composer resize grip ---------- */
+
+.composer-resize {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 10px;
+  margin: -4px 0 5px;
+  cursor: ns-resize;
+  border-radius: 4px;
+  touch-action: none;
+}
+
+.composer-resize span {
+  display: block;
+  width: 46px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--qm-border);
+  transition: background 0.15s ease;
+}
+
+.composer-resize:hover span,
+.composer-resize:focus-visible span {
+  background: var(--qm-accent, #3794ff);
+}
+
+.composer-resize:focus-visible {
+  outline: 1px solid var(--qm-accent, #3794ff);
+  outline-offset: 1px;
+}
+
+/* ---------- Compact refresh icon ---------- */
+
+.icon-refresh {
+  width: 24px;
+  height: 24px;
+  padding: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-refresh svg {
+  width: 15px;
+  height: 15px;
+}
+
+@keyframes qm-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icon-refresh.refreshing svg {
+  animation: qm-spin 0.9s linear infinite;
+}
+
+.session-row .icon-refresh {
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

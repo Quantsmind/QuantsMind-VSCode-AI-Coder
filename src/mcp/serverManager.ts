@@ -67,6 +67,8 @@ function fingerprint(server: {
 export interface McpServerManagerOptions {
   /** VS Code SecretStorage (or a structural equivalent) for bearer credentials. Optional so tests can omit it. */
   readonly credentials?: SecretStorageLike;
+  /** Version advertised to MCP servers in protocol clientInfo. */
+  readonly clientVersion?: string;
 }
 
 /**
@@ -93,9 +95,11 @@ export class McpServerManager {
   private readonly launchOrigin = LAUNCH_ORIGIN_LABEL;
   private readonly approvedLaunches = new Set<string>();
   private readonly credentials: SecretStorageLike | undefined;
+  private readonly clientVersion: string | undefined;
 
   constructor(options: McpServerManagerOptions = {}) {
     this.credentials = options.credentials;
+    this.clientVersion = options.clientVersion;
   }
 
   /** True when the user has approved launching this server in this window. */
@@ -193,7 +197,7 @@ export class McpServerManager {
       }
       (clientConfig as { bearerToken?: string }).bearerToken = token;
     }
-    const client = new McpClient(clientConfig);
+    const client = new McpClient(clientConfig, this.clientVersion);
     try {
       await client.connect();
       this.clients.set(server.name, client);

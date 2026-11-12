@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-12
+
+Reliability, quality, and user experience hardening on the v3.0.0 GA base. No architecture, permission, schema or default changes; additive, bounded changes with regression coverage.
+
+### Fixed — Agent workflow reliability
+
+**Planning response validation.** The planning parser now classifies outcomes instead of collapsing them into one generic failure: `empty`, `truncated` (provider `finishReason=length` — an incomplete plan is never accepted, even if the partial text parses as JSON), `no-json`, `invalid-json`, `not-object`, `missing-tasks`, `invalid-tasks`, `missing-findings`, `invalid-kind` (an explicitly supplied, unsupported plan kind is never coerced to implementation; missing `kind` alone defaults to implementation for backward compatibility). Errors are actionable instead of a bare "could not be parsed" session failure. Plan validation failures are logged with a machine-readable category and the provider finish reason; the failed session record, diagnostics and timeline events carry the original error. (`src/agent/planning.ts`, `src/agent/orchestrator.ts`)
+
+**Inspection-only plans.** Workspace-inspection requests ("inspect/review/analyze/explain this workspace") produce a read-only `kind: "inspection"` plan: it describes findings with file references and carries **no tasks at all** — explicitly parsed, validated and safe to approve; approving it runs nothing and reports the findings. Implementation plans are unchanged and remain strict. (`src/agent/planning.ts`, `src/agent/orchestrator.ts`, `src/agent/report.ts`, `src/agent/models.ts`)
+
+**Checkpoint failure lifecycle.** Failed planning or cancellation before a validated execution plan exists no longer attempts to persist an execution checkpoint with an empty planId — the source of the v3.0.0 `checkpoint save rejected: invalid checkpoint` warnings. The checkpoint lifecycle is now explicit: execution checkpoints persist only after a validated plan exists; failures before that point are carried in the session record, diagnostics and events. A checkpoint persistence failure never hides the original planning error. (`src/agent/orchestrator.ts`)
+
+**Plan approval and execution remain strictly separated**, and rejected plans cannot execute; approving a zero-task or inspection plan schedules nothing. Session restoration never duplicates or corrupts task state: a replay against the same checkpoint lineage refuses as stale (`checkpoint-rejected`) rather than re-applying state. (`src/agent/orchestrator.ts`, regression coverage in `test/unit/agentOrchestrator.test.ts`)
+
+### Ask, Explain, Generate quality
+
+Base system prompt now requires facts-vs-assumptions labeling, forbids unverified execution claims, forbids unexplained mid-method stopping, and requires complete idiomatic examples. Ask/Explain/Generate mode prompts were rewritten: Ask demands fact/assumption separation and uncertainty disclosure; Explain covers language semantics, edge cases, thread safety and security, separates what the code actually does from recommendations, and refuses to overstate performance/concurrency/security properties; Generate requires complete, idiomatic implementations (with tests, documentation and complexity analysis where asked), explicit reporting of what could not be finished, and honesty about compilation/test status. Java chat guidance was updated for Java 21 (records, sealed hierarchies, pattern matching, virtual threads, carrier-thread pinning). Whitespace-only assistant turns are no longer replayed to the provider. (`src/chat/prompts.ts`, `src/languages/registry.ts`)
+
+### Response completeness and continuation
+
+Responses that end at the provider output token limit are now explicitly surfaced instead of silently stopping, and can be resumed **in place**: user-initiated only, capped at three continuations per response, context and system prompt rebuilt correctly, the partial output is preserved and the continuation is merged into the same transcript message (no duplicated content, no duplicate assistant messages). (`media/chat.js`, `src/chat/chatViewProvider.ts`, `src/chat/protocol.ts`)
+
+### Context and attachments
+
+Older context released from the provider window (trimmed by the conversation character budget) is now surfaced: the user is told which oldest messages were dropped and roughly how many characters disappeared, and restore-time budget drops are reported in the history status/warnings. (`src/chat/session.ts`, `src/chat/chatViewProvider.ts`)
+
+### UI
+
+- Copy: code-block Copy retained and tested; new always-visible **Copy response** action on every assistant message; new **Copy log** action copies the last 50 redacted log lines to the clipboard with success/failure feedback.
+- Composer: manual vertical resize (drag handle with pointer capture, keyboard arrows/Home/End, double-click reset) alongside the existing auto-growth; responsive and bounded by window height.
+- Sessions: Refresh is now a compact icon button with an aria-label, spinning busy indicator and a completion notice.
+- Conversation/session deletion: wording aligned across webview and host flows; each destructive action asks exactly once, with explicit success feedback notices (agent sessions state transcripts are unaffected; conversation deletion states agent sessions are unaffected).
+- Navigation: jump-to-latest button; assistant messages are keyboard focusable; focus-visible outline.
+
+### Provider reliability and observability
+
+Chat request lifecycle logging distinguishes request started (with full budget breakdown), provider response received (with `finishReason`), streaming completion, cancellation, provider failure (with redacted normalized code) and continuation events, correlated by request id. MCP `clientInfo` now advertises the real extension version. The logger retains a bounded, redacted 300-line in-memory ring buffer backing the copy-log action. (`src/chat/chatViewProvider.ts`, `src/chat/requestMetrics.ts`, `src/mcp/client.ts`, `src/security/logger.ts`)
+
+### Tests and qualification
+
+130+ new regression tests (planning/checkpoint lifecycle, inspection plans, prompt quality, truncation/continuation integration, session accounting, log ring, protocol parsing, webview affordances). Focused suites green; the full v3.0.0 qualification chain (lint, unit, integration, packaged, `verify:vsix`, `verify:install`) is re-run on this release candidate; 2 Pollinations live tests remain pending by policy (offline environment, never converted to pass/fail).
+
+### Changed
+
+**Version: 3.1.0.** quantsmind.agenticEngine.\* defaults and bounds unchanged. The VS Code engine range (`^1.95.0`), configuration schema, settings, and storage formats are backward compatible with 3.0.0. The extension was never published to a registry; publication remains a separate, explicitly authorized owner decision.
+
 ## [3.0.0] - 2026-11-11
 
 General Availability. Unified bounded agent execution across both agent entry paths; four v2.5.7 contract gaps closed; the per-task and session-wide budgets are enforced at execution boundaries; backward compatible with v2.5.x-series settings where they were ever combined into a build (the 2.5.x line was an internal milestone series and was never tagged in package.json — this is the first 3.x release).

@@ -375,6 +375,124 @@ suite('chat webview integration', () => {
     );
   });
 
+  test('a truncated response preserves the partial output and Continue resumes it in place', async () => {
+    let requestCount = 0;
+    await withServer(
+      (_incoming, response) => {
+        requestCount += 1;
+        sendSse(response, [
+          {
+            model: 'test-model',
+            choices: [{ delta: { content: requestCount === 1 ? 'Part one' : ' and two' } }],
+          },
+          {
+            choices: [
+              { delta: {}, finish_reason: requestCount === 1 ? 'length' : 'stop' },
+            ],
+          },
+        ]);
+      },
+      async (server) => {
+        const state = new MemoryMemento();
+        const { provider, webview } = createHarness(
+          { baseUrl: server.baseUrl, stream: true },
+          true,
+          state,
+        );
+        try {
+          await markReady(webview);
+          webview.emit({ type: 'send', prompt: 'Explain everything.', mode: 'ask' });
+          await waitFor(() => webview.count('assistantEnd') === 1);
+          expect(webview.last('assistantEnd')?.finishReason).to.equal('length');
+
+          const firstAssistantId = webview.last('assistantStart')?.id;
+          expect(firstAssistantId).to.not.equal(undefined);
+          const firstId = firstAssistantId as string;
+
+          webview.emit({ type: 'continueAssistant', id: firstId });
+          await waitFor(() => webview.count('assistantEnd') === 2);
+          expect(webview.last('assistantEnd')?.finishReason).to.equal('stop');
+          expect(webview.count('assistantStart')).to.equal(1);
+          expect(webview.count('assistantContinuation')).to.equal(1);
+
+          expect(webview.deltaText()).to.equal('Part one and two');
+          expect(server.requests).to.have.length(2);
+          const continuationBody = JSON.parse(server.requests[1].body) as {
+            messages: { role: string; content: string }[];
+          };
+          expect(continuationBody.messages.map((message) => message.role)).to.deep.equal([
+            'system',
+            'user',
+            'assistant',
+            'user',
+          ]);
+          expect(continuationBody.messages[2].content).to.equal('Part one');
+          expect(continuationBody.messages[3].content).to.contain(
+            'Continue exactly from where your previous message stopped',
+          );
+
+          const store = new ConversationStore(state);
+          const conversations = store.list();
+          expect(conversations).to.have.length(1);
+          const conversation = store.get(conversations[0].id);
+          expect(conversation?.messages).to.have.length(2);
+          expect(conversation?.messages[1].role).to.equal('assistant');
+          expect(conversation?.messages[1].text).to.equal('Part one and two');
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
+  test('continuation is capped at three and the provider is not called past the limit', async () => {
+    let requestCount = 0;
+    await withServer(
+      (_incoming, response) => {
+        requestCount += 1;
+        sendSse(response, [
+          { choices: [{ delta: { content: `chunk-${requestCount} ` } }] },
+          { choices: [{ delta: {}, finish_reason: 'length' }] },
+        ]);
+      },
+      async (server) => {
+        const state = new MemoryMemento();
+        const { provider, webview } = createHarness(
+          { baseUrl: server.baseUrl, stream: true },
+          true,
+          state,
+        );
+        try {
+          await markReady(webview);
+          webview.emit({ type: 'send', prompt: 'Write a long thing.', mode: 'ask' });
+          await waitFor(() => webview.count('assistantEnd') === 1);
+          const assistantId = webview.last('assistantStart')?.id;
+          expect(assistantId).to.not.equal(undefined);
+          const assistantIdValue = assistantId as string;
+
+          for (let depth = 1; depth <= 3; depth += 1) {
+            webview.emit({ type: 'continueAssistant', id: assistantIdValue });
+            await waitFor(() => webview.count('assistantEnd') === depth + 1, 5000);
+          }
+          expect(server.requests).to.have.length(4);
+          expect(webview.count('assistantDelta')).to.be.greaterThanOrEqual(4);
+
+          webview.emit({ type: 'continueAssistant', id: assistantIdValue });
+          await waitFor(
+            () =>
+              webview.last('notice') !== undefined &&
+              (webview.last('notice')?.message.includes('Continuation limit reached') ?? false),
+            5000,
+          );
+          expect(server.requests).to.have.length(4);
+          expect(webview.last('notice')?.level).to.equal('warn');
+        } finally {
+          provider.dispose();
+        }
+      },
+    );
+  });
+
   test('logs only sanitized shapes across a full request lifecycle', async () => {
     await withServer(
       (_incoming, response) =>

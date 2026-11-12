@@ -36,6 +36,9 @@
     switchProvider: document.getElementById('switch-provider'),
     switchModel: document.getElementById('switch-model'),
     setApiKeySelector: document.getElementById('set-api-key-selector'),
+    composerResize: document.getElementById('composer-resize'),
+    jumpLatest: document.getElementById('jump-latest'),
+    refreshSessions: document.getElementById('refresh-sessions'),
   };
 
   const state = {
@@ -56,7 +59,12 @@
     request: null,
     changeSelections: {},
     repairSelections: {},
+    continuationDepth: {},
+    continuationBase: null,
+    manualPromptHeight: null,
   };
+
+  const MAX_CONTINUATIONS = 3;
 
   let toastTimer = 0;
 
@@ -570,6 +578,7 @@
     content.innerHTML = renderMarkdown(text);
 
     card.append(content);
+    appendResponseActions(card);
     article.append(label, card);
     els.messages.append(article);
     setEmpty(false);
@@ -591,6 +600,7 @@
     content.innerHTML = html;
 
     card.append(content);
+    appendResponseActions(card);
     article.append(label, card);
     els.messages.append(article);
     setEmpty(false);
@@ -691,8 +701,45 @@
     scrollToBottom(true);
   }
 
-  function createAssistantMessage(model) {    const article = document.createElement('article');
+  function appendResponseActions(card) {
+    const row = document.createElement('div');
+    row.className = 'message-actions';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'text-button subtle copy-response';
+    copy.dataset.action = 'copy-response';
+    copy.title = 'Copy the full response';
+    copy.textContent = 'Copy response';
+    row.append(copy);
+    card.append(row);
+    return row;
+  }
+
+  function addContinueButton(article, id, depth) {
+    if (!article) return;
+    article.querySelectorAll('[data-action="continue-assistant"]').forEach(function (node) { node.remove(); });
+    const row = article.querySelector('.message-actions');
+    if (!row) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-button continue-assistant';
+    if (depth >= MAX_CONTINUATIONS) {
+      button.disabled = true;
+      button.textContent = 'Continuation limit reached (' + MAX_CONTINUATIONS + ')';
+    } else {
+      button.dataset.action = 'continue-assistant';
+      button.dataset.id = id;
+      button.title = 'Ask the provider to continue exactly where it stopped. The partial output is preserved.';
+      button.textContent = 'Continue response (token limit)' + (depth > 0 ? ' ' + depth + '/' + MAX_CONTINUATIONS : '');
+    }
+    row.append(button);
+  }
+
+  function createAssistantMessage(id, model) {
+    const article = document.createElement('article');
     article.className = 'message assistant streaming';
+    article.dataset.assistantId = id;
+    article.tabIndex = 0;
 
     const label = document.createElement('div');
     label.className = 'message-label';
@@ -711,6 +758,7 @@
 
     card.append(content);
     article.append(label, card);
+    appendResponseActions(card);
     els.messages.append(article);
     setEmpty(false);
     scrollToBottom(true);
@@ -722,7 +770,7 @@
     if (state.streaming) {
       finishStreaming(state.streaming.id, 'Interrupted.', false);
     }
-    const element = createAssistantMessage(model);
+    const element = createAssistantMessage(id, model);
     state.streaming = {
       id: id,
       text: '',
@@ -1940,6 +1988,8 @@
 
   function renderTranscript(transcript) {
     state.streaming = null;
+    state.continuationDepth = {};
+    state.continuationBase = null;
     els.messages.querySelectorAll('.message').forEach(function (node) {
       node.remove();
     });
@@ -1978,6 +2028,8 @@
     state.history = null;
     state.changeSelections = {};
     state.repairSelections = {};
+    state.continuationDepth = {};
+    state.continuationBase = null;
     els.messages.querySelectorAll('.message').forEach(function (node) {
       node.remove();
     });
@@ -1997,9 +2049,109 @@
   }
 
   function autoResize() {
+    if (state.manualPromptHeight !== null && state.manualPromptHeight !== undefined) {
+      els.prompt.style.height = state.manualPromptHeight + 'px';
+      return;
+    }
     els.prompt.style.height = 'auto';
-    const height = Math.min(240, Math.max(58, els.prompt.scrollHeight));
+    const max = Math.min(320, Math.max(120, Math.floor(window.innerHeight * 0.5)));
+    const height = Math.min(max, Math.max(58, els.prompt.scrollHeight));
     els.prompt.style.height = height + 'px';
+  }
+
+  function promptMaxHeight() {
+    return Math.min(320, Math.max(120, Math.floor(window.innerHeight * 0.5)));
+  }
+
+  function resetComposerHeight() {
+    state.manualPromptHeight = null;
+    autoResize();
+    if (els.composerResize) {
+      els.composerResize.setAttribute('aria-valuenow', String(Math.round(els.prompt.getBoundingClientRect().height)) || '58');
+    }
+  }
+
+  function setComposerHeight(px) {
+    const clamped = Math.max(58, Math.min(promptMaxHeight(), Math.round(px)));
+    state.manualPromptHeight = clamped;
+    els.prompt.style.height = clamped + 'px';
+    if (els.composerResize) {
+      els.composerResize.setAttribute('aria-valuenow', String(clamped));
+    }
+  }
+
+  function initComposerResize() {
+    const handle = els.composerResize;
+    if (!handle) {
+      return;
+    }
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    handle.addEventListener('pointerdown', function (event) {
+      dragging = true;
+      startY = event.clientY;
+      startHeight = els.prompt.getBoundingClientRect().height;
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch (_) {
+        // Pointer capture unavailable; the drag still tracks via pointermove on the handle.
+      }
+      event.preventDefault();
+    });
+    handle.addEventListener('pointermove', function (event) {
+      if (!dragging) {
+        return;
+      }
+      setComposerHeight(startHeight + (startY - event.clientY));
+    });
+    const endDrag = function (event) {
+      dragging = false;
+      try {
+        if (event && typeof event.pointerId === 'number') {
+          handle.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {
+        // Already released.
+      }
+    };
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+    handle.addEventListener('dblclick', resetComposerHeight);
+    handle.addEventListener('keydown', function (event) {
+      const current = els.prompt.getBoundingClientRect().height;
+      if (event.key === 'ArrowUp') {
+        setComposerHeight(current + 24);
+        event.preventDefault();
+      } else if (event.key === 'ArrowDown') {
+        setComposerHeight(current - 24);
+        event.preventDefault();
+      } else if (event.key === 'Home') {
+        resetComposerHeight();
+        event.preventDefault();
+      } else if (event.key === 'End') {
+        setComposerHeight(promptMaxHeight());
+        event.preventDefault();
+      }
+    });
+  }
+
+  function initJumpLatest() {
+    const button = els.jumpLatest;
+    if (!button || !els.messages) {
+      return;
+    }
+    const update = function () {
+      const remaining = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight;
+      button.hidden = remaining < 240;
+    };
+    els.messages.addEventListener('scroll', update, { passive: true });
+    button.addEventListener('click', function () {
+      scrollToBottom(true);
+      button.hidden = true;
+    });
+    update();
   }
 
   function submit() {
@@ -2122,6 +2274,8 @@
       }
       case 'userMessage': {
         state.pendingPrompt = null;
+        state.continuationDepth = {};
+        state.continuationBase = null;
         appendUserMessage(message.text || '', message.attachments || [], []);
         break;
       }
@@ -2147,8 +2301,45 @@
           } else if (message.finishReason) {
             parts.push(message.finishReason);
           }
+          const accumulated = state.streaming.text;
+          const streamedArticle = state.streaming.article;
           finishStreaming(message.id, parts.join(' · '), false);
+          if (message.finishReason === 'length') {
+            const depth = state.continuationDepth[message.id] || 0;
+            state.continuationBase = { id: message.id, text: accumulated };
+            addContinueButton(streamedArticle, message.id, depth);
+            showToast('Truncated at the output token limit. Partial output is preserved — press "Continue response" to resume.', 'warn');
+          } else {
+            state.continuationBase = null;
+          }
         }
+        break;
+      }
+      case 'assistantContinuation': {
+        const base = state.continuationBase;
+        const article = els.messages.querySelector('[data-assistant-id="' + message.id + '"]');
+        if (!article || !base || base.id !== message.id) {
+          break;
+        }
+        const content = article.querySelector('.message-content');
+        const card = article.querySelector('.assistant-card');
+        if (!content || !card) {
+          break;
+        }
+        article.querySelectorAll('.message-meta').forEach(function (node) { node.remove(); });
+        article.querySelectorAll('[data-action="continue-assistant"]').forEach(function (node) { node.remove(); });
+        article.classList.add('streaming');
+        state.continuationDepth[message.id] = (state.continuationDepth[message.id] || 0) + 1;
+        state.streaming = {
+          id: message.id,
+          text: base.text,
+          article: article,
+          card: card,
+          content: content,
+          frame: 0,
+        };
+        scheduleRender();
+        scrollToBottom(true);
         break;
       }
       case 'assistantCancelled': {
@@ -2373,7 +2564,7 @@
         post({ type: 'undoSession', sessionId: sessionId });
         break;
       case 'delete':
-        if (window.confirm('Delete this agent session and its stored record?')) {
+        if (window.confirm('Delete this agent session and its stored record permanently? Conversation transcripts and other agent sessions are not affected. This cannot be undone.')) {
           post({ type: 'deleteSession', sessionId: sessionId });
         }
         break;
@@ -2424,9 +2615,9 @@
     if (!state.activeConversationId) {
       return;
     }
-    if (window.confirm('Delete this conversation? This cannot be undone.')) {
-      post({ type: 'deleteConversation', id: state.activeConversationId });
-    }
+    // Single, explicit confirmation lives in the extension host (native modal);
+    // the transcript is removed only after it is acknowledged.
+    post({ type: 'deleteConversation', id: state.activeConversationId });
   });
   els.conversationSelect.addEventListener('change', function () {
     var id = els.conversationSelect.value;
@@ -2525,6 +2716,27 @@
         }
         break;
       }
+      case 'copy-response': {
+        const article = button.closest('article');
+        const content = article ? article.querySelector('.message-content') : null;
+        const copyValue = content ? (content.innerText || content.textContent || '') : '';
+        if (copyValue.trim().length > 0) {
+          copyText(copyValue);
+        } else {
+          showToast('There is no response text to copy yet.', 'warn');
+        }
+        break;
+      }
+      case 'continue-assistant': {
+        const id = button.dataset.id;
+        if (id) {
+          post({ type: 'continueAssistant', id: id });
+        }
+        break;
+      }
+      case 'copy-log':
+        post({ type: 'copyLog' });
+        break;
       case 'attach-selection':
         post({ type: 'attachSelection' });
         break;
@@ -2550,6 +2762,14 @@
         post({ type: 'explainRepositoryContext', query: els.prompt.value.trim() });
         break;
       case 'refresh-sessions':
+        if (els.refreshSessions && !els.refreshSessions.classList.contains('refreshing')) {
+          els.refreshSessions.classList.add('refreshing');
+          els.refreshSessions.setAttribute('aria-busy', 'true');
+          window.setTimeout(function () {
+            els.refreshSessions.classList.remove('refreshing');
+            els.refreshSessions.setAttribute('aria-busy', 'false');
+          }, 1500);
+        }
         post({ type: 'refreshSessions' });
         break;
       case 'clear-attachments':
@@ -2594,6 +2814,8 @@
   renderAttachmentBar();
   updateModeUi();
   setBusy(false);
+  initComposerResize();
+  initJumpLatest();
   autoResize();
   post({ type: 'ready' });
 })();

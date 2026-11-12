@@ -1088,6 +1088,43 @@ suite('agent orchestrator lifecycle, approvals and recovery (D5)', () => {
       expect(await harness.controller.detectInterruptedExecutions()).to.deep.equal([started.id]);
     });
 
+    test('a second restore does not duplicate or corrupt task state', async () => {
+      const store = new MemoryCheckpointStore();
+      const harness = createHarness({ checkpointStore: store });
+      const started = await harness.controller.start('Add a greeting helper', TOKEN);
+      await new CheckpointRepository(store).save(checkpointFor(started));
+
+      const first = await harness.controller.restoreFromCheckpoint(started.id);
+      expect(first.outcome).to.equal('restored');
+      const afterFirst = harness.controller.view(started.id);
+      expect(afterFirst?.state).to.equal('paused');
+      const firstSnapshot = JSON.stringify({
+        tasks: afterFirst?.tasks,
+        executions: afterFirst?.executions,
+        changeSets: afterFirst?.changeSets,
+        approvals: afterFirst?.approvals,
+      });
+
+      const second = await harness.controller.restoreFromCheckpoint(started.id);
+      // The session advanced its recovery version during the first restore, so a
+      // replay against the same checkpoint lineage refuses as stale rather than
+      // silently re-applying or duplicating state.
+      expect(second.outcome).to.equal('checkpoint-rejected');
+      const afterSecond = harness.controller.view(started.id);
+      expect(afterSecond?.state).to.equal('paused');
+      expect(
+        JSON.stringify({
+          tasks: afterSecond?.tasks,
+          executions: afterSecond?.executions,
+          changeSets: afterSecond?.changeSets,
+          approvals: afterSecond?.approvals,
+        }),
+      ).to.equal(firstSnapshot);
+      expect(afterSecond?.tasks).to.have.length(afterFirst?.tasks.length ?? -1);
+      expect(afterSecond?.executions).to.have.length(afterFirst?.executions.length ?? -1);
+      expect(await harness.controller.detectInterruptedExecutions()).to.deep.equal([started.id]);
+    });
+
     test('rejects a checkpoint that is older than the session', async () => {
       const store = new MemoryCheckpointStore();
       const harness = createHarness({ checkpointStore: store });

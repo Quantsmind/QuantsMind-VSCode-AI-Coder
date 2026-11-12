@@ -98,6 +98,8 @@ export interface AgentTask {
   readonly error?: string;
 }
 
+export type DevelopmentPlanKind = 'implementation' | 'inspection';
+
 export interface DevelopmentPlan {
   readonly id: string;
   readonly requirementId: string;
@@ -107,6 +109,16 @@ export interface DevelopmentPlan {
   readonly risks: readonly string[];
   readonly warnings: readonly string[];
   readonly createdAt: string;
+  /**
+   * Explicit plan kind. Absent on records written before v3.1.0; parsed as
+   * 'implementation'. Inspection plans are read-only: they describe findings
+   * and carry no tasks, so approval can never schedule implicit execution.
+   */
+  readonly kind?: DevelopmentPlanKind;
+  /** Meaningful inspection observations; present only on inspection plans. */
+  readonly findings?: readonly string[];
+  /** Files the inspection identified as relevant; read-only context, never a change list. */
+  readonly relevantFiles?: readonly string[];
 }
 
 export interface AppliedFile {

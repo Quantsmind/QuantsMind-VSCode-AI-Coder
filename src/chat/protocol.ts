@@ -119,6 +119,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'ready' }
   | { readonly type: 'send'; readonly prompt: string; readonly mode: ChatMode }
   | { readonly type: 'stop' }
+  | { readonly type: 'continueAssistant'; readonly id: string }
+  | { readonly type: 'copyLog' }
   | { readonly type: 'newChat' }
   | { readonly type: 'attachSelection' }
   | { readonly type: 'attachActiveFile' }
@@ -266,6 +268,10 @@ export type HostToWebviewMessage =
       readonly attachments: readonly AttachmentSummary[];
     }
   | { readonly type: 'assistantStart'; readonly id: string; readonly model: string }
+  | {
+      readonly type: 'assistantContinuation';
+      readonly id: string;
+    }
   | { readonly type: 'assistantDelta'; readonly id: string; readonly delta: string }
   | {
       readonly type: 'assistantEnd';
@@ -384,6 +390,13 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
   }
 
   switch (record.type) {
+    case 'copyLog':
+      return { type: 'copyLog' };
+    case 'continueAssistant':
+      if (!isId(record.id)) {
+        return undefined;
+      }
+      return { type: 'continueAssistant', id: record.id };
     case 'ready':
     case 'stop':
     case 'newChat':

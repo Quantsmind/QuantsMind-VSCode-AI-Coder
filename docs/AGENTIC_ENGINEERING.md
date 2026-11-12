@@ -167,13 +167,42 @@ setting exists that disables workspace trust, approvals or limits.
 ## General Availability (v3.0.0) — 2026-11-11
 
 The v3.0.0 GA milestone closes the four v2.5.7 contract gaps so both agent entry paths honor the same bounded guarantees end to end:
-
 1. **Task-level duration budgets.** A task's budget is measured from the task's own `startedAt` — never from session creation — so a long-lived session cannot consume a newly started task's budget, and a restored task with a spent budget is refused instead of silently resumed.
 2. **Honest tool-call accounting.** Outcomes carry real `toolCalls` (dispatched) and `refusedToolCalls` (authorization denials) counted at the shared dispatch boundary; counts are never synthesized from provider evidence or model text.
 3. **Cumulative patch-size protection.** Prepared and repair change sets are cumulatively budget-checked before any approval is built — the engine's refuse-before-dispatch and the orchestrator's refuse-before-approval agree at the same limit.
 4. **Consistent consecutive-failure handling.** Both paths use `maxConsecutiveFailures`; a passing validation resets the sequence; the third consecutive failure stops the session with an honest outcome, never a repair loop.
 
 The v2.5.7 approval semantics, evidence discipline and backward compatibility are unchanged; the v2.5.7 section below is the mechanics reference.
+
+## v3.1.0 — planning outcome classification and read-only inspection (2026-11-12)
+
+Two classes of v3.0.0 symptoms are fixed:
+
+1. **Planning failures are classified, not generic.** The planning parser reports
+   `empty` / `truncated` (`finishReason=length` — an incomplete plan is never
+   accepted even when its partial text parses as JSON) / `no-json` /
+   `invalid-json` / `not-object` / `missing-tasks` / `invalid-tasks` /
+   `missing-findings` / `invalid-kind` (an explicitly supplied, unsupported
+   kind is never silently coerced to implementation) with actionable guidance,
+   and the session log records the category plus the provider finish reason.
+   A failed plan is carried in the session record, diagnostics and timeline
+   events.
+2. **Inspection-only requests complete honestly.** `kind: "inspection"` plans
+   describe findings (with file references) and carry **no tasks at all**;
+   approval runs nothing and reports the findings. They exist for read-only
+   requests like "what does this workspace contain?" and never schedule an
+   implicit execution task.
+
+Checkpoint persistence is now explicitly defined: an execution checkpoint is
+only written once a validated execution plan exists. Failures before that point
+(failing planning, cancellation while planning) never persist a checkpoint with
+an empty planId; the session record is the failure artifact. `checkpoint save
+rejected: invalid checkpoint` warnings on plan failure are gone, and a
+checkpoint-persistence failure never hides the original error.
+
+Plan approval still never triggers execution by itself, zero-task and inspection
+plans schedule nothing, and a stale checkpoint after a restore refuses as
+`checkpoint-rejected` instead of corrupting state.
 
 ## Unified runtime (v2.5.7) — same guarantees, both doors
 

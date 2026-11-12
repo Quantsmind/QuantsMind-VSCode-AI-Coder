@@ -7,11 +7,27 @@ import type { ChatMessage } from '../providers/types';
  */
 export class ChatSession {
   private messages: ChatMessage[] = [];
+  /** Messages and characters released since the last load or reset, for transparency. */
+  private released = { messages: 0, chars: 0 };
 
   constructor(private readonly maxChars: number = DEFAULT_HISTORY_CHARS) {}
 
   snapshot(): readonly ChatMessage[] {
     return this.messages.map((message) => ({ role: message.role, content: message.content }));
+  }
+
+  /** How many replayed messages were released to fit the budget. */
+  get releasedMessages(): number {
+    return this.released.messages;
+  }
+
+  /** How many characters of replayed history were released to fit the budget. */
+  get releasedChars(): number {
+    return this.released.chars;
+  }
+
+  resetReleased(): void {
+    this.released = { messages: 0, chars: 0 };
   }
 
   get charCount(): number {
@@ -32,10 +48,12 @@ export class ChatSession {
 
   clear(): void {
     this.messages = [];
+    this.released = { messages: 0, chars: 0 };
   }
 
   load(messages: readonly ChatMessage[]): void {
     this.messages = [];
+    this.released = { messages: 0, chars: 0 };
     for (const message of messages) {
       if (message.content.length === 0) {
         continue;
@@ -58,6 +76,10 @@ export class ChatSession {
         break;
       }
       total -= removed.content.length;
+      this.released = {
+        messages: this.released.messages + 1,
+        chars: this.released.chars + removed.content.length,
+      };
     }
   }
 }

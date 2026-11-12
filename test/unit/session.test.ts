@@ -33,6 +33,29 @@ suite('chat session history', () => {
       { role: 'user', content: '1234567890' },
     ]);
     expect(session.charCount).to.equal(20);
+    expect(session.releasedMessages).to.equal(1);
+    expect(session.releasedChars).to.equal(10);
+  });
+
+  test('released accounting resets on load, clear and resetReleased', () => {
+    const session = new ChatSession(20);
+    session.addUser('1234567890');
+    session.addUser('1234567890');
+    session.addUser('1234567890');
+    expect(session.releasedMessages).to.be.greaterThan(0);
+
+    session.resetReleased();
+    expect(session.releasedMessages).to.equal(0);
+    expect(session.releasedChars).to.equal(0);
+
+    session.load([
+      { role: 'user', content: 'abcdefghij' },
+      { role: 'assistant', content: 'klmnopqrst' },
+      { role: 'user', content: '1234567890' },
+    ]);
+    expect(session.releasedMessages).to.equal(1);
+    session.clear();
+    expect(session.releasedMessages).to.equal(0);
   });
 
   test('always keeps the most recent message even when it exceeds the budget', () => {

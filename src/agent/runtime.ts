@@ -54,6 +54,8 @@ export interface AgentRuntimeDependencies {
   readonly isTrusted?: TrustCheck;
   /** VS Code SecretStorage for remote MCP bearer credentials (never written to settings). */
   readonly mcpCredentials?: SecretStorageLike;
+  /** Extension version, forwarded as the MCP protocol clientInfo so servers see the real build. */
+  readonly version?: string;
 }
 
 export interface AgentRuntime {
@@ -366,6 +368,7 @@ export function createAgentRuntime(deps: AgentRuntimeDependencies): AgentRuntime
   }
   const mcpServerManager = new McpServerManager({
     ...(deps.mcpCredentials !== undefined ? { credentials: deps.mcpCredentials } : {}),
+    ...(deps.version !== undefined ? { clientVersion: deps.version } : {}),
   });
   const mcpTools = new McpTools({
     servers: () =>

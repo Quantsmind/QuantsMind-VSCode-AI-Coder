@@ -22,6 +22,7 @@ suite('webview message parsing', () => {
       'summarizeWorkspace',
       'inspectRepository',
       'inspectGitStatus',
+      'copyLog',
     ] as const;
 
     for (const type of types) {
@@ -30,6 +31,11 @@ suite('webview message parsing', () => {
   });
 
   test('parses session lifecycle and approval messages', () => {
+    expect(
+      parseWebviewMessage({ type: 'continueAssistant', id: 'assistant-12' }),
+    ).to.deep.equal({ type: 'continueAssistant', id: 'assistant-12' });
+    expect(parseWebviewMessage({ type: 'continueAssistant', id: '' })).to.equal(undefined);
+    expect(parseWebviewMessage({ type: 'continueAssistant' })).to.equal(undefined);
     expect(parseWebviewMessage({ type: 'startSession', requirement: 'Add tests' })).to.deep.equal({
       type: 'startSession',
       requirement: 'Add tests',
