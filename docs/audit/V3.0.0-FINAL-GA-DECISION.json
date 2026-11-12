@@ -1,0 +1,82 @@
+{
+  "report": "QuantsMind VS Code AI Coder v3.0.0 — Final GA Decision",
+  "date": "2026-11-12",
+  "branch": "feature/v3.0.0-ga",
+  "starting_head": "98cb632713ffd215a566d02dc675d4b50c950387",
+  "final_head": "181b1362de31d55bc81b402903276d4132b78e45",
+  "package": { "name": "quantsmind-vscode-ai-coder", "version": "3.0.0", "publisher": "quantsmind", "engines_vscode": "^1.95.0" },
+  "artifact": {
+    "path": "quantsmind-vscode-ai-coder-3.0.0.vsix",
+    "file_count": 172,
+    "bytes": 526118,
+    "sha256": "d2b7094ff059f25ea0a9d1b591d1a4a3740ec37f00d37211a9e37325235cecfa",
+    "superseded_sha256": ["ec59b7ff…", "53d22bc9…", "add990f5…", "8d4b55c0…", "4187143c…"]
+  },
+  "decision": {
+    "technical_ga": "NO_GO",
+    "publication": "NOT_AUTHORIZED",
+    "blockers": [
+      {
+        "id": "CROSS_PLATFORM_EXACT_ARTIFACT",
+        "detail": "Exact v3.0.0 artifact never executed on Linux or macOS; feature branch absent from origin and push was not authorized. Executed-matrix CI blocked pending owner authorization (push/PR to a CI-trigger branch).",
+        "action": "Push or PR feature/v3.0.0-ga to a CI-trigger branch (develop/main) so GitHub Actions runs the full matrix on the exact artifact; then re-evaluate the decision."
+      }
+    ],
+    "conditions_on_green": [
+      "Linux CI green (ubuntu-latest, Node 22; xvfb) for the exact artifact",
+      "macOS CI green (macos-latest, Node 22) for the exact artifact",
+      "Windows CI green (windows-latest, Node 22) for the exact artifact"
+    ]
+  },
+  "findings": {
+    "total": 65,
+    "by_severity": { "P0": 1, "P1": 22, "P2": 22, "P3": 20 },
+    "by_disposition": { "CLOSED": 62, "ACCEPTED_RISK": 2, "DEFERRED": 1, "OPEN": 0 },
+    "accepted_risks": ["QM-GA-034", "QM-GA-043"],
+    "deferred": ["QM-GA-040"]
+  },
+  "tests": {
+    "environment": "Windows host; Node 24.18.1; VS Code 1.95.0 (repo-pinned)",
+    "unit": { "command": "npm run test:unit", "exit_code": 0, "passing": 1328, "failing": 0 },
+    "integration": { "command": "npm run test:integration", "exit_code": 0, "passing": 130, "failing": 0, "pending": 2, "pending_reason": "Pollinations live qualification — offline environment; no credentials; kept pending, never converted" },
+    "packaged": { "command": "npm run test:packaged", "exit_code": 0, "passing": 4, "failing": 0 },
+    "lint": { "command": "npm run lint", "exit_code": 0, "errors": 0, "warnings": 38 },
+    "compile": { "command": "npm run compile", "exit_code": 0, "errors": 0 },
+    "verify_deps": { "command": "npm run verify:deps", "exit_code": 0 },
+    "verify_vsix": { "command": "npm run verify:vsix", "exit_code": 0 },
+    "verify_release": { "command": "npm run verify:release", "exit_code": 0 },
+    "verify_install": { "command": "npm run verify:install", "exit_code": 0 },
+    "docs_links": { "command": "node scripts/verify-docs-links.mjs", "exit_code": 0 }
+  },
+  "upgrade": {
+    "from_2_0_0_candidate": { "result": "PASS", "settings_preserved": true, "artifact_sha256_previous": "9e54ad278539547b49631ef86295cd088a86bffdd180f4d0341cd0947df65c2a" },
+    "from_reconstructed_v2_5_7_tree": { "built_as": "2.5.1 (version never materialized for 2.5.x)", "built_from": "d49f11696dcfcda657ffc7323d41f9a0192accf0", "artifact_sha256_previous": "ceb9b47d36726b90758755bff98d861ebfa2e896bf329b618582dade0138068e", "result": "PASS", "settings_preserved": true, "uninstall_reinstall_cycle": "PASS" }
+  },
+  "ci": {
+    "latest_relevant_runs": [
+      { "run": 42842645060, "branch": "main", "head": "7304ad18723b5983bfbc68fe1a8df47382f7cfce", "conclusion": "success", "note": "9/9 jobs incl. ubuntu 20/22/24, windows/macos 22, extension-host matrix" },
+      { "run": 42838763319, "branch": "develop", "head": "77f3b57e20529822e7d2b7c12fa2b14a900efa8d", "conclusion": "success", "note": "same matrix; ancestor of HEAD lineage; pre-remediation code" }
+    ],
+    "exact_artifact_linux_macos": "UNVERIFIED — branch not on origin; CI never ran on this artifact",
+    "workflow_review": "ci.yml least-privilege (contents: read); matrix complete; host tests on 3 OS; npm audit advisory (continue-on-error); verify:deps is binding dependency gate"
+  },
+  "preservation": {
+    "excluded_untracked_entries": 20,
+    "worktrees_preserved": ["worktrees/feature-v1.0.0-provider-foundation"],
+    "destructive_actions": "none — no push, merge, tag, release, publication, credential use, or deletion of user files"
+  },
+  "commits_this_engagement": ["181b1362de31d55bc81b402903276d4132b78e45", "98cb632713ffd215a566d02dc675d4b50c950387 (baseline)"],
+  "owner_actions_required": [
+    "Authorize push/PR of feature/v3.0.0-ga to a CI-trigger branch; require exact-artifact Linux+macOS (and Windows) CI green before publication",
+    "Decide Marketplace/Open VSX publication posture incl. preview flag; listing, PAT, account verification, pricing",
+    "Optional: live-provider smoke with disposable credential on the shipping artifact (closes Pollinations pending tests + live-validation gate)",
+    "Optional: screen-reader pass on the control center"
+  ],
+  "product_claims_to_avoid_until_publication": [
+    "Live third-party provider qualification of this build",
+    "GitHub API live verification",
+    "Marketplace/Open VSX availability or acceptance",
+    "Web/browser/virtual-workspace support",
+    "Compiler-grade language intelligence"
+  ]
+}
