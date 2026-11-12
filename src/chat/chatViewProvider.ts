@@ -18,6 +18,7 @@ import {
   type RedactedContextItem,
 } from '../context/filters';
 import type { CompletionService, ProviderStatus } from '../providers/completionService';
+import type { ChatMessage } from '../providers/types';
 import { errorHint, isProviderError, normalizeThrownError } from '../providers/errors';
 import type { Logger } from '../security/logger';
 import type { SecretStore } from '../security/secretStore';
@@ -44,6 +45,7 @@ import {
 import { formatRequestBreakdown, measureRequest } from './requestMetrics';
 import {
   buildMessages,
+  buildSystemPrompt,
   DEFAULT_QUESTIONS,
   isAgentMode,
   type ChatMode,
@@ -183,9 +185,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessionSource: vscode.CancellationTokenSource | undefined;
   private sessionTimer: NodeJS.Timeout | undefined;
   private sessionsLoaded = false;
+  /** Context of the most recent chat request; used to rebuild the continuation instruction correctly. */
+  private lastChatContext: { readonly mode: ChatMode; readonly languageGuidance?: string } | undefined;
+
   private historySourceId: string | undefined;
   private history: HistoryState = EMPTY_HISTORY;
   private restoreWarnings: string[] = [];
+  /** Present only while the last assistant response ended at the provider output limit. */
+  private truncatedAssistant: {
+    readonly id: string;
+    text: string;
+    depth: number;
+  } | undefined;
   private readonly sessionSubscription: { dispose(): void };
   private readonly executionSubscription: { dispose(): void };
   private readonly trustCheck: TrustCheck;
@@ -457,6 +468,150 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * User-initiated continuation for a response that ended at the provider
+   * output token limit. Bounded, never automatic, and never duplicated:
+   * the continuation is appended to the same transcript message.
+   */
+  private async continueTruncatedAssistant(message: { id: string }): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish.');
+      return;
+    }
+    const pending = this.truncatedAssistant;
+    if (pending === undefined || pending.id !== message.id) {
+      this.notifyWarning('There is no truncated response to continue.');
+      return;
+    }
+    const MAX_CONTINUATIONS = 3;
+    if (pending.depth >= MAX_CONTINUATIONS) {
+      this.notifyWarning(
+        `Continuation limit reached (${MAX_CONTINUATIONS}). Ask the provider to finish the remaining work in a new request.`,
+      );
+      return;
+    }
+    const status = await this.deps.completion.getStatus();
+    const requestId = ++this.requestSeq;
+    const depth = pending.depth + 1;
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    this.post({ type: 'assistantContinuation', id: pending.id });
+    this.deps.logger.info(
+      `continuation id=${requestId} provider=${status.providerType} model=${status.model} depth=${depth}`,
+    );
+
+    const CONTINUATION_INSTRUCTION =
+      'Continue exactly from where your previous message stopped. Do not repeat any text you already produced. Begin directly with the next character of your answer. Do not add a preamble, headings, or commentary.';
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content: buildSystemPrompt(
+          this.lastChatContext?.mode ?? 'ask',
+          this.lastChatContext?.languageGuidance,
+        ),
+      },
+      ...this.session.snapshot(),
+      { role: 'user' as const, content: CONTINUATION_INSTRUCTION },
+    ];
+
+    const source = new vscode.CancellationTokenSource();
+    this.cancelSource = source;
+
+    try {
+      const result = await this.deps.completion.complete(messages, {
+        token: source.token,
+        onDelta: (delta: string) => {
+          if (requestId === this.requestSeq) {
+            this.post({ type: 'assistantDelta', id: pending.id, delta });
+          }
+        },
+      });
+      if (requestId !== this.requestSeq) {
+        return;
+      }
+      this.deps.logger.info(
+        `continuation result id=${requestId} finishReason=${result.finishReason ?? 'stop'} depth=${depth}`,
+      );
+      this.session.addAssistant(result.text);
+      const last = this.storedMessages[this.storedMessages.length - 1];
+      if (last !== undefined && last.role === 'assistant' && last.text === pending.text) {
+        this.storedMessages[this.storedMessages.length - 1] = {
+          ...last,
+          text: last.text + result.text,
+        };
+        pending.text = pending.text + result.text;
+        await this.persistConversation();
+        this.refreshHistoryCounts();
+        this.postHistory();
+      } else {
+        this.storedMessages.push({
+          role: 'assistant',
+          text: result.text,
+          attachments: [],
+          createdAt: new Date().toISOString(),
+        });
+        pending.text = pending.text + result.text;
+        await this.persistConversation();
+        this.refreshHistoryCounts();
+        this.postHistory();
+      }
+      this.post({
+        type: 'assistantEnd',
+        id: pending.id,
+        finishReason: result.finishReason,
+        usage: result.usage,
+      });
+      if (result.finishReason === 'length') {
+        this.truncatedAssistant = { ...pending, depth };
+      } else {
+        this.truncatedAssistant = undefined;
+      }
+    } catch (error) {
+      if (requestId !== this.requestSeq) {
+        return;
+      }
+      const providerError = isProviderError(error) ? error : normalizeThrownError(error);
+      if (providerError.code === 'cancelled') {
+        this.post({ type: 'assistantCancelled', id: pending.id });
+        this.deps.logger.info(`continuation id=${requestId} cancelled`);
+      } else {
+        this.post({
+          type: 'error',
+          message: providerError.message,
+          hint: errorHint(providerError.code),
+          code: providerError.code,
+        });
+        this.deps.logger.warn(`continuation id=${requestId} failed code=${providerError.code}`);
+      }
+    } finally {
+      source.dispose();
+      if (this.cancelSource === source) {
+        this.cancelSource = undefined;
+      }
+      if (requestId === this.requestSeq) {
+        this.busy = false;
+        this.post({ type: 'busy', busy: false });
+      }
+    }
+  }
+
+  private async copyRecentLog(): Promise<void> {
+    const lines = this.deps.logger.recentLogLines(50);
+    if (lines.length === 0) {
+      this.notifyWarning('There is nothing in the log to copy yet.');
+      return;
+    }
+    try {
+      await vscode.env.clipboard.writeText(lines.join('\n'));
+      this.notifyInfo(`Copied ${lines.length} redacted log line(s) to the clipboard.`);
+    } catch (error) {
+      this.deps.logger.warn(
+        `copy logs failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+      this.notifyWarning('Could not copy to the clipboard.');
+    }
+  }
+
+  /**
    * Called when provider configuration changed while a request is active.
    * Cancels the active request so a stale profile cannot finish and post a
    * result under the new profile's UI.
@@ -529,6 +684,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.busy = false;
     this.session.clear();
     this.storedMessages = [];
+    this.truncatedAssistant = undefined;
     this.attachments = [];
     this.pendingDraft = undefined;
     this.activeSessionId = undefined;
@@ -621,6 +777,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           .map((message) => ({ role: message.role, content: message.text })),
       );
       this.refreshHistoryState(existing, 'reload');
+      this.truncatedAssistant = undefined;
       return;
     }
     const created = this.deps.conversations.create();
@@ -646,6 +803,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       includeAutoDiscovered: trusted,
     });
     this.session.load(rebuilt);
+    const trimmed = this.session.releasedMessages;
+    const trimmedChars = this.session.releasedChars;
     this.historySourceId = conversation.id;
 
     const displays: AttachmentDisplay[] = [];
@@ -681,8 +840,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.deps.logger.info(
-      `conversation history ready source=${source} transcriptMessages=${conversation.messages.length} providerMessages=${this.history.messages} providerChars=${this.history.chars} attachmentTurns=${attachmentTurns} unavailableAttachments=${unavailable}`,
+      `conversation history ready source=${source} transcriptMessages=${conversation.messages.length} providerMessages=${this.history.messages} providerChars=${this.history.chars} attachmentTurns=${attachmentTurns} unavailableAttachments=${unavailable} droppedOldestMessages=${trimmed} droppedOldestChars=${trimmedChars}`,
     );
+    if (trimmed > 0) {
+      this.restoreWarnings.push(
+        `Older context was released to fit the provider window: dropped ${trimmed} oldest message(s) (~${trimmedChars.toLocaleString()} chars). Earlier turns are not sent with the next request.`,
+      );
+    }
 
     if (trusted && (source === 'reload' || source === 'switch')) {
       void this.auditAttachmentFreshness(conversation);
@@ -941,6 +1105,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.cancelActive();
     this.requestSeq += 1;
     this.busy = false;
+    this.truncatedAssistant = undefined;
     this.conversation = conversation;
     this.storedMessages = [...conversation.messages];
     this.session.load(
@@ -980,7 +1145,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (!(await this.confirmDestructive(
-      `Clear this conversation? Its ${this.storedMessages.length} message(s) are removed. Other conversations are not affected.`,
+      `Clear this conversation? Its ${this.storedMessages.length} message(s) are removed. Other conversations and agent sessions are not affected.`,
     ))) {
       return;
     }
@@ -988,6 +1153,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.requestSeq += 1;
     this.cancelActive();
     this.busy = false;
+    this.truncatedAssistant = undefined;
     const cleared = await this.deps.conversations.clear(conversation.id);
     this.conversation = cleared ?? { ...conversation, messages: [] };
     this.storedMessages = [...this.conversation.messages];
@@ -1002,6 +1168,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'busy', busy: false });
     this.postHistory();
     this.postConversations();
+    this.notifyInfo('Conversation cleared; other conversations and agent sessions are unaffected.');
     this.deps.logger.info(
       `conversation cleared id=${conversation.id.slice(0, 24)} remainingConversations=${this.deps.conversations.list().length}`,
     );
@@ -1051,7 +1218,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.notifyWarning('Wait for the current request to finish before deleting a conversation.');
       return;
     }
-    if (!(await this.confirmDestructive('Delete this conversation permanently? This cannot be undone.'))) {
+    if (!(await this.confirmDestructive(
+      `Delete this conversation permanently? Its transcript is removed; agent sessions and other conversations are not affected. This cannot be undone.`,
+    ))) {
       return;
     }
     const wasActive = this.conversation?.id === id;
@@ -1072,12 +1241,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postHistory();
     }
     this.postConversations();
+    this.notifyInfo('Conversation deleted permanently. Agent sessions are unaffected.');
   }
 
   private resetConversationState(): void {
     this.conversation = undefined;
     this.storedMessages = [];
     this.session.clear();
+    this.truncatedAssistant = undefined;
     this.attachments = [];
     this.historySourceId = undefined;
     this.history = EMPTY_HISTORY;
@@ -1700,6 +1871,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'refreshSessions':
         this.postSessions();
+        this.notifyInfo('Session list refreshed.');
+        break;
+      case 'continueAssistant':
+        await this.continueTruncatedAssistant(message);
+        break;
+      case 'copyLog':
+        await this.copyRecentLog();
         break;
       case 'newConversation':
         await this.startNewChat();
@@ -2199,6 +2377,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'sessionRemoved', id: sessionId });
       }
       this.postSessions();
+      this.notifyInfo('Agent session deleted. Stored conversation transcripts are unaffected.');
     } catch (error) {
       this.postSessionError(error, sessionId);
     }
@@ -2345,6 +2524,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleSend(rawPrompt: string, mode: ChatMode): Promise<void> {
+    this.truncatedAssistant = undefined;
     if (isAgentMode(mode)) {
       await this.runCodingAgentAndReveal(rawPrompt);
       return;
@@ -2427,6 +2607,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         languageGuidance = guidance;
       }
     }
+    this.lastChatContext = {
+      mode,
+      ...(languageGuidance !== undefined ? { languageGuidance } : {}),
+    };
     const messages = buildMessages({
       mode,
       question: prompt,
@@ -2436,6 +2620,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     const userContent = messages[messages.length - 1]?.content ?? prompt;
     this.session.addUser(userContent);
+    const released = this.session.releasedMessages;
+    if (released > 0) {
+      this.notifyWarning(
+        `Older context was released to fit the provider window: dropped ${released} oldest message(s) (~${this.session.releasedChars.toLocaleString()} chars). They are no longer replayed with this conversation.`,
+      );
+      this.session.resetReleased();
+    }
 
     const displayPrompt = prompt.length > 0 ? prompt : DEFAULT_QUESTIONS[mode];
     const attachmentLabels = built.items.map((item) =>
@@ -2494,7 +2685,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
+      this.deps.logger.info(
+        `response id=${requestId} finishReason=${result.finishReason ?? 'stop'} status=provider-received`,
+      );
       await this.recordAssistant(result.text);
+      if (result.finishReason === 'length') {
+        this.truncatedAssistant = { id: assistantId, text: result.text, depth: 0 };
+      }
       this.post({
         type: 'assistantEnd',
         id: assistantId,
@@ -2510,8 +2707,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? error
         : normalizeThrownError(error);
       if (providerError.code === 'cancelled') {
+        this.deps.logger.info(`response id=${requestId} status=cancelled`);
         this.post({ type: 'assistantCancelled', id: assistantId });
       } else {
+        this.deps.logger.warn(`response id=${requestId} status=provider-failed code=${providerError.code}`);
         this.post({
           type: 'error',
           message: providerError.message,

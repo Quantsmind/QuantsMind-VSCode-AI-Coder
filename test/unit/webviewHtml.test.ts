@@ -71,6 +71,43 @@ suite('webview HTML', () => {
     expect(html).to.contain('id="new-chat"');
   });
 
+  test('renders the v3.1.0 chat affordances: continuation, copy controls, resize and jump-latest', () => {
+    const html = render();
+    expect(html).to.contain('id="jump-latest"');
+    expect(html).to.contain('id="composer-resize"');
+    expect(html).to.contain('aria-valuemin="58"');
+    expect(html).to.contain('aria-valuemax="320"');
+    expect(html).to.contain('aria-valuenow="58"');
+    expect(html).to.contain('data-action="copy-log"');
+    expect(html).to.contain('data-action="refresh-sessions"');
+    expect(html).to.contain('class="icon-refresh');
+    expect(html).to.contain('id="refresh-sessions"');
+
+    const source = script();
+    expect(source).to.contain("'continue-assistant'");
+    expect(source).to.contain('case \'continue-assistant\'');
+    expect(source).to.contain('case \'copy-response\'');
+    expect(source).to.contain('case \'copy-log\'');
+    expect(source).to.contain("case 'assistantContinuation'");
+    expect(source).to.contain('appendResponseActions(');
+    expect(source).to.contain('initComposerResize');
+    expect(source).to.contain('resetComposerHeight');
+    expect(source).to.contain('MAX_CONTINUATIONS');
+    // The existing code-block Copy button is retained and tested.
+    expect(source).to.contain('case \'copy-code\'');
+    expect(source).to.contain('data-action="copy-code"');
+    expect(html).to.not.contain('id="jump-latest" hidden="" aria-hidden="true"');
+  });
+
+  test('copy-response and continue-assistant wire through to the host protocol', () => {
+    const source = script();
+    expect(source).to.contain("post({ type: 'continueAssistant', id: id })");
+    expect(source).to.contain("post({ type: 'copyLog' })");
+    expect(source).to.contain("case 'assistantContinuation': {");
+    expect(source).to.contain('state.continuationDepth');
+    expect(source).to.contain('state.continuationBase');
+  });
+
   test('every element the webview script looks up exists in the rendered HTML', () => {
     const html = render();
     const ids = [...script().matchAll(/getElementById\('([^']+)'\)/g)].map((match) => match[1]);

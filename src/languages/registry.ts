@@ -94,9 +94,10 @@ export const LANGUAGE_REGISTRY: readonly LanguageCapability[] = Object.freeze([
     qualification: 'analysis',
     manifests: ['pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'],
     guidance: [
+      'Match the Java release in use: records, sealed hierarchies and pattern matching (instanceof/switch) are standard from Java 21; virtual threads (Thread.ofVirtual()) suit blocking-I/O concurrency and are not a substitute for CPU-bound parallelism. Watch for carrier-thread pinning inside synchronized blocks.',
       'Java is statically typed and package-scoped; keep public APIs and package-private internals consistent.',
       'Identify the build tool (Maven `pom.xml` vs Gradle) before suggesting compile or test commands.',
-      'Prefer immutable value types and explicit constructors/factories at module boundaries.',
+      'Prefer immutable value types (records are idiomatic since Java 16) and explicit constructors/factories at module boundaries.',
     ],
     testHint: 'JUnit suites under `src/test/java` mirroring `src/main/java`.',
     limitations: ['Annotation processing and generated sources are not modeled.'],

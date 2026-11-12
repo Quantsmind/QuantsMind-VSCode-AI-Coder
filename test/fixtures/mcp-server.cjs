@@ -6,8 +6,9 @@
  *   node mcp-server.cjs crash          — exits immediately (connect/closed path)
  *   node mcp-server.cjs env            — echoes process.env in an env tool (leak check)
  *   node mcp-server.cjs noise          — emits a non-JSON garbage line before valid responses
- *   node mcp-server.cjs spy <log>      — appends every method name it receives to <log>
- *   node mcp-server.cjs oversized      — never completes a valid initialize (one huge line)
+ *   node mcp-server.cjs spy <log>      - appends every method name it receives to <log>
+ *   node mcp-server.cjs clientinfo <log> - appends the received clientInfo (as JSON) to <log> on initialize
+ *   node mcp-server.cjs oversized      - never completes a valid initialize (one huge line)
  */
 const mode = process.argv[2] ?? 'normal';
 const spyLog = process.argv[3];
@@ -90,6 +91,13 @@ function handle(message) {
     return; // notifications carry no response
   }
   if (message.method === 'initialize') {
+    if (mode === 'clientinfo' && spyLog) {
+      try {
+        fs.appendFileSync(spyLog, `${JSON.stringify((message.params && message.params.clientInfo) || {})}\n`);
+      } catch {
+        // The clientInfo capture is best-effort; it must not fail the handshake.
+      }
+    }
     send({
       jsonrpc: '2.0',
       id: message.id,

@@ -1,7 +1,8 @@
 # Contributing
 
-QuantsMind AI Coder v3.0.0 is the current build (a GA-qualified local
-candidate). Contributions should preserve its core invariants:
+QuantsMind AI Coder v3.1.0 is the current build (a reliability-qualified
+candidate on the v3.0.0 GA base). Contributions should preserve its core
+invariants:
 
 1. **Explicit context and explicit sending.** No automatic workspace scanning,
    no background provider requests, and no file modification without per-file

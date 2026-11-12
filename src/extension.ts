@@ -92,6 +92,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Quants
     sessionStore: context.globalState,
     mcpCredentials: context.secrets,
     isTrusted: () => vscode.workspace.isTrusted,
+    version,
   });
   const chatProvider = new ChatViewProvider({
     extensionUri: context.extensionUri,

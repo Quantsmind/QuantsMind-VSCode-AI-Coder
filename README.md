@@ -31,6 +31,10 @@ requirement
  -> completion report
 ```
 
+- Read-only requests ("inspect/review/analyze this workspace") produce an
+  **inspection plan**: findings with file references, zero tasks, nothing to
+  execute — approval completes with an evidence report and never schedules a
+  file change.
 - The control-center panel shows the current session state, every stage, the
   task graph, approval cards with unified diffs, validation output, diagnostics
   and the final report.
@@ -40,15 +44,22 @@ requirement
   revalidates applied file hashes and requires review before any resume.
 - Sessions can be paused at safe boundaries, resumed, cancelled and deleted.
 - **Undo** restores the backups created by the most recent applied change set.
+- Truncated provider output is never accepted as a plan; the session fails
+  closed with a category-classified reason instead of retrying blindly.
 
 ### Conversations and answers
 
 - Sidebar chat view in the Activity Bar with markdown and fenced code rendering,
-  per-code-block **Copy**, and inline file references.
+  per-code-block **Copy**, a **Copy response** action on every assistant
+  message, a **Copy log** action for the output log, and inline file references.
 - OpenAI-compatible chat completions over HTTPS, with streaming or
   non-streaming responses.
 - Opt-in plain HTTP for loopback endpoints such as a local model server.
 - Ask, explain and generate modes with a read-only system prompt.
+- Responses that stop at the provider output token limit show a truncation
+  notice, keep their partial output, and can be resumed in place via a
+  user-initiated **Continue response** control (bounded, no duplicated
+  content).
 - Conversations persisted across window reloads: create, switch, rename by
   first message, and delete, bounded to 30 conversations.
 
@@ -435,6 +446,8 @@ Behaviour that is expected but looks wrong at first glance is listed in
 - [v2.2.0 implementation report (historical)](V2.2.0_IMPLEMENTATION_REPORT.md)
 - [v2.3.0 implementation report (historical)](V2.3.0_IMPLEMENTATION_REPORT.md)
 - [v2.4.0 implementation report (historical)](V2.4.0_IMPLEMENTATION_REPORT.md)
+- [v3.1.0 implementation report](docs/audit/V3.1.0-IMPLEMENTATION-REPORT.md)
+- [v3.1.0 defect register](docs/audit/V3.1.0-DEFECT-REGISTER.md)
 - [v0.3.0 completion report (historical)](docs/reports/V030_COMPLETION_REPORT.md)
 - [v0.3.0 test and validation report (historical)](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
 - [v0.3.0 security report (historical)](docs/reports/V030_SECURITY_REPORT.md)

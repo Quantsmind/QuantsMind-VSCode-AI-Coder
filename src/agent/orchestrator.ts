@@ -454,10 +454,23 @@ export class AgentOrchestrator implements IAgentController {
       };
     }
   }
+  /**
+   * Checkpoint lifecycle: an execution checkpoint is only persisted once a
+   * validated execution plan exists. Sessions that fail or are cancelled
+   * before a plan is produced never write a checkpoint (their planId would be
+   * empty and the record would be rejected); the failure is carried by the
+   * session record, diagnostics and timeline events instead.
+   */
   private async checkpoint(
     session: AgentSession,
     currentTaskId?: string,
   ): Promise<void> {
+    if (session.plan === undefined) {
+      this.deps.logger?.info(
+        `agent checkpoint skipped session=${session.id}: no valid execution plan exists yet; the failure or cancellation is recorded in the session record, diagnostics and events instead.`,
+      );
+      return;
+    }
     const taskApprovals = session.taskApprovals ?? [];
     const repository = this.deps.checkpointRepository;
     if (repository === undefined) {
@@ -1145,8 +1158,12 @@ export class AgentOrchestrator implements IAgentController {
         planId: `${id}-plan`,
         createdAt: this.timestamp(),
         allowlist: this.deps.commandSettings().allowlist,
+        finishReason: result.finishReason,
       });
       if (parsed.plan === undefined) {
+        this.deps.logger?.warn(
+          `agent plan validation failed category=${parsed.category ?? 'unknown'} finishReason=${result.finishReason ?? 'none'} errors=${parsed.errors.join(' | ')}`,
+        );
         return this.failSession(
           id,
           parsed.errors.join(' ') || 'The development plan could not be parsed.',
@@ -1159,31 +1176,55 @@ export class AgentOrchestrator implements IAgentController {
       // No extra inspection happens here; the envelope is derived from the
       // requirement and the validated plan alone (the inspection pass already
       // ran at task start).
-      let envelopeDetail: string;
+      const isInspection = parsed.plan.kind === 'inspection';
+      let envelopeDetail = '';
       let envelopeCategory: string | undefined;
-      try {
-        const envelope = buildCodingTaskPlan({
-          plan: parsed.plan,
-          requirementText: current.requirement.text,
-        });
-        envelopeDetail = formatCodingTaskPlan(envelope, 1_600);
-        envelopeCategory = envelope.category;
-      } catch {
-        envelopeDetail = '';
+      if (!isInspection) {
+        try {
+          const envelope = buildCodingTaskPlan({
+            plan: parsed.plan,
+            requirementText: current.requirement.text,
+          });
+          envelopeDetail = formatCodingTaskPlan(envelope, 1_600);
+          envelopeCategory = envelope.category;
+        } catch {
+          envelopeDetail = '';
+        }
       }
-      current = this.withEvent(
-        current,
-        'note',
-        `The development plan contains ${parsed.plan.tasks.length} task(s).${envelopeCategory !== undefined ? ` Category: ${envelopeCategory}.` : ''}`,
-      );
+      current = isInspection
+        ? this.withEvent(
+            current,
+            'note',
+            `The inspection plan contains ${parsed.plan.findings?.length ?? 0} finding(s) and no file changes; approval cannot schedule execution.`,
+          )
+        : this.withEvent(
+            current,
+            'note',
+            `The development plan contains ${parsed.plan.tasks.length} task(s).${envelopeCategory !== undefined ? ` Category: ${envelopeCategory}.` : ''}`,
+          );
+      if (isInspection) {
+        for (const finding of parsed.plan.findings ?? []) {
+          current = this.withEvent(current, 'note', `Finding: ${finding}`);
+        }
+        if ((parsed.plan.relevantFiles?.length ?? 0) > 0) {
+          current = this.withEvent(
+            current,
+            'note',
+            `Relevant files: ${(parsed.plan.relevantFiles ?? []).join(', ')}`,
+          );
+        }
+      }
       current = this.withEvent(current, 'note', makeCheckpointMessage('planned', envelopeCategory));
       const request: ApprovalRequest = {
         id: this.nextId('approval'),
         sessionId: id,
         kind: 'plan',
-        title: `Plan approval: ${clampText(parsed.plan.summary, 160)}`,
+        title: isInspection
+          ? `Inspection (read-only) approval: ${clampText(parsed.plan.summary, 140)}`
+          : `Plan approval: ${clampText(parsed.plan.summary, 160)}`,
         detail: [
           parsed.plan.approach,
+          ...(isInspection ? (parsed.plan.findings ?? []).map((finding) => `Finding: ${finding}`) : []),
           ...(envelopeDetail.length > 0 ? ['', envelopeDetail] : []),
           ...parsed.plan.risks.map((risk) => `Risk: ${risk}`),
           ...parsed.plan.warnings,
@@ -1225,7 +1266,10 @@ export class AgentOrchestrator implements IAgentController {
       current = transitionSession(current, 'ready', {
         at: this.timestamp(),
         eventId: this.nextId('event'),
-        message: 'The plan was approved; task scheduling starts.',
+        message:
+          current.plan?.kind === 'inspection'
+            ? 'The inspection plan was approved; it is read-only and schedules no tasks.'
+            : 'The plan was approved; task scheduling starts.',
       });
       await this.record(current);
 

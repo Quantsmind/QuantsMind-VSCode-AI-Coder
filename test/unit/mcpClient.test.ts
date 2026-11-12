@@ -1,5 +1,7 @@
 import { expect } from 'chai';
 import * as path from 'node:path';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { McpClient, McpError, mcpChildEnv } from '../../src/mcp/client';
 
 const server = (mode?: string): { command: string; args: string[] } => ({
@@ -7,7 +9,59 @@ const server = (mode?: string): { command: string; args: string[] } => ({
   args: [path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'mcp-server.cjs'), ...(mode !== undefined ? [mode] : [])],
 });
 
+const fixture = path.join(__dirname, '..', '..', '..', 'test', 'fixtures', 'mcp-server.cjs');
+
 suite('mcp client', () => {
+  test('advertises the injected extension version in the initialize handshake', async () => {
+    const log = path.join(tmpdir(), `quantsmind-clientinfo-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+    const client = new McpClient(
+      {
+        name: 'fixture',
+        command: process.execPath,
+        args: [fixture, 'clientinfo', log],
+        timeoutMs: 5_000,
+      },
+      '9.9.9-test',
+    );
+    await client.connect();
+    try {
+      const raw = readFileSync(log, 'utf8').trim().split('\n')[0];
+      const info = JSON.parse(raw) as { name?: string; version?: string };
+      expect(info.name).to.equal('QuantsMind-VSCode-AI-Coder');
+      expect(info.version).to.equal('9.9.9-test');
+    } finally {
+      await client.close().catch(() => undefined);
+      try {
+        unlinkSync(log);
+      } catch {
+        // Best-effort cleanup of the temporary spy log.
+      }
+    }
+  });
+
+  test('falls back to a development marker when no extension version is injected', async () => {
+    const log = path.join(tmpdir(), `quantsmind-clientinfo-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+    const client = new McpClient({
+      name: 'fixture',
+      command: process.execPath,
+      args: [fixture, 'clientinfo', log],
+      timeoutMs: 5_000,
+    });
+    await client.connect();
+    try {
+      const raw = readFileSync(log, 'utf8').trim().split('\n')[0];
+      const info = JSON.parse(raw) as { name?: string; version?: string };
+      expect(info.version).to.equal('0.0.0-dev');
+    } finally {
+      await client.close().catch(() => undefined);
+      try {
+        unlinkSync(log);
+      } catch {
+        // Best-effort cleanup of the temporary spy log.
+      }
+    }
+  });
+
   test('performs the initialize handshake, lists and calls tools', async () => {
     const client = new McpClient({ name: 'fixture', ...server(), timeoutMs: 5_000 });
     await client.connect();

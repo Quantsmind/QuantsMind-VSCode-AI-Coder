@@ -79,6 +79,15 @@ export function buildCompletionReport(session: AgentSession, at: string): Comple
   evidence.push(`Requirement: ${session.requirement.text.split(/\r?\n/)[0]?.slice(0, 300) ?? ''}`);
   if (session.plan !== undefined) {
     evidence.push(`Plan "${session.plan.id}" contains ${session.plan.tasks.length} task(s).`);
+    if (session.plan.kind === 'inspection') {
+      const findings = session.plan.findings ?? [];
+      evidence.push(
+        `Inspection plan (read-only) produced ${findings.length} finding(s); it schedules no file changes and no commands were run.`,
+      );
+      for (const finding of findings.slice(0, 10)) {
+        evidence.push(`Finding: ${finding}`);
+      }
+    }
     if (session.plan.risks.length > 0) {
       evidence.push(`Plan risk(s): ${session.plan.risks.slice(0, 5).join(' ')}`);
     }

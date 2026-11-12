@@ -116,7 +116,11 @@ export class McpClient {
   private serverCapabilitiesCache: Record<string, unknown> | undefined;
   private negotiatedProtocolVersion: string | undefined;
 
-  constructor(private readonly config: McpServerConfig) {}
+  constructor(
+    private readonly config: McpServerConfig,
+    /** Version advertised to servers in protocol clientInfo; falls back to a development marker. */
+    private readonly clientVersion?: string,
+  ) {}
 
   get serverName(): string {
     return this.config.name;
@@ -234,7 +238,7 @@ export class McpClient {
       const result = await this.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: '3.0.0' },
+        clientInfo: { name: 'QuantsMind-VSCode-AI-Coder', version: this.clientVersion ?? '0.0.0-dev' },
       });
       this.verifyInitializeResult(result);
     } catch (error) {

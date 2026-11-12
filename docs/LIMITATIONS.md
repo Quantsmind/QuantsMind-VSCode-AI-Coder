@@ -53,7 +53,12 @@ undocumented behavior.
 - A dependency failure blocks downstream tasks; the session does not re-plan
   around a failed task automatically.
 - Plan quality depends on the model and the retrieved context. The parser
-  validates shape and safety, not correctness.
+  validates shape and safety, not correctness. Truncated provider plans
+  (`finishReason=length`) are never accepted; the session fails closed with a
+  classified reason.
+- Inspection-only plans (`kind: "inspection"`) are read-only: they carry
+  findings, no tasks, and approving them never schedules work. Implementation
+  plans remain strict.
 - Empty plans are accepted and complete without file changes; they are not a
   substitute for a requirement that the model could not understand.
 
@@ -106,7 +111,14 @@ undocumented behavior.
 - Conversations are stored locally. They are not synced across machines or
   profiles.
 - Storage is bounded: 30 conversations, 200 messages per conversation, and
-  120,000 characters per conversation. Oldest data is dropped.
+  120,000 characters per conversation. Oldest data is dropped; when it is, the
+  interface says which older messages were released and approximately how many
+  characters disappeared.
+- Responses that stop at the provider output token limit keep their partial
+  output and can be resumed in place with a bounded **Continue response**
+  control (at most 3 continuations per response; content is never re-sent or
+  duplicated). Asking for lost content requires a new request; there is no
+  infinite continuation.
 - Attachments are not re-sent with every message; history carries text only.
 - There is no export, search, or share feature.
 - Deleting a conversation is immediate and has no undo.

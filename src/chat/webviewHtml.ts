@@ -97,7 +97,9 @@ export function renderChatHtml(assets: WebviewAssets): string {
       <select id="session-select" aria-label="Agent sessions">
         <option value="">No active session</option>
       </select>
-      <button type="button" class="text-button" data-action="refresh-sessions" title="Refresh the session list from stored sessions">Refresh</button>
+      <button type="button" class="icon-refresh text-button subtle" data-action="refresh-sessions" id="refresh-sessions" title="Refresh the session list from stored sessions" aria-label="Refresh the session list">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.2 2.6v3.3h-3.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
 
     <div class="conversation-row">
@@ -114,6 +116,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
 
     <div class="context-strip" id="context-strip" hidden></div>
 
+    <div class="messages-wrap">
     <main class="messages" id="messages" aria-live="polite" aria-label="Conversation">
       <div class="empty" id="empty">
         <div class="empty-logo" aria-hidden="true">${LOGO_SVG}</div>
@@ -160,8 +163,13 @@ export function renderChatHtml(assets: WebviewAssets): string {
         </div>
       </div>
     </main>
+      <button id="jump-latest" class="jump-latest" type="button" title="Jump to the latest message" aria-label="Jump to the latest message" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3v9M4 8.5L8 12.5 12 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
 
     <section class="composer" aria-label="Compose a request">
+      <div class="composer-resize" id="composer-resize" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize the message input" aria-valuemin="58" aria-valuemax="320" aria-valuenow="58" title="Drag or use arrow keys to resize the input. Double-click or press Home to reset to auto size."><span aria-hidden="true"></span></div>
       <div class="attachment-bar" id="attachment-bar" hidden></div>
       <div class="attach-actions">
         <button type="button" class="text-button" data-action="attach-selection">Selection</button>
@@ -180,6 +188,7 @@ export function renderChatHtml(assets: WebviewAssets): string {
           <option value="agent">Agent session (plan → execute)</option>
         </select>
         <button type="button" class="text-button subtle" data-action="show-log" title="Open the QuantsMind output log">Log</button>
+        <button type="button" class="text-button subtle" data-action="copy-log" title="Copy the last 50 redacted log lines to the clipboard">Copy log</button>
       </div>
       <div class="input-shell">
         <textarea id="prompt" rows="3" maxlength="20000" placeholder="Ask about your code. Nothing is sent until you press Send." aria-label="Question for QuantsMind"></textarea>
