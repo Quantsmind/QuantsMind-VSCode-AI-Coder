@@ -21,7 +21,7 @@ export interface McpLaunchGateOptions {
 export async function decideMcpLaunchApproval(
   options: McpLaunchGateOptions,
 ): Promise<LaunchGateOutcome> {
-  let trusted = false;
+  let trusted: boolean;
   try {
     trusted = options.trusted() === true;
   } catch {
@@ -31,7 +31,7 @@ export async function decideMcpLaunchApproval(
   if (!trusted) {
     return { ok: false, reason: 'untrusted' };
   }
-  let approved = false;
+  let approved: boolean;
   try {
     approved = (await options.prompt()) === true;
   } catch {
