@@ -3469,19 +3469,34 @@ export class AgentOrchestrator implements IAgentController {
     return problems;
   }
 
+  /**
+   * Removes a session from memory and storage. Storage is removed first so a
+   * persistence failure leaves both the memory map and the visible session
+   * intact — the delete reports failure, the UI can retry, and the record is
+   * never half-removed.
+   */
   async remove(sessionId: string): Promise<void> {
     if (this.busy.has(sessionId)) {
-      throw new AgentSessionError('The session is busy; it cannot be removed right now.');
+      throw new AgentSessionError(
+        'The session is busy; it cannot be removed right now. Cancel it, pause it, or wait for it to finish, then try again.',
+      );
+    }
+    const repository = this.deps.repository;
+    if (repository !== undefined) {
+      try {
+        await repository.remove(sessionId);
+      } catch (error) {
+        this.deps.logger?.warn(
+          `agent session remove id=${sessionId} result=failed reason=${messageOf(error)}`,
+        );
+        throw new AgentSessionError(
+          `Could not remove the stored agent session record: ${messageOf(error)}`,
+        );
+      }
     }
     this.sessions.delete(sessionId);
     this.cancelled.delete(sessionId);
     this.aborters.delete(sessionId);
-    if (this.deps.repository !== undefined) {
-      try {
-        await this.deps.repository.remove(sessionId);
-      } catch (error) {
-        this.deps.logger?.warn(`Could not remove agent session ${sessionId}: ${messageOf(error)}`);
-      }
-    }
+    this.deps.logger?.info(`agent session remove id=${sessionId} result=ok`);
   }
 }

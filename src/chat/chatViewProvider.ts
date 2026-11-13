@@ -52,6 +52,10 @@ import {
 } from './prompts';
 import { buildChatLanguageGuidance } from '../languages/prompts';
 import {
+  buildWorkspaceInspection,
+  classifyWorkspaceIntent,
+} from '../workspace/inspectionReport';
+import {
   ConversationStore,
   type Conversation,
   type ConversationMeta,
@@ -191,6 +195,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private historySourceId: string | undefined;
   private history: HistoryState = EMPTY_HISTORY;
   private restoreWarnings: string[] = [];
+  /** Present only after a provider request failed; used by the Retry request action. */
+  private lastFailedRequest:
+    | {
+        readonly messages: readonly ChatMessage[];
+        readonly mode: ChatMode;
+        readonly sessionMode: 'ask' | 'agent';
+        readonly status: ProviderStatus;
+      }
+    | undefined;
   /** Present only while the last assistant response ended at the provider output limit. */
   private truncatedAssistant: {
     readonly id: string;
@@ -317,8 +330,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const assistantId = `assistant-agent-${++this.requestSeq}`;
     await this.ensureConversation();
     this.syncHistoryBeforeSend();
-    await this.recordUser(trimmed, []);
-    this.session.addUser(trimmed);
+    await this.recordUser(trimmed, [], undefined, undefined, 'agent');
+    this.session.addUser(trimmed, 'agent');
     const toolEvents: Array<{ tool?: string; ok?: boolean; message: string; output?: string }> = [];
     this.busy = true;
     this.post({ type: 'busy', busy: true });
@@ -407,13 +420,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       for (const event of toolEvents) {
         const summary = `[tool] ${event.tool}: ${event.ok ? 'succeeded' : 'failed'}\n${(event.output ?? '').slice(0, 2000)}`.trim();
         if (summary.length > 0) {
-          await this.recordAssistant(summary, false, true);
+          await this.recordAssistant(summary, false, true, 'agent');
         }
       }
       if (result.finalText.length > 0) {
         this.post({ type: 'assistantDelta', id: assistantId, delta: result.finalText });
       }
-      await this.recordAssistant(result.finalText || `Coding agent finished with status: ${result.status}.`);
+      await this.recordAssistant(
+        result.finalText || `Coding agent finished with status: ${result.status}.`,
+        true,
+        false,
+        'agent',
+      );
       this.post({
         type: 'assistantEnd',
         id: assistantId,
@@ -501,6 +519,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const CONTINUATION_INSTRUCTION =
       'Continue exactly from where your previous message stopped. Do not repeat any text you already produced. Begin directly with the next character of your answer. Do not add a preamble, headings, or commentary.';
+    const lastMode = this.lastChatContext?.mode;
+    const sessionMode: 'ask' | 'agent' = lastMode === 'agent' ? 'agent' : 'ask';
     const messages: ChatMessage[] = [
       {
         role: 'system',
@@ -509,7 +529,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.lastChatContext?.languageGuidance,
         ),
       },
-      ...this.session.snapshot(),
+      ...this.session.snapshotFor(sessionMode),
       { role: 'user' as const, content: CONTINUATION_INSTRUCTION },
     ];
 
@@ -531,7 +551,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.deps.logger.info(
         `continuation result id=${requestId} finishReason=${result.finishReason ?? 'stop'} depth=${depth}`,
       );
-      this.session.addAssistant(result.text);
+      this.session.addAssistant(result.text, sessionMode);
       const last = this.storedMessages[this.storedMessages.length - 1];
       if (last !== undefined && last.role === 'assistant' && last.text === pending.text) {
         this.storedMessages[this.storedMessages.length - 1] = {
@@ -581,6 +601,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           code: providerError.code,
         });
         this.deps.logger.warn(`continuation id=${requestId} failed code=${providerError.code}`);
+      }
+    } finally {
+      source.dispose();
+      if (this.cancelSource === source) {
+        this.cancelSource = undefined;
+      }
+      if (requestId === this.requestSeq) {
+        this.busy = false;
+        this.post({ type: 'busy', busy: false });
+      }
+    }
+  }
+
+  /**
+   * Re-issues the most recent provider request exactly as sent. The user
+   * message is NOT recorded again, so retrying never duplicates the transcript;
+   * only the assistant response is appended.
+   */
+  private async retryLastRequest(): Promise<void> {
+    if (this.busy) {
+      this.notifyWarning('Wait for the current request to finish.');
+      return;
+    }
+    const pending = this.lastFailedRequest;
+    if (pending === undefined) {
+      this.notifyWarning('There is nothing to retry; the last request either succeeded or was cancelled.');
+      return;
+    }
+    this.lastFailedRequest = undefined;
+    const requestId = ++this.requestSeq;
+    const assistantId = `assistant-${requestId}`;
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    this.post({ type: 'assistantStart', id: assistantId, model: pending.status.model });
+    this.deps.logger.info(
+      `retry id=${requestId} provider=${pending.status.providerType} model=${pending.status.model}`,
+    );
+
+    const source = new vscode.CancellationTokenSource();
+    this.cancelSource = source;
+    const messages = [...pending.messages];
+
+    try {
+      const result = await this.deps.completion.complete(messages, {
+        token: source.token,
+        onDelta: (delta: string) => {
+          if (requestId === this.requestSeq) {
+            this.post({ type: 'assistantDelta', id: assistantId, delta });
+          }
+        },
+      });
+      if (requestId !== this.requestSeq) {
+        return;
+      }
+      this.deps.logger.info(
+        `retry result id=${requestId} finishReason=${result.finishReason ?? 'stop'}`,
+      );
+      await this.recordAssistant(result.text, true, false, pending.sessionMode);
+      this.attachments = [];
+      this.postAttachments();
+      if (result.finishReason === 'length') {
+        this.truncatedAssistant = { id: assistantId, text: result.text, depth: 0 };
+      }
+      this.post({
+        type: 'assistantEnd',
+        id: assistantId,
+        finishReason: result.finishReason,
+        usage: result.usage,
+      });
+    } catch (error) {
+      if (requestId !== this.requestSeq) {
+        return;
+      }
+      const providerError = isProviderError(error) ? error : normalizeThrownError(error);
+      if (providerError.code !== 'cancelled') {
+        this.lastFailedRequest = {
+          messages,
+          mode: pending.mode,
+          sessionMode: pending.sessionMode,
+          status: pending.status,
+        };
+      }
+      if (providerError.code === 'cancelled') {
+        this.deps.logger.info(`retry id=${requestId} status=cancelled`);
+        this.post({ type: 'assistantCancelled', id: assistantId });
+      } else {
+        this.deps.logger.warn(`retry id=${requestId} status=provider-failed code=${providerError.code}`);
+        this.post({
+          type: 'error',
+          message: providerError.message,
+          hint: errorHint(providerError.code),
+          code: providerError.code,
+        });
       }
     } finally {
       source.dispose();
@@ -774,7 +887,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.session.load(
         existing.messages
           .filter((message) => message.localOnly !== true)
-          .map((message) => ({ role: message.role, content: message.text })),
+          .map((message) => ({ role: message.role, content: message.text, mode: message.mode })),
       );
       this.refreshHistoryState(existing, 'reload');
       this.truncatedAssistant = undefined;
@@ -827,7 +940,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.history = {
       conversationId: conversation.id,
-      messages: this.session.snapshot().length,
+      messages: this.session.snapshotFor('ask').length,
       chars: this.session.charCount,
       restored: rebuilt.length > 0,
       transcriptMessages: conversation.messages.length,
@@ -946,7 +1059,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'history', history: this.history, warnings: this.restoreWarnings });
   }
 
-  /** Keeps the reported provider-history counters in sync with the live session. */
+  /** Keeps the reported provider-history counters in sync with the live session (ask scope). */
   private refreshHistoryCounts(): void {
     if (this.conversation === undefined) {
       return;
@@ -954,9 +1067,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.history = {
       ...this.history,
       conversationId: this.conversation.id,
-      messages: this.session.snapshot().length,
+      messages: this.session.snapshotFor('ask').length,
       chars: this.session.charCount,
-      restored: this.session.snapshot().length > 0,
+      restored: this.session.snapshotFor('ask').length > 0,
       transcriptMessages: this.storedMessages.length,
     };
   }
@@ -991,6 +1104,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               )
             : [],
         localOnly: message.localOnly === true,
+        ...(message.mode === undefined ? {} : { mode: message.mode }),
       };
     });
   }
@@ -1052,17 +1166,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     attachments: readonly string[],
     question?: string,
     attachmentContext?: readonly StoredAttachment[],
+    mode: 'ask' | 'agent' = 'ask',
   ): Promise<void> {
     this.storedMessages.push({
       role: 'user',
       text,
       attachments,
       createdAt: new Date().toISOString(),
+      mode,
       ...(question === undefined || question === text ? {} : { question }),
       ...(attachmentContext === undefined || attachmentContext.length === 0
         ? {}
         : { attachmentContext }),
     });
+    if (this.conversation !== undefined) {
+      this.conversation = { ...this.conversation, mode };
+    }
     await this.persistConversation();
   }
 
@@ -1070,20 +1189,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     addToSession = true,
     localOnly = false,
+    mode: 'ask' | 'agent' = 'ask',
   ): Promise<void> {
     if (text.trim().length === 0) {
       return;
     }
     if (addToSession) {
-      this.session.addAssistant(text);
+      this.session.addAssistant(text, mode);
     }
     this.storedMessages.push({
       role: 'assistant',
       text,
       attachments: [],
       createdAt: new Date().toISOString(),
+      mode,
       ...(localOnly ? { localOnly: true } : {}),
     });
+    if (this.conversation !== undefined) {
+      this.conversation = { ...this.conversation, mode };
+    }
     await this.persistConversation();
     if (addToSession) {
       this.refreshHistoryCounts();
@@ -1111,7 +1235,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.session.load(
       conversation.messages
         .filter((message) => message.localOnly !== true)
-        .map((message) => ({ role: message.role, content: message.text })),
+        .map((message) => ({ role: message.role, content: message.text, mode: message.mode })),
     );
     this.refreshHistoryState(conversation, 'switch');
     this.attachments = [];
@@ -1125,6 +1249,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       title: conversation.title,
       transcript: this.transcript(),
       history: this.history,
+      mode: conversation.mode,
     });
     this.postHistory();
     for (const warning of this.restoreWarnings) {
@@ -1237,6 +1362,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         title: active?.title ?? 'New chat',
         transcript: this.transcript(),
         history: this.history,
+        mode: active?.mode,
       });
       this.postHistory();
     }
@@ -1879,6 +2005,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'copyLog':
         await this.copyRecentLog();
         break;
+      case 'retryLastRequest':
+        await this.retryLastRequest();
+        break;
       case 'newConversation':
         await this.startNewChat();
         break;
@@ -1942,6 +2071,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           .map((view) => this.summarizeSession(view)),
         activeSessionId: this.activeSessionId,
         history: this.history,
+        mode: this.conversation?.mode,
       });
       for (const warning of this.restoreWarnings) {
         this.post({ type: 'notice', level: 'warn', message: warning });
@@ -2212,6 +2342,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (classifyWorkspaceIntent(requirement) === 'read_only_inspection') {
+      await this.runReadOnlyInspection(requirement);
+      return;
+    }
+
     const status = await this.providerReadiness();
     if (status === undefined) {
       return;
@@ -2222,13 +2357,115 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.ensureConversation();
     this.busy = true;
     this.post({ type: 'busy', busy: true });
-    await this.recordUser(requirement, []);
-    this.session.addUser(requirement);
+    await this.recordUser(requirement, [], undefined, undefined, 'agent');
+    this.session.addUser(requirement, 'agent');
     this.post({ type: 'userMessage', text: requirement, attachments: [] });
 
     await this.runSessionStep(undefined, (token) =>
       this.deps.agentRuntime.controller.start(requirement, token),
     );
+  }
+
+  /**
+   * Deterministic read-only inspection for requests explicitly about
+   * inspecting, inventorying, summarizing, or reporting without modifications.
+   * It runs entirely locally: no provider request, no plan, no change set, no
+   * file writes, no command execution.
+   */
+  private async runReadOnlyInspection(requirement: string): Promise<void> {
+    await this.ensureConversation();
+    this.busy = true;
+    this.post({ type: 'busy', busy: true });
+    await this.recordUser(requirement, [], undefined, undefined, 'agent');
+    this.session.addUser(requirement, 'agent');
+    this.post({ type: 'userMessage', text: requirement, attachments: [] });
+
+    const assistantId = `assistant-inspection-${++this.requestSeq}`;
+    this.post({ type: 'assistantStart', id: assistantId, model: 'QuantsMind' });
+    this.post({ type: 'assistantDelta', id: assistantId, delta: '' });
+
+    const root = this.workspaceRoot();
+    try {
+      const entries = await this.deps.workspaceIndex.getEntries();
+      const workspaceSettings = this.deps.settings.getWorkspaceSettings();
+
+      let manifest: { found: true; name?: string; version?: string } | { found: false } | { unreadable: string } | undefined;
+      if (root !== undefined) {
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root.uri, 'package.json'));
+          const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
+          manifest = {
+            found: true,
+            ...(typeof parsed.name === 'string' && parsed.name.trim().length > 0 ? { name: parsed.name } : {}),
+            ...(typeof parsed.version === 'string' && parsed.version.trim().length > 0 ? { version: parsed.version } : {}),
+          };
+        } catch (error) {
+          const code = typeof (error as { code?: unknown }).code === 'string'
+            ? (error as { code: string }).code
+            : undefined;
+          manifest = code === 'FileNotFound'
+            ? { found: false }
+            : { unreadable: code ?? (error instanceof Error ? error.message : 'unknown error') };
+        }
+      }
+
+      const rootPath = root?.uri.fsPath;
+      let git: { available: true; repository: true; branch?: string; headShort?: string; changed: readonly string[] }
+        | { available: true; repository: false }
+        | { available: false; unavailable: string }
+        | undefined;
+      if (rootPath !== undefined) {
+        try {
+          const info = await repoInfo(rootPath);
+          if (!info.isRepository) {
+            git = { available: true, repository: false };
+          } else {
+            const entriesGit = await status(rootPath);
+            git = {
+              available: true,
+              repository: true,
+              ...(info.branch !== undefined ? { branch: info.branch } : {}),
+              ...(info.headShort !== undefined ? { headShort: info.headShort } : {}),
+              changed: entriesGit.map((entry) => entry.path),
+            };
+          }
+        } catch (error) {
+          git = { available: false, unavailable: error instanceof Error ? error.message : 'unknown error' };
+        }
+      }
+
+      const report = buildWorkspaceInspection({
+        rootName: root?.name ?? 'workspace',
+        ...(rootPath !== undefined ? { rootPath } : {}),
+        paths: entries.map((entry) => entry.path),
+        maxIndexedFiles: workspaceSettings.maxIndexedFiles,
+        ...(manifest !== undefined ? { manifest } : {}),
+        ...(git !== undefined ? { git } : {}),
+      });
+      this.post({ type: 'assistantDelta', id: assistantId, delta: report.text });
+      await this.recordAssistant(report.text, true, false, 'agent');
+      this.post({
+        type: 'assistantEnd',
+        id: assistantId,
+        finishReason: 'stop',
+        usage: undefined,
+      });
+      this.deps.logger.info(
+        `read-only inspection id=${assistantId} indexed=${report.totals.indexed} listed=${report.totals.listed} uninspected=${report.totals.uninspected} git=${report.gitDescription}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The inspection failed unexpectedly.';
+      this.post({
+        type: 'error',
+        message: `Workspace inspection failed: ${message}`,
+        hint: undefined,
+        code: undefined,
+      });
+      this.deps.logger.warn(`read-only inspection failed reason=${message}`);
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
+    }
   }
 
   private async runSessionStep(
@@ -2370,6 +2607,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async deleteSession(sessionId: string): Promise<void> {
+    this.deps.logger.info(
+      `agent session delete requested id=${sessionId} active=${this.activeSessionId === sessionId}`,
+    );
     try {
       await this.deps.agentRuntime.controller.remove(sessionId);
       if (this.activeSessionId === sessionId) {
@@ -2377,8 +2617,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'sessionRemoved', id: sessionId });
       }
       this.postSessions();
+      this.deps.logger.info(`agent session delete succeeded id=${sessionId}`);
       this.notifyInfo('Agent session deleted. Stored conversation transcripts are unaffected.');
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'The session could not be deleted.';
+      this.deps.logger.warn(`agent session delete failed id=${sessionId} reason=${message}`);
       this.postSessionError(error, sessionId);
     }
   }
@@ -2611,15 +2854,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       mode,
       ...(languageGuidance !== undefined ? { languageGuidance } : {}),
     };
+    const sessionMode: 'ask' | 'agent' = mode === 'agent' ? 'agent' : 'ask';
     const messages = buildMessages({
       mode,
       question: prompt,
       attachments: built.items,
-      history: this.session.snapshot(),
+      history: this.session.snapshotFor(sessionMode),
       ...(languageGuidance !== undefined ? { languageGuidance } : {}),
     });
     const userContent = messages[messages.length - 1]?.content ?? prompt;
-    this.session.addUser(userContent);
+    this.session.addUser(userContent, sessionMode);
     const released = this.session.releasedMessages;
     if (released > 0) {
       this.notifyWarning(
@@ -2635,7 +2879,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         : item.path,
     );
     const captured = captureAttachments(built.items, new Date().toISOString());
-    await this.recordUser(displayPrompt, attachmentLabels, prompt, captured.captured);
+    await this.recordUser(displayPrompt, attachmentLabels, prompt, captured.captured, sessionMode);
     if (captured.dropped.length > 0) {
       this.notifyWarning(droppedContentNotice(captured.dropped));
     }
@@ -2645,6 +2889,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       attachmentItems: built.items.length,
       attachmentChars: built.items.reduce((sum, item) => sum + item.content.length, 0),
     });
+    // Attachments stay in the buffer until the provider has accepted the request;
+    // a recoverable failure must not throw them away before the user can retry.
+    const attachmentsForRetry = this.attachments.map((attachment) => attachment);
     const requestId = ++this.requestSeq;
     this.deps.logger.info(
       `request context id=${requestId} provider=${status.providerType} model=${status.model} mode=${mode} stream=${this.deps.settings.getProviderSettings().stream ? 'on' : 'off'} ${formatRequestBreakdown(breakdown)} capturedAttachments=${captured.captured.length} capturedChars=${captured.chars} dropped=${captured.dropped.length}`,
@@ -2657,8 +2904,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     const assistantId = `assistant-${requestId}`;
-    this.attachments = [];
-    this.postAttachments();
     this.busy = true;
     this.post({ type: 'busy', busy: true });
     this.post({
@@ -2688,7 +2933,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.deps.logger.info(
         `response id=${requestId} finishReason=${result.finishReason ?? 'stop'} status=provider-received`,
       );
-      await this.recordAssistant(result.text);
+      this.lastFailedRequest = undefined;
+      await this.recordAssistant(result.text, true, false, sessionMode);
+      this.attachments = [];
+      this.postAttachments();
       if (result.finishReason === 'length') {
         this.truncatedAssistant = { id: assistantId, text: result.text, depth: 0 };
       }
@@ -2706,6 +2954,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const providerError = isProviderError(error)
         ? error
         : normalizeThrownError(error);
+      // Stash the failed request so the Retry button can resend it without
+      // re-reading the (now restored) composer.
+      if (providerError.code !== 'cancelled') {
+        this.lastFailedRequest = { messages, mode, sessionMode, status };
+      }
+      // Preserve the user's attachment chips so the failed request can be retried intact.
+      if (attachmentsForRetry.length > 0) {
+        this.attachments = attachmentsForRetry;
+        this.postAttachments();
+      }
       if (providerError.code === 'cancelled') {
         this.deps.logger.info(`response id=${requestId} status=cancelled`);
         this.post({ type: 'assistantCancelled', id: assistantId });

@@ -79,6 +79,7 @@ export const LANGUAGE_REGISTRY: readonly LanguageCapability[] = Object.freeze([
     qualification: 'analysis',
     manifests: ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg', 'Pipfile'],
     guidance: [
+      'Explain `__all__` precisely: it controls only which names are exported when another module does `from module import *`; it does not prevent module import-time side effects or restrict explicit imports. Explain `if __name__ == "__main__":` as the idiom for "only run when executed directly, not when imported".',
       'Respect PEP 8 layout and type hints at public boundaries where the codebase uses them.',
       'Virtual environments and dependency resolution matter; identify the packaging tool (pip/Poetry/uv) before suggesting installs.',
       'Prefer explicit imports and small, composable functions over deep class hierarchies.',
@@ -94,10 +95,11 @@ export const LANGUAGE_REGISTRY: readonly LanguageCapability[] = Object.freeze([
     qualification: 'analysis',
     manifests: ['pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'],
     guidance: [
+      'Cover interface members completely: abstract, default, static and private interface methods (Java 9+). Only unannotated interface methods are implicitly public and abstract; default/static methods carry implementations.',
       'Match the Java release in use: records, sealed hierarchies and pattern matching (instanceof/switch) are standard from Java 21; virtual threads (Thread.ofVirtual()) suit blocking-I/O concurrency and are not a substitute for CPU-bound parallelism. Watch for carrier-thread pinning inside synchronized blocks.',
-      'Java is statically typed and package-scoped; keep public APIs and package-private internals consistent.',
       'Identify the build tool (Maven `pom.xml` vs Gradle) before suggesting compile or test commands.',
       'Prefer immutable value types (records are idiomatic since Java 16) and explicit constructors/factories at module boundaries.',
+      'Java is statically typed and package-scoped; keep public APIs and package-private internals consistent.',
     ],
     testHint: 'JUnit suites under `src/test/java` mirroring `src/main/java`.',
     limitations: ['Annotation processing and generated sources are not modeled.'],

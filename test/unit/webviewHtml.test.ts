@@ -103,6 +103,8 @@ suite('webview HTML', () => {
     const source = script();
     expect(source).to.contain("post({ type: 'continueAssistant', id: id })");
     expect(source).to.contain("post({ type: 'copyLog' })");
+    expect(source).to.contain("post({ type: 'retryLastRequest' })");
+    expect(source).to.contain("dataset.action = 'retry-request'");
     expect(source).to.contain("case 'assistantContinuation': {");
     expect(source).to.contain('state.continuationDepth');
     expect(source).to.contain('state.continuationBase');

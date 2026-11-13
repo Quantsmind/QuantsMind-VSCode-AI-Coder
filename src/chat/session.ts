@@ -1,19 +1,35 @@
 import { DEFAULT_HISTORY_CHARS } from '../config/defaults';
 import type { ChatMessage } from '../providers/types';
 
+/** The chat mode a provider-recorded message belongs to; used to isolate Ask and Agent replay. */
+export type SessionMode = 'ask' | 'agent';
+
+interface SessionEntry {
+  readonly message: ChatMessage;
+  readonly mode: SessionMode;
+}
+
 /**
- * Bounded provider history for one conversation. Durable transcripts live in
- * ConversationStore; this class only controls what is sent to the provider.
+ * Bounded provider history for one conversation, tagged by chat mode. Durable
+ * transcripts live in ConversationStore; this class only controls what is
+ * sent to the provider. Mode-scoped snapshots keep Ask and Agent provider
+ * replay strictly isolated.
  */
 export class ChatSession {
-  private messages: ChatMessage[] = [];
+  private entries: SessionEntry[] = [];
   /** Messages and characters released since the last load or reset, for transparency. */
   private released = { messages: 0, chars: 0 };
 
   constructor(private readonly maxChars: number = DEFAULT_HISTORY_CHARS) {}
 
   snapshot(): readonly ChatMessage[] {
-    return this.messages.map((message) => ({ role: message.role, content: message.content }));
+    return this.entries.map((entry) => ({ ...entry.message }));
+  }
+
+  snapshotFor(mode: SessionMode): readonly ChatMessage[] {
+    return this.entries
+      .filter((entry) => entry.mode === mode)
+      .map((entry) => ({ ...entry.message }));
   }
 
   /** How many replayed messages were released to fit the budget. */
@@ -31,54 +47,62 @@ export class ChatSession {
   }
 
   get charCount(): number {
-    return this.messages.reduce((total, message) => total + message.content.length, 0);
+    return this.entries.reduce((total, entry) => total + entry.message.content.length, 0);
   }
 
-  addUser(content: string): void {
+  addUser(content: string, mode: SessionMode = 'ask'): void {
     if (content.length > 0) {
-      this.push({ role: 'user', content });
+      this.push({ role: 'user', content }, mode);
     }
   }
 
-  addAssistant(content: string): void {
+  addAssistant(content: string, mode: SessionMode = 'ask'): void {
     if (content.trim().length > 0) {
-      this.push({ role: 'assistant', content });
+      this.push({ role: 'assistant', content }, mode);
     }
   }
 
   clear(): void {
-    this.messages = [];
+    this.entries = [];
     this.released = { messages: 0, chars: 0 };
   }
 
-  load(messages: readonly ChatMessage[]): void {
-    this.messages = [];
+  /** Messages loaded from persistence carry an optional mode; missing means legacy ask. */
+  load(messages: readonly (ChatMessage & { readonly mode?: SessionMode })[]): void {
+    this.entries = [];
     this.released = { messages: 0, chars: 0 };
     for (const message of messages) {
       if (message.content.length === 0) {
         continue;
       }
-      this.messages.push({ role: message.role, content: message.content });
+      this.entries.push({
+        message: { role: message.role, content: message.content },
+        mode: message.mode ?? 'ask',
+      });
     }
     this.trim();
   }
 
-  private push(message: ChatMessage): void {
-    this.messages.push(message);
+  clearTransient(mode: SessionMode): void {
+    this.entries = this.entries.filter((entry) => entry.mode !== mode);
+  }
+
+  private push(message: ChatMessage, mode: SessionMode): void {
+    this.entries.push({ message, mode });
     this.trim();
   }
 
   private trim(): void {
     let total = this.charCount;
-    while (total > this.maxChars && this.messages.length > 1) {
-      const removed = this.messages.shift();
+    while (total > this.maxChars && this.entries.length > 1) {
+      const removed = this.entries.shift();
       if (removed === undefined) {
         break;
       }
-      total -= removed.content.length;
+      total -= removed.message.content.length;
       this.released = {
         messages: this.released.messages + 1,
-        chars: this.released.chars + removed.content.length,
+        chars: this.released.chars + removed.message.content.length,
       };
     }
   }

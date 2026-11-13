@@ -65,6 +65,8 @@ export interface TranscriptMessage {
   readonly attachments: readonly string[];
   readonly attachmentDetails?: readonly AttachmentDisplay[];
   readonly localOnly?: boolean;
+  /** Chat mode this message belongs to; absent on legacy records (ask). */
+  readonly mode?: 'ask' | 'agent';
 }
 
 export interface AttachmentSummary {
@@ -120,6 +122,7 @@ export type WebviewToHostMessage =
   | { readonly type: 'send'; readonly prompt: string; readonly mode: ChatMode }
   | { readonly type: 'stop' }
   | { readonly type: 'continueAssistant'; readonly id: string }
+  | { readonly type: 'retryLastRequest' }
   | { readonly type: 'copyLog' }
   | { readonly type: 'newChat' }
   | { readonly type: 'attachSelection' }
@@ -242,6 +245,7 @@ export type HostToWebviewMessage =
       readonly sessions: readonly SessionSummary[];
       readonly activeSessionId?: string;
       readonly history: HistoryState;
+      readonly mode?: 'ask' | 'agent';
     }
   | { readonly type: 'status'; readonly status: ProviderStatus }
   | {
@@ -311,6 +315,7 @@ export type HostToWebviewMessage =
       readonly title: string;
       readonly transcript: readonly TranscriptMessage[];
       readonly history?: HistoryState;
+      readonly mode?: 'ask' | 'agent';
     }
   | {
       readonly type: 'sessions';
@@ -392,6 +397,8 @@ export function parseWebviewMessage(raw: unknown): WebviewToHostMessage | undefi
   switch (record.type) {
     case 'copyLog':
       return { type: 'copyLog' };
+    case 'retryLastRequest':
+      return { type: 'retryLastRequest' };
     case 'continueAssistant':
       if (!isId(record.id)) {
         return undefined;

@@ -41,6 +41,7 @@ export interface RestorableMessage {
   readonly question?: string;
   readonly attachmentContext?: readonly StoredAttachment[];
   readonly localOnly?: boolean;
+  readonly mode?: 'ask' | 'agent';
 }
 
 export interface CaptureResult {
@@ -276,14 +277,14 @@ export function providerContentFor(
 export function providerHistoryMessages(
   messages: readonly RestorableMessage[],
   options: RestoreOptions = {},
-): { role: 'user' | 'assistant'; content: string }[] {
-  const rebuilt: { role: 'user' | 'assistant'; content: string }[] = [];
+): { role: 'user' | 'assistant'; content: string; mode?: 'ask' | 'agent' }[] {
+  const rebuilt: { role: 'user' | 'assistant'; content: string; mode?: 'ask' | 'agent' }[] = [];
   for (const message of messages) {
     const content = providerContentFor(message, options);
     if (content === undefined || content.length === 0) {
       continue;
     }
-    rebuilt.push({ role: message.role, content });
+    rebuilt.push({ role: message.role, content, ...(message.mode === 'ask' || message.mode === 'agent' ? { mode: message.mode } : {}) });
   }
   return rebuilt;
 }
