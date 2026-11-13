@@ -2,7 +2,7 @@
   "name": "quantsmind-vscode-ai-coder",
   "displayName": "QuantsMind AI Coder",
   "description": "Agentic, project-aware AI coding for VS Code with explicit context control, approval-first changes, allowlisted validation and evidence-based reports.",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "publisher": "quantsmind",
   "license": "MIT",
   "private": true,

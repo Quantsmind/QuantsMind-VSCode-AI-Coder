@@ -35,6 +35,8 @@ requirement
   **inspection plan**: findings with file references, zero tasks, nothing to
   execute — approval completes with an evidence report and never schedules a
   file change.
+- Ask-mode failures restore your prompt and any attachments; a **Retry** action
+  resends the last request to the provider without duplicating the user message.
 - The control-center panel shows the current session state, every stage, the
   task graph, approval cards with unified diffs, validation output, diagnostics
   and the final report.
@@ -56,6 +58,9 @@ requirement
   non-streaming responses.
 - Opt-in plain HTTP for loopback endpoints such as a local model server.
 - Ask, explain and generate modes with a read-only system prompt.
+- Ask and Agent composer drafts, transcript and provider context are
+  mode-separated: switching modes never submits one mode's draft in the
+  other, and provider replay never mixes modes silently.
 - Responses that stop at the provider output token limit show a truncation
   notice, keep their partial output, and can be resumed in place via a
   user-initiated **Continue response** control (bounded, no duplicated
@@ -446,8 +451,8 @@ Behaviour that is expected but looks wrong at first glance is listed in
 - [v2.2.0 implementation report (historical)](V2.2.0_IMPLEMENTATION_REPORT.md)
 - [v2.3.0 implementation report (historical)](V2.3.0_IMPLEMENTATION_REPORT.md)
 - [v2.4.0 implementation report (historical)](V2.4.0_IMPLEMENTATION_REPORT.md)
-- [v3.1.0 implementation report](docs/audit/V3.1.0-IMPLEMENTATION-REPORT.md)
-- [v3.1.0 defect register](docs/audit/V3.1.0-DEFECT-REGISTER.md)
+- [v3.1.0 implementation report (historical)](docs/audit/V3.1.0-IMPLEMENTATION-REPORT.md)
+- [v3.1.0 defect register (historical)](docs/audit/V3.1.0-DEFECT-REGISTER.md)
 - [v0.3.0 completion report (historical)](docs/reports/V030_COMPLETION_REPORT.md)
 - [v0.3.0 test and validation report (historical)](docs/reports/V030_TEST_AND_VALIDATION_REPORT.md)
 - [v0.3.0 security report (historical)](docs/reports/V030_SECURITY_REPORT.md)
