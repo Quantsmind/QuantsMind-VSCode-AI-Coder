@@ -23,10 +23,8 @@ export interface ConversationMemento {
 export interface StoredMessage extends RestorableMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
-  /**
-   * Legacy v1 field: path labels only. Kept on write so an older build can
-   * still read a v2 transcript.
-   */
+  /** Legacy v1 field: path labels only. Kept on write so an older build can
+   * still read a v2 transcript. */
   readonly attachments: readonly string[];
   /** The exact question text sent to the provider, when it differs from `text`. */
   readonly question?: string;
@@ -34,6 +32,8 @@ export interface StoredMessage extends RestorableMessage {
   readonly attachmentContext?: readonly StoredAttachment[];
   /** Assistant text produced locally (e.g. a workspace summary); never sent. */
   readonly localOnly?: boolean;
+  /** Chat mode the message belongs to. Absent on legacy records (treated as ask). */
+  readonly mode?: 'ask' | 'agent';
   readonly createdAt: string;
 }
 
@@ -44,6 +44,8 @@ export interface Conversation {
   readonly updatedAt: string;
   /** Absent on records written before v0.3.4; v2 writes always stamp it. */
   readonly schema?: number;
+  /** Mode most recently used in this conversation; restored by the webview. */
+  readonly mode?: 'ask' | 'agent';
   readonly messages: readonly StoredMessage[];
 }
 
@@ -89,6 +91,7 @@ function parseMessage(value: unknown): StoredMessage | undefined {
     ...(attachmentContext.length > 0 ? { attachmentContext } : {}),
     ...(question === undefined ? {} : { question }),
     ...(item.localOnly === true ? { localOnly: true } : {}),
+    ...(item.mode === 'ask' || item.mode === 'agent' ? { mode: item.mode } : {}),
   };
 
   return parsed;
@@ -126,6 +129,7 @@ function parseConversation(value: unknown): Conversation | undefined {
     createdAt: value.createdAt,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : value.createdAt,
     schema,
+    ...(value.mode === 'ask' || value.mode === 'agent' ? { mode: value.mode } : {}),
     messages,
   };
 }
@@ -137,6 +141,7 @@ function toRecord(value: Conversation): Record<string, unknown> {
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     schema: CONVERSATION_SCHEMA_VERSION,
+    ...(value.mode === 'ask' || value.mode === 'agent' ? { mode: value.mode } : {}),
     messages: value.messages,
   };
 }

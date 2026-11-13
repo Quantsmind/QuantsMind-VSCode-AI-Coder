@@ -23,6 +23,7 @@ suite('webview message parsing', () => {
       'inspectRepository',
       'inspectGitStatus',
       'copyLog',
+      'retryLastRequest',
     ] as const;
 
     for (const type of types) {

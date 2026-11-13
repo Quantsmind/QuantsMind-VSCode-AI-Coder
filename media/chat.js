@@ -62,9 +62,46 @@
     continuationDepth: {},
     continuationBase: null,
     manualPromptHeight: null,
+    mode: 'ask',
+    drafts: { ask: '', agent: '' },
   };
 
   const MAX_CONTINUATIONS = 3;
+
+  const LANGUAGE_ALIASES = {
+    java: 'java',
+    javacopy: 'java',
+    js: 'javascript',
+    javascriptcopy: 'javascript',
+    ts: 'typescript',
+    tscopy: 'typescript',
+    python: 'python',
+    pythoncopy: 'python',
+    py: 'python',
+    text: 'text',
+    textcopy: 'text',
+    plain: 'text',
+    plaincopy: 'text',
+    txt: 'text',
+    md: 'markdown',
+    markdown: 'markdown',
+    shell: 'bash',
+    shellcopy: 'bash',
+    sh: 'bash',
+    bash: 'bash',
+    json: 'json',
+    jsoncopy: 'json',
+    xml: 'xml',
+    html: 'html',
+    cpp: 'cpp',
+    csharp: 'csharp',
+    cs: 'csharp',
+    go: 'go',
+    rust: 'rust',
+    ruby: 'ruby',
+    php: 'php',
+    sql: 'sql',
+  };
 
   let toastTimer = 0;
 
@@ -93,7 +130,19 @@
     const cleaned = String(value || 'text')
       .toLowerCase()
       .replace(/[^a-z0-9+#._-]/g, '');
-    return cleaned || 'text';
+    if (cleaned.length === 0) {
+      return 'text';
+    }
+    // Models occasionally emit Copy-suffixed labels such as "javaCopy" or
+    // "textCopy" — normalize them onto their base language instead of leaking
+    // a meaningless token as a code header.
+    if (cleaned.length > 4 && cleaned.slice(-4) === 'copy') {
+      const base = cleaned.slice(0, -4);
+      if (LANGUAGE_ALIASES[base]) {
+        return LANGUAGE_ALIASES[base];
+      }
+    }
+    return LANGUAGE_ALIASES[cleaned] || cleaned;
   }
 
   function renderInline(text) {
@@ -397,6 +446,31 @@
       ' ch';
     els.contextStrip.title =
       'Exactly what the last request contained. Detailed diagnostics are in the QuantsMind output log.';
+  }
+
+  function setComposerMode(mode) {
+    const next = mode === 'agent' ? 'agent' : 'ask';
+    state.mode = next;
+    els.mode.value = next;
+    autoResize();
+    updateModeUi();
+  }
+
+  function switchMode(mode) {
+    const next = mode === 'agent' ? 'agent' : 'ask';
+    if (next === state.mode) {
+      return;
+    }
+    state.drafts[state.mode] = els.prompt.value;
+    state.mode = next;
+    els.mode.value = next;
+    els.prompt.value = state.drafts[next] || '';
+    autoResize();
+    updateModeUi();
+  }
+
+  function clearDrafts() {
+    state.drafts = { ask: '', agent: '' };
   }
 
   function updateModeUi() {
@@ -878,6 +952,14 @@
       settings.textContent = 'Open provider settings';
       actions.append(settings);
     }
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'action-button';
+    retry.dataset.action = 'retry-request';
+    retry.textContent = 'Retry request';
+    retry.title = 'Resend the last request to the provider';
+    actions.append(retry);
 
     const log = document.createElement('button');
     log.type = 'button';
@@ -2030,6 +2112,8 @@
     state.repairSelections = {};
     state.continuationDepth = {};
     state.continuationBase = null;
+    clearDrafts();
+    state.mode = 'ask';
     els.messages.querySelectorAll('.message').forEach(function (node) {
       node.remove();
     });
@@ -2180,6 +2264,7 @@
       if (state.attachments.length > 0) {
         showToast('Agent mode retrieves workspace files itself; attachments are not sent.', 'info');
       }
+      state.drafts.agent = '';
       post({ type: 'startSession', requirement: prompt });
       els.prompt.value = '';
       autoResize();
@@ -2187,6 +2272,7 @@
     }
 
     state.pendingPrompt = els.prompt.value;
+    state.drafts[mode] = '';
     post({ type: 'send', prompt: els.prompt.value, mode: mode });
     els.prompt.value = '';
     autoResize();
@@ -2229,7 +2315,8 @@
         }
         renderSessionSelect();
         renderAttachmentBar();
-        updateModeUi();
+        clearDrafts();
+        setComposerMode(message.mode);
         if (!hasMessages()) {
           renderTranscript(message.transcript || []);
         }
@@ -2258,11 +2345,13 @@
       }
       case 'draft': {
         state.attachments = Array.isArray(message.attachments) ? message.attachments : [];
-        els.mode.value = message.mode || 'ask';
-        updateModeUi();
+        const mode = message.mode || 'ask';
+        clearDrafts();
         if (typeof message.prompt === 'string' && message.prompt.length > 0) {
-          els.prompt.value = message.prompt;
+          state.drafts[mode] = message.prompt;
         }
+        els.prompt.value = state.drafts[mode] || '';
+        setComposerMode(mode);
         renderAttachmentBar();
         if (els.prompt.value.length > 0 || state.attachments.length > 0) {
           setEmpty(false);
@@ -2384,6 +2473,8 @@
           state.history = message.history;
         }
         state.request = null;
+        clearDrafts();
+        setComposerMode(message.mode);
         renderConversationSelect();
         renderHistory();
         renderTranscript(message.transcript || []);
@@ -2642,7 +2733,9 @@
       post({ type: 'focusSession', sessionId: id });
     }
   });
-  els.mode.addEventListener('change', updateModeUi);
+  els.mode.addEventListener('change', function () {
+    switchMode(els.mode.value);
+  });
   els.prompt.addEventListener('input', autoResize);
   els.prompt.addEventListener('keydown', function (event) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -2736,6 +2829,9 @@
       }
       case 'copy-log':
         post({ type: 'copyLog' });
+        break;
+      case 'retry-request':
+        post({ type: 'retryLastRequest' });
         break;
       case 'attach-selection':
         post({ type: 'attachSelection' });

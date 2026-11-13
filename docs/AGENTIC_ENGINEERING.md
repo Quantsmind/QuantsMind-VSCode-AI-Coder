@@ -204,6 +204,15 @@ Plan approval still never triggers execution by itself, zero-task and inspection
 plans schedule nothing, and a stale checkpoint after a restore refuses as
 `checkpoint-rejected` instead of corrupting state.
 
+### v3.1.1 — Ask/Agent mode isolation and read-only inspection (2026-11-13)
+
+The v3.1.1 correction milestone closes the mode-crossover and read-only inspection gaps without weakening the approval architecture:
+
+1. **Explicit mode ownership for provider replay.** Messages recorded in the shared conversation store carry an explicit `mode` tag (`ask`/`agent`). Ask-mode provider replay is scoped to Ask-tagged turns only, so Ask and Agent never trip into each other's provider context on window reload, conversation switch or composer switch. Provider context, not just the UI badge, is isolated.
+2. **Live composer isolation.** Ask and Agent keep separate drafts in the webview; reloads reset them to the conversation's recorded mode.
+3. **Read-only inspection never plan-echoes.** An explicit inspection ask (e.g. "inspect this workspace") is answered locally with zero provider calls and zero file writes/commands, and does not begin a session, plan, or execution approval flow. Normal change requests still go through the existing plan → approval → apply pipeline.
+4. **Failed sessions are safely removable.** Deleting an Agent session removes it from storage before dropping it from memory; storage failure leaves the in-memory session and UI intact and surfaces an error instead of silently orphanning the record.
+
 ## Unified runtime (v2.5.7) — same guarantees, both doors
 
 The extension has two agent entry paths. Since v2.5.6 they shared the

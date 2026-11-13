@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-13
+
+Reliability, answer quality and mode-isolation correction milestone on the v3.1.0 base. No architecture replacement, no weakening of security controls, no schema or storage changes, no new provider integration.
+
+### Ask and Agent mode isolation
+Ask and Agent now own separate provider context. Every recorded message carries an explicit `mode` tag; provider replay uses only the active mode's messages, so Ask and Agent never share cross-mode context silently. Conversation restoration on window reload and conversation switch carries the mode field. Webview composer drafts are kept independently per mode, so switching modes never exposes or submits the other mode's draft. (`src/chat/session.ts`, `src/chat/persistence.ts`, `src/chat/attachmentContext.ts`, `src/chat/protocol.ts`, `src/chat/chatViewProvider.ts`, `media/chat.js`)
+
+### Agent session lifecycle
+The delete action now removes a session from persistent storage **before** dropping it from memory; a storage failure leaves both the visible list and stored envelope intact and surfaces the error instead of reporting success. Successful deletion removes the session from everywhere the user can see it; deleted Agent sessions stay deleted across reload. Failed and cancelled sessions can be deleted like finished ones; deleting while an operation is in flight remains guarded and explains why. (`src/agent/orchestrator.ts`, `src/chat/chatViewProvider.ts`)
+
+### Ask-mode attachment and provider reliability
+Ask-mode provider failures restore the user's prompt to the composer and preserve any attachments, so the request can be retried with the same context. A Retry request action resends the failed request with the stored transcript; the user message is recorded once and repeated attempts never duplicate it. Large attachments (including a 15,064-char fixture) now reach the provider in Ask mode on retry. Provider HTTP 4xx/5xx and malformed-body responses remain classified as `invalid_response`; no semantic change to rate limiting, auth or server errors. (`src/chat/chatViewProvider.ts`, `media/chat.js`)
+
+### Read-only inspection versus plan execution
+The Agent path now detects explicit read-only workspace requests (`Inspect …`, `Report …`, `Summarize …`, `Analyze …`) and handles them locally, before the orchestrator: no provider call, no plan, no change set, no command, no file writes. The report states what it inspected, what it counted but did not inspect, and what was unavailable, and includes inventory, manifest results, language/test heuristics and Git status when Git is available. (`src/workspace/inspectionReport.ts`) Normal change requests still go through the existing plan → approval → apply pipeline unchanged.
+
+### Answer quality and rendering
+Ask/Explain guidance now includes Python `__all__`/`__main__` descriptors and Java interface default/static/private method semantics. Fence language sanitizer in the webview normalizes Copy-suffixed fences (e.g. `javacopy`, `textcopy`) to canonical tags, preventing stray confusing labels in code output. (`src/languages/registry.ts`, `media/chat.js`)
+
+### Changed
+Version: 3.1.1. Engine range `^1.95.0`, configuration schema, settings, and storage formats unchanged. The extension was never published to a registry; publication remains a separate, explicitly authorized owner decision.
+
 ## [3.1.0] - 2026-11-12
 
 Reliability, quality, and user experience hardening on the v3.0.0 GA base. No architecture, permission, schema or default changes; additive, bounded changes with regression coverage.
